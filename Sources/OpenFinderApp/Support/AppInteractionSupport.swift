@@ -41,7 +41,7 @@ enum FileTableKeyboardShortcut {
     static func action(characters: String?, keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> FileTableKeyboardCommand? {
         let flags = modifiers.intersection([.command, .option, .shift, .control])
         if flags.isEmpty {
-            if characters == "\r" || keyCode == 36 { return .open }
+            if characters == "\r" || keyCode == 36 { return .rename }
             if characters == " " || keyCode == 49 { return .quickLook }
             if characters == "\u{7F}" || keyCode == 51 || keyCode == 117 { return .trash }
             if keyCode == 120 { return .rename }
@@ -51,6 +51,9 @@ enum FileTableKeyboardShortcut {
             if characters == "[" { return .goBack }
             if characters == "]" { return .goForward }
             if keyCode == 126 { return .goUp }
+            if keyCode == 125 { return .open }
+            if keyCode == 51 || keyCode == 117 || characters == "\u{7F}" { return .trash }
+            if characters?.lowercased() == "o" { return .open }
             if characters?.lowercased() == "a" { return .selectAll }
             if characters?.lowercased() == "r" { return .refresh }
             if characters?.lowercased() == "n" { return .createFile }
@@ -64,6 +67,73 @@ enum FileTableKeyboardShortcut {
             if characters?.lowercased() == "v" { return .moveToOtherPane }
         }
         return nil
+    }
+}
+
+enum FileTablePointerSelection {
+    static func shouldClearSelection(clickedRow: Int, modifiers: NSEvent.ModifierFlags) -> Bool {
+        clickedRow < 0 && modifiers.intersection([.command, .option, .shift, .control]).isEmpty
+    }
+}
+
+struct FileTableSelectionResult: Equatable {
+    let selectedRows: IndexSet
+    let anchorRow: Int?
+}
+
+enum FileTableSelectionReducer {
+    static func selection(
+        selectedRows: IndexSet,
+        anchorRow: Int?,
+        clickedRow: Int,
+        rowCount: Int,
+        modifiers: NSEvent.ModifierFlags
+    ) -> FileTableSelectionResult {
+        guard clickedRow >= 0, clickedRow < rowCount else {
+            return FileTableSelectionResult(selectedRows: selectedRows, anchorRow: anchorRow)
+        }
+
+        let flags = modifiers.intersection([.command, .shift])
+        if flags.contains(.shift) {
+            let anchor = anchorRow ?? selectedRows.first ?? clickedRow
+            let range = IndexSet(integersIn: min(anchor, clickedRow)...max(anchor, clickedRow))
+            if flags.contains(.command) {
+                var next = selectedRows
+                next.formUnion(range)
+                return FileTableSelectionResult(selectedRows: next, anchorRow: anchor)
+            }
+            return FileTableSelectionResult(selectedRows: range, anchorRow: anchor)
+        }
+
+        if flags.contains(.command) {
+            var next = selectedRows
+            if next.contains(clickedRow) {
+                next.remove(clickedRow)
+            } else {
+                next.insert(clickedRow)
+            }
+            let nextAnchor = next.contains(clickedRow) ? clickedRow : next.last
+            return FileTableSelectionResult(selectedRows: next, anchorRow: nextAnchor)
+        }
+
+        return FileTableSelectionResult(selectedRows: IndexSet(integer: clickedRow), anchorRow: clickedRow)
+    }
+}
+
+struct TransferConflict: Equatable, Identifiable {
+    var id: String { destinationPath }
+    let itemName: String
+    let destinationPath: String
+}
+
+enum TransferConflictDetector {
+    static func conflicts(for items: [FileItem], destination: Location) -> [TransferConflict] {
+        guard let destinationURL = destination.localURL else { return [] }
+        return items.compactMap { item in
+            let target = destinationURL.appendingPathComponent(item.name, isDirectory: item.isDirectory)
+            guard FileManager.default.fileExists(atPath: target.path) else { return nil }
+            return TransferConflict(itemName: item.name, destinationPath: target.path)
+        }
     }
 }
 

@@ -113,14 +113,19 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func copy(_ items: [FileItem], to destination: Location) async throws -> TaskID {
+        try await copy(items, to: destination, overwriteExisting: false)
+    }
+
+    public func copy(_ items: [FileItem], to destination: Location, overwriteExisting: Bool) async throws -> TaskID {
         try await Self.runFileIO {
             let destinationURL = try localURL(for: destination)
             for item in items {
                 let source = try localURL(for: item.location)
                 let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
-                if FileManager.default.fileExists(atPath: target.path) {
-                    throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+                if source.standardizedFileURL == target.standardizedFileURL {
+                    continue
                 }
+                try prepareTargetForWrite(target, overwriteExisting: overwriteExisting)
                 try FileManager.default.copyItem(at: source, to: target)
             }
             return UUID()
@@ -128,14 +133,19 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func move(_ items: [FileItem], to destination: Location) async throws -> TaskID {
+        try await move(items, to: destination, overwriteExisting: false)
+    }
+
+    public func move(_ items: [FileItem], to destination: Location, overwriteExisting: Bool) async throws -> TaskID {
         try await Self.runFileIO {
             let destinationURL = try localURL(for: destination)
             for item in items {
                 let source = try localURL(for: item.location)
                 let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
-                if FileManager.default.fileExists(atPath: target.path) {
-                    throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+                if source.standardizedFileURL == target.standardizedFileURL {
+                    continue
                 }
+                try prepareTargetForWrite(target, overwriteExisting: overwriteExisting)
                 try FileManager.default.moveItem(at: source, to: target)
             }
             return UUID()
@@ -164,6 +174,14 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
     private func childURL(parent: URL, name: String) throws -> URL {
         guard !name.isEmpty, !name.contains("/") else { throw OpenFinderError.invalidFileName(name) }
         return parent.appendingPathComponent(name)
+    }
+
+    private func prepareTargetForWrite(_ target: URL, overwriteExisting: Bool) throws {
+        guard FileManager.default.fileExists(atPath: target.path) else { return }
+        guard overwriteExisting else {
+            throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+        }
+        try FileManager.default.removeItem(at: target)
     }
 
     private func makeItem(_ url: URL) throws -> FileItem {

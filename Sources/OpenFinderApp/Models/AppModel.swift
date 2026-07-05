@@ -18,6 +18,7 @@ final class AppModel: ObservableObject {
     @Published var loadedPlugins: [LoadedPlugin] = []
     @Published var webDAVAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
+    @Published var pendingTransferOverwrite: PendingTransferOverwrite?
     @Published var configuration = AppConfiguration() {
         didSet { saveConfiguration() }
     }
@@ -49,6 +50,10 @@ final class AppModel: ObservableObject {
 
     var activeBrowser: BrowserPaneModel { activePane == .left ? leftPane : rightPane }
     var inactiveBrowser: BrowserPaneModel { activePane == .left ? rightPane : leftPane }
+
+    private func browser(for id: PaneID) -> BrowserPaneModel {
+        id == .left ? leftPane : rightPane
+    }
 
     func loadInitialState() async {
         guard !didLoadInitialState else { return }
@@ -190,6 +195,57 @@ final class AppModel: ObservableObject {
         let sourceLocation = source.location
         let destinationLocation = destination.location
         guard !selected.isEmpty else { return }
+        let conflicts = TransferConflictDetector.conflicts(for: selected, destination: destinationLocation)
+        if !conflicts.isEmpty {
+            pendingTransferOverwrite = PendingTransferOverwrite(
+                items: selected,
+                source: sourceLocation,
+                destination: destinationLocation,
+                move: move,
+                conflicts: conflicts,
+                sourcePaneID: source.id,
+                destinationPaneID: destination.id
+            )
+            return
+        }
+        enqueueTransfer(
+            selected,
+            source: sourceLocation,
+            destination: destinationLocation,
+            move: move,
+            overwriteExisting: false,
+            sourcePaneID: source.id,
+            destinationPaneID: destination.id
+        )
+    }
+
+    func confirmPendingTransferOverwrite(_ confirmedPending: PendingTransferOverwrite? = nil) {
+        guard let pending = confirmedPending ?? pendingTransferOverwrite else { return }
+        pendingTransferOverwrite = nil
+        enqueueTransfer(
+            pending.items,
+            source: pending.source,
+            destination: pending.destination,
+            move: pending.move,
+            overwriteExisting: true,
+            sourcePaneID: pending.sourcePaneID,
+            destinationPaneID: pending.destinationPaneID
+        )
+    }
+
+    func cancelPendingTransferOverwrite() {
+        pendingTransferOverwrite = nil
+    }
+
+    private func enqueueTransfer(
+        _ selected: [FileItem],
+        source sourceLocation: Location,
+        destination destinationLocation: Location,
+        move: Bool,
+        overwriteExisting: Bool,
+        sourcePaneID: PaneID,
+        destinationPaneID: PaneID
+    ) {
         Task {
             do {
                 let title = move ? "Move \(selected.count) item(s)" : "Copy \(selected.count) item(s)"
@@ -202,6 +258,7 @@ final class AppModel: ObservableObject {
                         from: sourceLocation,
                         to: destinationLocation,
                         move: move,
+                        overwriteExisting: overwriteExisting,
                         remoteDirectory: remoteDirectory,
                         keychainStore: keychainStore,
                         progress: { fraction, message in
@@ -212,8 +269,8 @@ final class AppModel: ObservableObject {
                     return .success(summary: title, clipboard: nil)
                 })
                 await observeTask(queuedID)
-                await source.refresh()
-                await destination.refresh()
+                await browser(for: sourcePaneID).refresh()
+                await browser(for: destinationPaneID).refresh()
             } catch {
                 statusMessage = error.localizedDescription
             }
@@ -415,6 +472,24 @@ struct PendingDeletion: Identifiable {
     let items: [FileItem]
 }
 
+struct PendingTransferOverwrite: Identifiable {
+    let id = UUID()
+    let items: [FileItem]
+    let source: Location
+    let destination: Location
+    let move: Bool
+    let conflicts: [TransferConflict]
+    let sourcePaneID: AppModel.PaneID
+    let destinationPaneID: AppModel.PaneID
+
+    var message: String {
+        let names = conflicts.prefix(5).map(\.itemName).joined(separator: ", ")
+        let remaining = conflicts.count > 5 ? " 等另外 \(conflicts.count - 5) 项" : ""
+        let action = move ? "移动" : "复制"
+        return "\(action)目标位置已存在 \(conflicts.count) 个同名项目：\(names)\(remaining)。是否覆盖现有项目？"
+    }
+}
+
 @MainActor
 final class BrowserPaneModel: ObservableObject, Identifiable {
     let id: AppModel.PaneID
@@ -454,6 +529,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     var selectedItems: [FileItem] {
         items.filter { selection.contains($0.id) }
+    }
+
+    func openFirstSelected() {
+        guard let item = selectedItems.first else { return }
+        open(item)
     }
 
     func selectAllVisible() {
@@ -804,12 +884,12 @@ final class RemoteAccountDirectory: @unchecked Sendable {
 }
 
 enum FileTransferService {
-    static func copyOrMove(_ items: [FileItem], from source: Location, to destination: Location, move: Bool, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore, progress: (@Sendable (Double, String) -> Void)? = nil) async throws {
+    static func copyOrMove(_ items: [FileItem], from source: Location, to destination: Location, move: Bool, overwriteExisting: Bool = false, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore, progress: (@Sendable (Double, String) -> Void)? = nil) async throws {
         switch (source, destination) {
         case (.local, .local):
             let provider = LocalFileProvider()
-            if move { _ = try await provider.move(items, to: destination) }
-            else { _ = try await provider.copy(items, to: destination) }
+            if move { _ = try await provider.move(items, to: destination, overwriteExisting: overwriteExisting) }
+            else { _ = try await provider.copy(items, to: destination, overwriteExisting: overwriteExisting) }
         case (.local, .webDAV(let accountID, let remotePath)):
             let remote = try webDAVProvider(accountID: accountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
             for (index, item) in items.enumerated() {

@@ -5,6 +5,9 @@ struct OpenFinderCommands: Commands {
 
     var body: some Commands {
         CommandMenu("File") {
+            Button("Open") { app.activeBrowser.openFirstSelected() }
+                .keyboardShortcut("o")
+            Divider()
             Button("New File") { app.activeBrowser.createFile() }
                 .keyboardShortcut("n")
             Button("New Folder") { app.activeBrowser.createFolder() }
@@ -16,7 +19,7 @@ struct OpenFinderCommands: Commands {
                 .keyboardShortcut(.upArrow, modifiers: [.command])
             Divider()
             Button(app.activeBrowser.hasRemoteSelection ? "Delete…" : "Move to Trash") { app.activeBrowser.trashSelected() }
-                .keyboardShortcut(.delete, modifiers: [])
+                .keyboardShortcut(.delete, modifiers: [.command])
         }
         CommandMenu("Navigate") {
             Button("Back") { app.activeBrowser.goBack() }

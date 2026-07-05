@@ -14,6 +14,8 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+APP_ICON_SOURCE="$ROOT_DIR/Resources/OpenFinder.icns"
+APP_ICON_NAME="OpenFinder.icns"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -30,11 +32,17 @@ if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
   cp -R "$ROOT_DIR/ExamplePlugins/"* "$APP_RESOURCES/BuiltinPlugins/"
 fi
 
+if [ -f "$APP_ICON_SOURCE" ]; then
+  cp "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
+fi
+
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleIconFile</key>
+  <string>$APP_ICON_NAME</string>
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>

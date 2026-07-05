@@ -111,6 +111,8 @@ struct FilePaneView: View {
         }
         .padding(8)
         .background(.bar)
+        .contentShape(Rectangle())
+        .onTapGesture { app.activePane = pane.id }
     }
 
     private func resetPathDraft() {
@@ -145,7 +147,8 @@ struct FilePaneView: View {
         case .open:
             if let item = items.first { pane.open(item) }
         case .rename:
-            renameText = items.first?.name ?? ""
+            guard items.count == 1, let item = items.first else { return }
+            renameText = item.name
             showingRename = true
         case .trash:
             pane.trashSelected()

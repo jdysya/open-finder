@@ -53,6 +53,12 @@ struct FileTableRepresentable: NSViewRepresentable {
         table.onActivate = { [weak coordinator = context.coordinator] in
             coordinator?.activate()
         }
+        table.onClearSelection = { [weak coordinator = context.coordinator] in
+            coordinator?.clearSelection()
+        }
+        table.onModifiedRowClick = { [weak coordinator = context.coordinator] row, modifiers in
+            coordinator?.applyModifiedRowClick(row: row, modifiers: modifiers)
+        }
         table.handleKeyDown = { [weak coordinator = context.coordinator] event in
             coordinator?.handleKeyDown(event) ?? false
         }
@@ -99,6 +105,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         weak var tableView: NSTableView?
         var lastRenderedItems: [FileItem] = []
         var lastRenderedDirectorySizeText: [String: String] = [:]
+        private var selectionAnchorRow: Int?
         private var isSyncingSelection = false
         private let dateFormatter: DateFormatter = {
             let formatter = DateFormatter()
@@ -188,6 +195,11 @@ struct FileTableRepresentable: NSViewRepresentable {
             })
             if parent.selection != newSelection {
                 parent.selection = newSelection
+            }
+            if let selectedRow = tableView.selectedRowIndexes.last {
+                selectionAnchorRow = selectedRow
+            } else {
+                selectionAnchorRow = nil
             }
         }
 
@@ -292,6 +304,29 @@ struct FileTableRepresentable: NSViewRepresentable {
             parent.selection = Set(parent.items.map(\.id))
         }
 
+        func clearSelection() {
+            tableView?.deselectAll(nil)
+            parent.selection = []
+            selectionAnchorRow = nil
+        }
+
+        func applyModifiedRowClick(row: Int, modifiers: NSEvent.ModifierFlags) {
+            activate()
+            guard let tableView else { return }
+            let result = FileTableSelectionReducer.selection(
+                selectedRows: tableView.selectedRowIndexes,
+                anchorRow: selectionAnchorRow,
+                clickedRow: row,
+                rowCount: parent.items.count,
+                modifiers: modifiers
+            )
+            selectionAnchorRow = result.anchorRow
+            syncSelection(result.selectedRows, in: tableView)
+            parent.selection = Set(result.selectedRows.compactMap { index in
+                index < parent.items.count ? parent.items[index].id : nil
+            })
+        }
+
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
             guard row >= 0, row < parent.items.count, let url = parent.items[row].localURL else { return nil }
             return url as NSURL
@@ -338,6 +373,8 @@ struct FileTableRepresentable: NSViewRepresentable {
 final class ContextTableView: NSTableView {
     var makeContextMenu: ((NSTableView, Int) -> NSMenu?)?
     var onActivate: (() -> Void)?
+    var onClearSelection: (() -> Void)?
+    var onModifiedRowClick: ((Int, NSEvent.ModifierFlags) -> Void)?
     var handleKeyDown: ((NSEvent) -> Bool)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -348,6 +385,20 @@ final class ContextTableView: NSTableView {
 
     override func mouseDown(with event: NSEvent) {
         onActivate?()
+        let point = convert(event.locationInWindow, from: nil)
+        if FileTablePointerSelection.shouldClearSelection(clickedRow: row(at: point), modifiers: event.modifierFlags) {
+            window?.makeFirstResponder(self)
+            deselectAll(nil)
+            onClearSelection?()
+            return
+        }
+        let clickedRow = row(at: point)
+        let flags = event.modifierFlags.intersection([.command, .shift])
+        if clickedRow >= 0, !flags.isEmpty {
+            window?.makeFirstResponder(self)
+            onModifiedRowClick?(clickedRow, event.modifierFlags)
+            return
+        }
         super.mouseDown(with: event)
     }
 

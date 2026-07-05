@@ -58,6 +58,37 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Created").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("Created").path))
     }
+
+    func testLocalCopyAndMoveCanOverwriteExistingDestinationWhenExplicitlyAllowed() async throws {
+        let provider = LocalFileProvider()
+        let root = Location.local(path: tempRoot.path)
+        let destination = tempRoot.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let sourceFile = tempRoot.appendingPathComponent("same.txt")
+        let destinationFile = destination.appendingPathComponent("same.txt")
+        try "new".write(to: sourceFile, atomically: true, encoding: .utf8)
+        try "old".write(to: destinationFile, atomically: true, encoding: .utf8)
+        let sourceItem = try await provider.stat(.local(path: sourceFile.path))
+
+        do {
+            _ = try await provider.copy([sourceItem], to: .local(path: destination.path))
+            XCTFail("Copy should reject overwrite unless explicitly allowed")
+        } catch {
+            XCTAssertEqual(try String(contentsOf: destinationFile, encoding: .utf8), "old")
+        }
+
+        _ = try await provider.copy([sourceItem], to: .local(path: destination.path), overwriteExisting: true)
+        XCTAssertEqual(try String(contentsOf: destinationFile, encoding: .utf8), "new")
+
+        try "moved".write(to: sourceFile, atomically: true, encoding: .utf8)
+        let moveItem = try await provider.stat(.local(path: sourceFile.path))
+        _ = try await provider.move([moveItem], to: .local(path: destination.path), overwriteExisting: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceFile.path))
+        XCTAssertEqual(try String(contentsOf: destinationFile, encoding: .utf8), "moved")
+        XCTAssertNoThrow(try FileManager.default.contentsOfDirectory(atPath: root.localURL?.path ?? tempRoot.path))
+    }
+
     func testTrashFailureDoesNotPermanentlyDeleteItem() async throws {
         let file = tempRoot.appendingPathComponent("keep.txt")
         try "keep".write(to: file, atomically: true, encoding: .utf8)

@@ -46,6 +46,14 @@ struct ContentView: View {
                     .help("Quick Look")
             }
         }
+        .alert(item: $app.pendingTransferOverwrite) { pending in
+            Alert(
+                title: Text("覆盖同名项目？"),
+                message: Text(pending.message),
+                primaryButton: .destructive(Text("覆盖")) { app.confirmPendingTransferOverwrite(pending) },
+                secondaryButton: .cancel(Text("取消")) { app.cancelPendingTransferOverwrite() }
+            )
+        }
         .task { await app.loadInitialState() }
     }
 }
@@ -56,10 +64,8 @@ struct DualPaneView: View {
     var body: some View {
         HSplitView {
             FilePaneView(pane: app.leftPane, isActive: app.activePane == .left)
-                .onTapGesture { app.activePane = .left }
                 .frame(minWidth: 320)
             FilePaneView(pane: app.rightPane, isActive: app.activePane == .right)
-                .onTapGesture { app.activePane = .right }
                 .frame(minWidth: 320)
         }
     }
