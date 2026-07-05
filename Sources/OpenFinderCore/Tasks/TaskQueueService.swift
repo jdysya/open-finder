@@ -1,6 +1,6 @@
 import Foundation
 
-public typealias TaskOperation = (TaskExecutionContext) async throws -> TaskResult
+public typealias TaskOperation = @Sendable (TaskExecutionContext) async throws -> TaskResult
 
 public struct TaskRequest: @unchecked Sendable {
     public let kind: TaskKind
@@ -131,7 +131,7 @@ public actor TaskQueueService {
             guard let request = requests[id] else { continue }
             records[id]?.status = .running
             records[id]?.startedAt = Date()
-            let handle = Task { [weak self] in
+            let handle = Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
                 await self.run(id: id, request: request)
             }

@@ -56,9 +56,12 @@ struct FileTableRepresentable: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let table = scrollView.documentView as? NSTableView else { return }
-        table.reloadData()
+        if context.coordinator.lastRenderedItems != items {
+            context.coordinator.lastRenderedItems = items
+            table.reloadData()
+        }
         let indexes = IndexSet(items.enumerated().compactMap { offset, item in selection.contains(item.id) ? offset : nil })
-        table.selectRowIndexes(indexes, byExtendingSelection: false)
+        context.coordinator.syncSelection(indexes, in: table)
     }
 
     private func addColumn(identifier: String, title: String, width: CGFloat, to table: NSTableView) {
@@ -73,6 +76,8 @@ struct FileTableRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var parent: FileTableRepresentable
         weak var tableView: NSTableView?
+        var lastRenderedItems: [FileItem] = []
+        private var isSyncingSelection = false
         private let byteFormatter: ByteCountFormatter = {
             let formatter = ByteCountFormatter()
             formatter.countStyle = .file
@@ -126,10 +131,14 @@ struct FileTableRepresentable: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection else { return }
             guard let tableView else { return }
-            parent.selection = Set(tableView.selectedRowIndexes.compactMap { row in
+            let newSelection = Set(tableView.selectedRowIndexes.compactMap { row in
                 row < parent.items.count ? parent.items[row].id : nil
             })
+            if parent.selection != newSelection {
+                parent.selection = newSelection
+            }
         }
 
         @objc func doubleClick(_ sender: NSTableView) {
@@ -186,6 +195,13 @@ struct FileTableRepresentable: NSViewRepresentable {
         private func selectedItems(tableView: NSTableView? = nil) -> [FileItem] {
             let selected = tableView?.selectedRowIndexes ?? self.tableView?.selectedRowIndexes ?? []
             return selected.compactMap { row in row < parent.items.count ? parent.items[row] : nil }
+        }
+
+        func syncSelection(_ indexes: IndexSet, in tableView: NSTableView) {
+            guard tableView.selectedRowIndexes != indexes else { return }
+            isSyncingSelection = true
+            tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+            isSyncingSelection = false
         }
 
         private func perform(_ action: FileTableAction) {

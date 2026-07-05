@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
 #endif
@@ -18,83 +19,113 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
     }
 
     public func list(_ location: Location, options: FileListOptions = .init()) async throws -> [FileItem] {
-        let directory = try localURL(for: location)
-        let keys: Set<URLResourceKey> = [
-            .isDirectoryKey,
-            .isSymbolicLinkKey,
-            .isPackageKey,
-            .isHiddenKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .creationDateKey,
-            .isReadableKey,
-            .isWritableKey,
-            .typeIdentifierKey,
-            .contentTypeKey
-        ]
-        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [])
-        let mapped = try urls.compactMap { url -> FileItem? in
-            let item = try makeItem(url)
-            if !options.showHiddenFiles && item.isHidden { return nil }
-            return item
+        try await Self.runFileIO {
+            let directory = try localURL(for: location)
+            let keys: Set<URLResourceKey> = [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+                .isPackageKey,
+                .isHiddenKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+                .creationDateKey,
+                .isReadableKey,
+                .isWritableKey,
+                .typeIdentifierKey,
+                .contentTypeKey
+            ]
+            let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [])
+            let mapped = try urls.compactMap { url -> FileItem? in
+                let item = try makeItem(url)
+                if !options.showHiddenFiles && item.isHidden { return nil }
+                return item
+            }
+            return sort(mapped, by: options.sort)
         }
-        return sort(mapped, by: options.sort)
     }
 
     public func stat(_ location: Location) async throws -> FileItem {
-        try makeItem(try localURL(for: location))
+        try await Self.runFileIO {
+            try makeItem(try localURL(for: location))
+        }
     }
 
     public func createFolder(at location: Location, name: String) async throws {
-        let destination = try childURL(parent: localURL(for: location), name: name)
-        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try await Self.runFileIO {
+            let destination = try childURL(parent: localURL(for: location), name: name)
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        }
     }
 
     public func createFile(at location: Location, name: String) async throws {
-        let destination = try childURL(parent: localURL(for: location), name: name)
-        guard FileManager.default.createFile(atPath: destination.path, contents: Data()) else {
-            throw OpenFinderError.operationFailed("Could not create file at \(destination.path)")
+        try await Self.runFileIO {
+            let destination = try childURL(parent: localURL(for: location), name: name)
+            guard FileManager.default.createFile(atPath: destination.path, contents: Data()) else {
+                throw OpenFinderError.operationFailed("Could not create file at \(destination.path)")
+            }
         }
     }
 
     public func rename(_ item: FileItem, to newName: String) async throws -> FileItem {
-        let source = try localURL(for: item.location)
-        let destination = try childURL(parent: source.deletingLastPathComponent(), name: newName)
-        try FileManager.default.moveItem(at: source, to: destination)
-        return try makeItem(destination)
+        try await Self.runFileIO {
+            let source = try localURL(for: item.location)
+            let destination = try childURL(parent: source.deletingLastPathComponent(), name: newName)
+            try FileManager.default.moveItem(at: source, to: destination)
+            return try makeItem(destination)
+        }
     }
 
     public func trashOrDelete(_ items: [FileItem]) async throws {
-        for item in items {
-            let url = try localURL(for: item.location)
-            try trashItemHandler(url)
+        try await Self.runFileIO {
+            for item in items {
+                let url = try localURL(for: item.location)
+                try trashItemHandler(url)
+            }
         }
     }
 
     public func copy(_ items: [FileItem], to destination: Location) async throws -> TaskID {
-        let destinationURL = try localURL(for: destination)
-        for item in items {
-            let source = try localURL(for: item.location)
-            let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
-            if FileManager.default.fileExists(atPath: target.path) {
-                throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+        try await Self.runFileIO {
+            let destinationURL = try localURL(for: destination)
+            for item in items {
+                let source = try localURL(for: item.location)
+                let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
+                if FileManager.default.fileExists(atPath: target.path) {
+                    throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+                }
+                try FileManager.default.copyItem(at: source, to: target)
             }
-            try FileManager.default.copyItem(at: source, to: target)
+            return UUID()
         }
-        return UUID()
     }
 
     public func move(_ items: [FileItem], to destination: Location) async throws -> TaskID {
-        let destinationURL = try localURL(for: destination)
-        for item in items {
-            let source = try localURL(for: item.location)
-            let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
-            if FileManager.default.fileExists(atPath: target.path) {
-                throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+        try await Self.runFileIO {
+            let destinationURL = try localURL(for: destination)
+            for item in items {
+                let source = try localURL(for: item.location)
+                let target = destinationURL.appendingPathComponent(source.lastPathComponent, isDirectory: item.isDirectory)
+                if FileManager.default.fileExists(atPath: target.path) {
+                    throw OpenFinderError.operationFailed("Destination already exists: \(target.path)")
+                }
+                try FileManager.default.moveItem(at: source, to: target)
             }
-            try FileManager.default.moveItem(at: source, to: target)
+            return UUID()
         }
-        return UUID()
+    }
+
+    private static let fileIOQueue = DispatchQueue(label: "dev.openfinder.local-file-provider.io", qos: .userInitiated, attributes: .concurrent)
+
+    private static func runFileIO<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            fileIOQueue.async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func localURL(for location: Location) throws -> URL {

@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     private let keychainStore: KeychainStore
     private let pluginRegistry = PluginRegistry()
     private var taskPollingTask: Task<Void, Never>?
+    private var didLoadInitialState = false
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -45,6 +46,8 @@ final class AppModel: ObservableObject {
     var inactiveBrowser: BrowserPaneModel { activePane == .left ? rightPane : leftPane }
 
     func loadInitialState() async {
+        guard !didLoadInitialState else { return }
+        didLoadInitialState = true
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
@@ -138,6 +141,8 @@ final class AppModel: ObservableObject {
         let source = activeBrowser
         let destination = inactiveBrowser
         let selected = source.selectedItems
+        let sourceLocation = source.location
+        let destinationLocation = destination.location
         guard !selected.isEmpty else { return }
         Task {
             do {
@@ -145,11 +150,11 @@ final class AppModel: ObservableObject {
                 let remoteDirectory = self.remoteDirectory
                 let keychainStore = self.keychainStore
                 let queuedID = try await taskQueue.enqueue(.init(kind: move ? .localMove : .localCopy, title: title) { context in
-                    await context.appendLog("\(title) to \(destination.location.displayPath)")
+                    await context.appendLog("\(title) to \(destinationLocation.displayPath)")
                     try await FileTransferService.copyOrMove(
                         selected,
-                        from: source.location,
-                        to: destination.location,
+                        from: sourceLocation,
+                        to: destinationLocation,
                         move: move,
                         remoteDirectory: remoteDirectory,
                         keychainStore: keychainStore,
@@ -214,14 +219,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshTasks() async {
+    @discardableResult
+    func refreshTasks() async -> Bool {
         let records = await taskQueue.history().sorted { $0.createdAt > $1.createdAt }
         var logs: [UUID: [TaskLogLine]] = [:]
         for record in records {
             logs[record.id] = await taskQueue.logs(for: record.id)
         }
-        taskRecords = records
-        taskLogs = logs
+        if taskRecords != records {
+            taskRecords = records
+        }
+        if taskLogs != logs {
+            taskLogs = logs
+        }
+        return records.contains { !$0.status.isTerminal }
     }
 
     func cancelTask(_ id: UUID) {
@@ -258,8 +269,9 @@ final class AppModel: ObservableObject {
         taskPollingTask?.cancel()
         taskPollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshTasks()
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                let hasActiveTasks = await self?.refreshTasks() ?? false
+                let interval: UInt64 = hasActiveTasks ? 250_000_000 : 1_000_000_000
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
@@ -348,13 +360,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func refresh() async {
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
         do {
             items = try await listItems(at: location)
             selection.formIntersection(Set(items.map(\.id)))
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 
     func navigate(to newLocation: Location, recordHistory: Bool = true) async {
