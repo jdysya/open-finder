@@ -30,6 +30,8 @@ OpenFinder sends a single JSON object to plugin stdin:
 - `files[]` with path, name, extension, UTI, MIME, size, and directory flag.
 - `config` and `secrets` references. Secrets are represented as environment variable names, not plaintext values.
 - `tempDirectory` and `outputDirectory`.
+  - For local panes, `outputDirectory` is the current directory so generated artifacts land beside the selected files.
+  - For non-local panes, `outputDirectory` falls back to a task-local temporary output directory.
 
 Plugins write newline-delimited JSON events to stdout:
 

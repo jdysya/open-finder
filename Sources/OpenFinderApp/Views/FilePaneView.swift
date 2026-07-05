@@ -15,6 +15,8 @@ struct FilePaneView: View {
                 items: pane.visibleItems,
                 selection: $pane.selection,
                 onOpen: { pane.open($0) },
+                onActivate: { app.activePane = pane.id },
+                onDropFileURLs: { app.dropLocalFileURLs($0, into: pane) },
                 pluginActionsForSelection: { app.pluginActions(for: $0) },
                 onAction: handleTableAction
             )
@@ -110,6 +112,20 @@ struct FilePaneView: View {
             app.copySelectionToOtherPane(move: false)
         case .moveToOtherPane:
             app.copySelectionToOtherPane(move: true)
+        case .goBack:
+            pane.goBack()
+        case .goForward:
+            pane.goForward()
+        case .goUp:
+            pane.goUp()
+        case .refresh:
+            Task { await pane.refresh() }
+        case .toggleHidden:
+            pane.toggleHidden()
+        case .createFile:
+            pane.createFile()
+        case .createFolder:
+            pane.createFolder()
         case .plugin(let plugin, let action):
             app.runPlugin(plugin, action: action, items: items, pane: pane)
         }

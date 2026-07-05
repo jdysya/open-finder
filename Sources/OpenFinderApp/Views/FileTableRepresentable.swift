@@ -11,6 +11,13 @@ enum FileTableAction {
     case quickLook
     case copyToOtherPane
     case moveToOtherPane
+    case goBack
+    case goForward
+    case goUp
+    case refresh
+    case toggleHidden
+    case createFile
+    case createFolder
     case plugin(LoadedPlugin, PluginActionManifest)
 }
 
@@ -18,6 +25,8 @@ struct FileTableRepresentable: NSViewRepresentable {
     var items: [FileItem]
     @Binding var selection: Set<String>
     var onOpen: (FileItem) -> Void
+    var onActivate: () -> Void
+    var onDropFileURLs: ([URL]) -> Void
     var pluginActionsForSelection: ([FileItem]) -> [(LoadedPlugin, PluginActionManifest)]
     var onAction: (FileTableAction, [FileItem]) -> Void
 
@@ -39,6 +48,15 @@ struct FileTableRepresentable: NSViewRepresentable {
         table.makeContextMenu = { [weak coordinator = context.coordinator] tableView, row in
             coordinator?.makeMenu(tableView: tableView, row: row)
         }
+        table.onActivate = { [weak coordinator = context.coordinator] in
+            coordinator?.activate()
+        }
+        table.handleKeyDown = { [weak coordinator = context.coordinator] event in
+            coordinator?.handleKeyDown(event) ?? false
+        }
+        table.registerForDraggedTypes([.fileURL])
+        table.setDraggingSourceOperationMask(.copy, forLocal: true)
+        table.setDraggingSourceOperationMask(.copy, forLocal: false)
 
         addColumn(identifier: "name", title: "Name", width: 280, to: table)
         addColumn(identifier: "kind", title: "Kind", width: 90, to: table)
@@ -94,6 +112,10 @@ struct FileTableRepresentable: NSViewRepresentable {
             self.parent = parent
         }
 
+        func activate() {
+            parent.onActivate()
+        }
+
         func numberOfRows(in tableView: NSTableView) -> Int {
             parent.items.count
         }
@@ -132,6 +154,7 @@ struct FileTableRepresentable: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isSyncingSelection else { return }
+            activate()
             guard let tableView else { return }
             let newSelection = Set(tableView.selectedRowIndexes.compactMap { row in
                 row < parent.items.count ? parent.items[row].id : nil
@@ -142,12 +165,14 @@ struct FileTableRepresentable: NSViewRepresentable {
         }
 
         @objc func doubleClick(_ sender: NSTableView) {
+            activate()
             let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
             guard row >= 0, row < parent.items.count else { return }
             parent.onOpen(parent.items[row])
         }
 
         func makeMenu(tableView: NSTableView, row: Int) -> NSMenu? {
+            activate()
             if row >= 0, row < parent.items.count, !tableView.selectedRowIndexes.contains(row) {
                 tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                 parent.selection = [parent.items[row].id]
@@ -205,7 +230,55 @@ struct FileTableRepresentable: NSViewRepresentable {
         }
 
         private func perform(_ action: FileTableAction) {
+            activate()
             parent.onAction(action, selectedItems())
+        }
+
+        func handleKeyDown(_ event: NSEvent) -> Bool {
+            activate()
+            guard let command = FileTableKeyboardShortcut.action(characters: event.charactersIgnoringModifiers, keyCode: event.keyCode, modifiers: event.modifierFlags) else {
+                return false
+            }
+            switch command {
+            case .open: perform(.open)
+            case .rename: perform(.rename)
+            case .trash: perform(.trash)
+            case .quickLook: perform(.quickLook)
+            case .goBack: perform(.goBack)
+            case .goForward: perform(.goForward)
+            case .goUp: perform(.goUp)
+            case .refresh: perform(.refresh)
+            case .toggleHidden: perform(.toggleHidden)
+            case .createFile: perform(.createFile)
+            case .createFolder: perform(.createFolder)
+            case .copyToOtherPane: perform(.copyToOtherPane)
+            case .moveToOtherPane: perform(.moveToOtherPane)
+            }
+            return true
+        }
+
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+            guard row >= 0, row < parent.items.count, let url = parent.items[row].localURL else { return nil }
+            return url as NSURL
+        }
+
+        func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+            activate()
+            return fileURLs(from: info).isEmpty ? [] : .copy
+        }
+
+        func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+            activate()
+            let urls = fileURLs(from: info)
+            guard !urls.isEmpty else { return false }
+            parent.onDropFileURLs(urls)
+            return true
+        }
+
+        private func fileURLs(from info: NSDraggingInfo) -> [URL] {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL] ?? []
+            return urls.map { $0 as URL }
         }
 
         @objc private func open(_ sender: Any) { perform(.open) }
@@ -229,9 +302,28 @@ struct FileTableRepresentable: NSViewRepresentable {
 @MainActor
 final class ContextTableView: NSTableView {
     var makeContextMenu: ((NSTableView, Int) -> NSMenu?)?
+    var onActivate: (() -> Void)?
+    var handleKeyDown: ((NSEvent) -> Bool)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        onActivate?()
         let point = convert(event.locationInWindow, from: nil)
         return makeContextMenu?(self, row(at: point))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onActivate?()
+        super.rightMouseDown(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        onActivate?()
+        if handleKeyDown?(event) == true { return }
+        super.keyDown(with: event)
     }
 }

@@ -77,11 +77,9 @@ final class AppModel: ObservableObject {
     func runPlugin(_ plugin: LoadedPlugin, action: PluginActionManifest, items: [FileItem], pane: BrowserPaneModel) {
         Task {
             let taskID = UUID()
-            let tempDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("OpenFinderTasks", isDirectory: true)
-                .appendingPathComponent(taskID.uuidString, isDirectory: true)
-            let outputDirectory = tempDirectory.appendingPathComponent("output", isDirectory: true)
-            try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            let workspace = PluginWorkspace.make(taskID: taskID, currentLocation: pane.location)
+            try? FileManager.default.createDirectory(at: workspace.tempDirectory, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: workspace.outputDirectory, withIntermediateDirectories: true)
             let input = PluginInput(
                 schemaVersion: 1,
                 taskID: taskID,
@@ -91,8 +89,8 @@ final class AppModel: ObservableObject {
                 files: items.map(PluginInputFile.init(item:)),
                 config: [:],
                 secrets: [:],
-                tempDirectory: tempDirectory.path,
-                outputDirectory: outputDirectory.path
+                tempDirectory: workspace.tempDirectory.path,
+                outputDirectory: workspace.outputDirectory.path
             )
             do {
                 let runner = ProcessPluginRunner(runtimePaths: .init(python3Path: configuration.python3Path, nodePath: configuration.nodePath))
@@ -131,6 +129,41 @@ final class AppModel: ObservableObject {
                 })
                 statusMessage = "Queued plugin task \(queuedID.uuidString.prefix(8))"
                 await observeTask(queuedID)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func dropLocalFileURLs(_ urls: [URL], into pane: BrowserPaneModel) {
+        activePane = pane.id
+        let destinationLocation = pane.location
+        Task {
+            do {
+                let items = try await DroppedLocalFileItems.resolve(urls)
+                guard !items.isEmpty else { return }
+                let sourceLocation = items.first?.location ?? .local(path: urls[0].deletingLastPathComponent().path)
+                let title = "Copy dropped \(items.count) item(s)"
+                let remoteDirectory = self.remoteDirectory
+                let keychainStore = self.keychainStore
+                let queuedID = try await taskQueue.enqueue(.init(kind: .localCopy, title: title) { context in
+                    await context.appendLog("\(title) to \(destinationLocation.displayPath)")
+                    try await FileTransferService.copyOrMove(
+                        items,
+                        from: sourceLocation,
+                        to: destinationLocation,
+                        move: false,
+                        remoteDirectory: remoteDirectory,
+                        keychainStore: keychainStore,
+                        progress: { fraction, message in
+                            Task { await context.updateProgress(fraction, message) }
+                        }
+                    )
+                    await context.updateProgress(1.0, "Finished")
+                    return .success(summary: title, clipboard: nil)
+                })
+                await observeTask(queuedID)
+                await pane.refresh()
             } catch {
                 statusMessage = error.localizedDescription
             }
