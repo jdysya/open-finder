@@ -18,11 +18,14 @@ final class AppModel: ObservableObject {
     @Published var loadedPlugins: [LoadedPlugin] = []
     @Published var webDAVAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
-    @Published var configuration = AppConfiguration()
+    @Published var configuration = AppConfiguration() {
+        didSet { saveConfiguration() }
+    }
 
     let taskQueue: TaskQueueService
     private let remoteDirectory: RemoteAccountDirectory
     private let keychainStore: KeychainStore
+    private let configurationStore: JSONConfigStore
     private let pluginRegistry = PluginRegistry()
     private var taskPollingTask: Task<Void, Never>?
     private var didLoadInitialState = false
@@ -30,9 +33,11 @@ final class AppModel: ObservableObject {
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let remoteDirectory = RemoteAccountDirectory(storageURL: Self.applicationSupportDirectory().appendingPathComponent("remote-accounts.json"))
+        let configurationStore = JSONConfigStore(url: Self.applicationSupportDirectory().appendingPathComponent("config.json"))
         let keychainStore: KeychainStore = MacKeychainStore()
         self.remoteDirectory = remoteDirectory
         self.keychainStore = keychainStore
+        self.configurationStore = configurationStore
         self.taskQueue = TaskQueueService(maxConcurrentTasks: 2)
         self.leftPane = BrowserPaneModel(id: .left, location: .local(path: home.path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
         self.rightPane = BrowserPaneModel(id: .right, location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
@@ -48,6 +53,9 @@ final class AppModel: ObservableObject {
     func loadInitialState() async {
         guard !didLoadInitialState else { return }
         didLoadInitialState = true
+        if let loadedConfiguration = try? await configurationStore.load() {
+            configuration = loadedConfiguration
+        }
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
@@ -80,6 +88,11 @@ final class AppModel: ObservableObject {
             let workspace = PluginWorkspace.make(taskID: taskID, currentLocation: pane.location)
             try? FileManager.default.createDirectory(at: workspace.tempDirectory, withIntermediateDirectories: true)
             try? FileManager.default.createDirectory(at: workspace.outputDirectory, withIntermediateDirectories: true)
+            let resolvedConfiguration = PluginConfigurationResolver.resolve(
+                manifest: plugin.manifest,
+                values: configuration.pluginConfigurationValues[plugin.id] ?? [:],
+                secretReferences: configuredPluginSecretReferences(for: plugin.manifest)
+            )
             let input = PluginInput(
                 schemaVersion: 1,
                 taskID: taskID,
@@ -87,8 +100,8 @@ final class AppModel: ObservableObject {
                 app: .init(name: "OpenFinder", version: "0.1.0"),
                 context: .init(activePane: pane.id.rawValue, currentLocation: pane.location),
                 files: items.map(PluginInputFile.init(item:)),
-                config: [:],
-                secrets: [:],
+                config: resolvedConfiguration.config,
+                secrets: resolvedConfiguration.secrets,
                 tempDirectory: workspace.tempDirectory.path,
                 outputDirectory: workspace.outputDirectory.path
             )
@@ -335,6 +348,62 @@ final class AppModel: ObservableObject {
         activeBrowser.quickLookSelected()
     }
 
+    func pluginConfigValue(pluginID: String, key: String) -> String {
+        configuration.pluginConfigurationValues[pluginID]?[key] ?? ""
+    }
+
+    func setPluginConfigValue(_ value: String, pluginID: String, key: String) {
+        var next = configuration
+        var pluginValues = next.pluginConfigurationValues[pluginID] ?? [:]
+        if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pluginValues.removeValue(forKey: key)
+        } else {
+            pluginValues[key] = value
+        }
+        next.pluginConfigurationValues[pluginID] = pluginValues.isEmpty ? nil : pluginValues
+        configuration = next
+    }
+
+    func pluginSecretConfigured(pluginID: String, key: String) -> Bool {
+        (try? keychainStore.secret(for: pluginSecretReference(pluginID: pluginID, key: key))) != nil
+    }
+
+    func setPluginSecret(_ secret: String, pluginID: String, key: String) {
+        do {
+            let reference = pluginSecretReference(pluginID: pluginID, key: key)
+            if secret.isEmpty {
+                try keychainStore.deleteSecret(for: reference)
+                statusMessage = "Cleared plugin secret \(key)"
+            } else {
+                try keychainStore.setSecret(secret, for: reference)
+                statusMessage = "Saved plugin secret \(key)"
+            }
+            objectWillChange.send()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func configuredPluginSecretReferences(for manifest: PluginManifest) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: manifest.permissions.keychainSecrets.compactMap { key in
+            let reference = pluginSecretReference(pluginID: manifest.id, key: key)
+            guard (try? keychainStore.secret(for: reference)) != nil else { return nil }
+            return (key, reference)
+        })
+    }
+
+    private func pluginSecretReference(pluginID: String, key: String) -> String {
+        "plugin.\(pluginID).\(key)"
+    }
+
+    private func saveConfiguration() {
+        let configuration = configuration
+        let store = configurationStore
+        Task {
+            try? await store.save(configuration)
+        }
+    }
+
     static func applicationSupportDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser
         return base.appendingPathComponent("OpenFinder", isDirectory: true)
@@ -357,12 +426,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
     @Published var pendingDeletion: PendingDeletion?
+    @Published var directorySizeText: [String: String] = [:]
     @Published private(set) var history: [Location]
     @Published private(set) var historyIndex: Int = 0
 
     private let provider = LocalFileProvider()
     private let remoteDirectory: RemoteAccountDirectory
     private let keychainStore: KeychainStore
+    private var directorySizeCache: [String: Int64] = [:]
+    private var directorySizeTasks: [String: Task<Void, Never>] = [:]
 
     init(id: AppModel.PaneID, location: Location, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) {
         self.id = id
@@ -370,6 +442,10 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         self.history = [location]
         self.remoteDirectory = remoteDirectory
         self.keychainStore = keychainStore
+    }
+
+    deinit {
+        for task in directorySizeTasks.values { task.cancel() }
     }
 
     var visibleItems: [FileItem] {
@@ -397,6 +473,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         do {
             items = try await listItems(at: location)
             selection.formIntersection(Set(items.map(\.id)))
+            refreshDirectorySizeCalculations(for: items)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -590,6 +667,46 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             return sortItems(fileItems)
         case .rclone:
             throw OpenFinderError.unsupportedLocation(location)
+        }
+    }
+
+    private func refreshDirectorySizeCalculations(for listedItems: [FileItem]) {
+        let currentIDs = Set(listedItems.map(\.id))
+        directorySizeText = directorySizeText.filter { currentIDs.contains($0.key) }
+        let obsoleteTaskIDs = directorySizeTasks.keys.filter { !currentIDs.contains($0) }
+        for id in obsoleteTaskIDs {
+            directorySizeTasks.removeValue(forKey: id)?.cancel()
+        }
+
+        for item in listedItems where item.isDirectory && item.localURL != nil {
+            if let cached = directorySizeCache[item.id] {
+                directorySizeText[item.id] = FileSizeFormatter.openFinderString(fromByteCount: cached)
+                continue
+            }
+            if directorySizeTasks[item.id] != nil { continue }
+            directorySizeText[item.id] = "计算中…"
+            let id = item.id
+            let location = item.location
+            let provider = LocalFileProvider()
+            directorySizeTasks[id] = Task { [weak self] in
+                do {
+                    let size = try await provider.directorySize(at: location)
+                    self?.completeDirectorySize(id: id, size: size)
+                } catch {
+                    self?.completeDirectorySize(id: id, size: nil)
+                }
+            }
+        }
+    }
+
+    private func completeDirectorySize(id: String, size: Int64?) {
+        directorySizeTasks.removeValue(forKey: id)
+        guard items.contains(where: { $0.id == id }) else { return }
+        if let size {
+            directorySizeCache[id] = size
+            directorySizeText[id] = FileSizeFormatter.openFinderString(fromByteCount: size)
+        } else {
+            directorySizeText[id] = "—"
         }
     }
 

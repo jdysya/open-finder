@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var webDAVUsername = ""
     @State private var webDAVPassword = ""
     @State private var allowInsecureHTTP = false
+    @State private var pluginSecretDrafts: [String: String] = [:]
 
     var body: some View {
         TabView {
@@ -21,7 +22,7 @@ struct SettingsView: View {
             .padding()
             .tabItem { Label("Runtimes", systemImage: "terminal") }
 
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("Loaded Plugins")
                         .font(.headline)
@@ -29,15 +30,31 @@ struct SettingsView: View {
                     Button("Rescan") { app.loadPlugins() }
                 }
                 List(app.loadedPlugins) { plugin in
-                    VStack(alignment: .leading) {
-                        Text(plugin.manifest.name)
-                        Text(plugin.manifest.id)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(plugin.directory.path)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let description = plugin.manifest.description {
+                                Text(description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(plugin.directory.path)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            pluginConfigurationSection(plugin)
+                        }
+                        .padding(.vertical, 4)
+                    } label: {
+                        HStack {
+                            Image(systemName: "puzzlepiece.extension.fill")
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading) {
+                                Text(plugin.manifest.name)
+                                Text(plugin.manifest.id)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }
@@ -83,6 +100,95 @@ struct SettingsView: View {
             .tabItem { Label("WebDAV", systemImage: "externaldrive.connected.to.line.below") }
         }
         .frame(width: 640, height: 460)
+    }
+
+    @ViewBuilder
+    private func pluginConfigurationSection(_ plugin: LoadedPlugin) -> some View {
+        if plugin.manifest.configuration.isEmpty && plugin.manifest.permissions.keychainSecrets.isEmpty {
+            Text("No configurable parameters. Matching actions appear in the file context menu when a selection supports them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                ForEach(plugin.manifest.configuration, id: \.key) { field in
+                    GridRow {
+                        Text(field.title)
+                        pluginConfigControl(plugin: plugin, field: field)
+                    }
+                }
+                ForEach(plugin.manifest.permissions.keychainSecrets, id: \.self) { key in
+                    GridRow {
+                        Text(key)
+                        pluginSecretControl(plugin: plugin, key: key)
+                    }
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private func pluginConfigControl(plugin: LoadedPlugin, field: PluginConfigField) -> some View {
+        if let options = field.options, !options.isEmpty {
+            Picker(field.title, selection: pluginConfigBinding(plugin: plugin, field: field)) {
+                ForEach(options, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 280)
+        } else if field.type == "bool" || field.type == "boolean" {
+            Toggle("", isOn: Binding(
+                get: { pluginConfigBinding(plugin: plugin, field: field).wrappedValue == "true" },
+                set: { pluginConfigBinding(plugin: plugin, field: field).wrappedValue = $0 ? "true" : "false" }
+            ))
+            .labelsHidden()
+        } else {
+            TextField(field.defaultValue ?? "", text: pluginConfigBinding(plugin: plugin, field: field))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 280)
+        }
+    }
+
+    private func pluginSecretControl(plugin: LoadedPlugin, key: String) -> some View {
+        HStack {
+            SecureField(
+                app.pluginSecretConfigured(pluginID: plugin.id, key: key) ? "Configured" : "Not configured",
+                text: pluginSecretDraftBinding(pluginID: plugin.id, key: key)
+            )
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 220)
+            Button("Save") {
+                app.setPluginSecret(pluginSecretDrafts[pluginSecretDraftKey(pluginID: plugin.id, key: key)] ?? "", pluginID: plugin.id, key: key)
+                pluginSecretDrafts[pluginSecretDraftKey(pluginID: plugin.id, key: key)] = ""
+            }
+            Button("Clear") {
+                app.setPluginSecret("", pluginID: plugin.id, key: key)
+                pluginSecretDrafts[pluginSecretDraftKey(pluginID: plugin.id, key: key)] = ""
+            }
+        }
+    }
+
+    private func pluginConfigBinding(plugin: LoadedPlugin, field: PluginConfigField) -> Binding<String> {
+        Binding(
+            get: {
+                let value = app.pluginConfigValue(pluginID: plugin.id, key: field.key)
+                return value.isEmpty ? field.defaultValue ?? "" : value
+            },
+            set: { app.setPluginConfigValue($0, pluginID: plugin.id, key: field.key) }
+        )
+    }
+
+    private func pluginSecretDraftBinding(pluginID: String, key: String) -> Binding<String> {
+        let draftKey = pluginSecretDraftKey(pluginID: pluginID, key: key)
+        return Binding(
+            get: { pluginSecretDrafts[draftKey] ?? "" },
+            set: { pluginSecretDrafts[draftKey] = $0 }
+        )
+    }
+
+    private func pluginSecretDraftKey(pluginID: String, key: String) -> String {
+        "\(pluginID).\(key)"
     }
 }
 

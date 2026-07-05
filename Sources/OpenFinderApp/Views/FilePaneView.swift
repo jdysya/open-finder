@@ -13,6 +13,7 @@ struct FilePaneView: View {
             pathBar
             FileTableRepresentable(
                 items: pane.visibleItems,
+                directorySizeText: pane.directorySizeText,
                 selection: $pane.selection,
                 onOpen: { pane.open($0) },
                 onActivate: { app.activePane = pane.id },
@@ -67,19 +68,6 @@ struct FilePaneView: View {
                     .textSelection(.enabled)
                 Spacer()
                 if pane.isLoading { ProgressView().controlSize(.small) }
-                Menu("Plugins") {
-                    let actions = app.pluginActions(for: pane.selectedItems)
-                    if actions.isEmpty {
-                        Text("No matching actions")
-                    } else {
-                        ForEach(actions, id: \.1.id) { plugin, action in
-                            Button("\(plugin.manifest.name): \(action.title)") {
-                                app.runPlugin(plugin, action: action, items: pane.selectedItems, pane: pane)
-                            }
-                        }
-                    }
-                }
-                .disabled(pane.selectedItems.isEmpty)
             }
             HStack {
                 Image(systemName: "line.3.horizontal.decrease.circle")

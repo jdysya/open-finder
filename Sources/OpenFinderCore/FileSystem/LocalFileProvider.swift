@@ -50,6 +50,34 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
+    public func directorySize(at location: Location) async throws -> Int64 {
+        try await Self.runFileIO {
+            let root = try localURL(for: location)
+            let values = try root.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            guard values.isDirectory == true else {
+                return Int64(values.fileSize ?? 0)
+            }
+
+            var total: Int64 = 0
+            let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: keys,
+                options: [],
+                errorHandler: { _, _ in true }
+            ) else {
+                return 0
+            }
+
+            for case let url as URL in enumerator {
+                guard let itemValues = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+                if itemValues.isDirectory == true { continue }
+                total += Int64(itemValues.fileSize ?? 0)
+            }
+            return total
+        }
+    }
+
     public func createFolder(at location: Location, name: String) async throws {
         try await Self.runFileIO {
             let destination = try childURL(parent: localURL(for: location), name: name)

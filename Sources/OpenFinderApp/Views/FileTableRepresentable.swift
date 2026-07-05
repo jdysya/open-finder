@@ -23,6 +23,7 @@ enum FileTableAction {
 
 struct FileTableRepresentable: NSViewRepresentable {
     var items: [FileItem]
+    var directorySizeText: [String: String]
     @Binding var selection: Set<String>
     var onOpen: (FileItem) -> Void
     var onActivate: () -> Void
@@ -74,8 +75,9 @@ struct FileTableRepresentable: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let table = scrollView.documentView as? NSTableView else { return }
-        if context.coordinator.lastRenderedItems != items {
+        if context.coordinator.lastRenderedItems != items || context.coordinator.lastRenderedDirectorySizeText != directorySizeText {
             context.coordinator.lastRenderedItems = items
+            context.coordinator.lastRenderedDirectorySizeText = directorySizeText
             table.reloadData()
         }
         let indexes = IndexSet(items.enumerated().compactMap { offset, item in selection.contains(item.id) ? offset : nil })
@@ -95,12 +97,8 @@ struct FileTableRepresentable: NSViewRepresentable {
         var parent: FileTableRepresentable
         weak var tableView: NSTableView?
         var lastRenderedItems: [FileItem] = []
+        var lastRenderedDirectorySizeText: [String: String] = [:]
         private var isSyncingSelection = false
-        private let byteFormatter: ByteCountFormatter = {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            return formatter
-        }()
         private let dateFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
@@ -131,19 +129,47 @@ struct FileTableRepresentable: NSViewRepresentable {
             if cell.textField == nil {
                 cell.addSubview(textField)
                 cell.textField = textField
-                NSLayoutConstraint.activate([
-                    textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
-                    textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
-                    textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-                ])
+                if tableColumn.identifier.rawValue == "name" {
+                    let imageView = NSImageView()
+                    imageView.translatesAutoresizingMaskIntoConstraints = false
+                    imageView.imageScaling = .scaleProportionallyDown
+                    cell.addSubview(imageView)
+                    cell.imageView = imageView
+                    NSLayoutConstraint.activate([
+                        imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                        imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        imageView.widthAnchor.constraint(equalToConstant: 18),
+                        imageView.heightAnchor.constraint(equalToConstant: 18),
+                        textField.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 7),
+                        textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+                        textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+                    ])
+                } else {
+                    NSLayoutConstraint.activate([
+                        textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                        textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+                        textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+                    ])
+                }
             }
             switch tableColumn.identifier.rawValue {
             case "name":
-                textField.stringValue = (item.isDirectory ? "📁 " : "📄 ") + item.name
+                let descriptor = FileIconDescriptor.descriptor(for: item)
+                cell.imageView?.image = NSImage(systemSymbolName: descriptor.systemImageName, accessibilityDescription: item.kind.rawValue)
+                cell.imageView?.contentTintColor = descriptor.tintColor
+                textField.stringValue = item.name
             case "kind":
                 textField.stringValue = item.kind.rawValue
             case "size":
-                textField.stringValue = item.kind == .directory ? "—" : item.size.map { byteFormatter.string(fromByteCount: $0) } ?? "—"
+                if item.isDirectory {
+                    if let text = parent.directorySizeText[item.id] {
+                        textField.stringValue = text
+                    } else {
+                        textField.stringValue = item.localURL == nil ? "—" : "计算中…"
+                    }
+                } else {
+                    textField.stringValue = item.size.map { FileSizeFormatter.openFinderString(fromByteCount: $0) } ?? "—"
+                }
             case "modified":
                 textField.stringValue = item.modificationDate.map { dateFormatter.string(from: $0) } ?? "—"
             default:

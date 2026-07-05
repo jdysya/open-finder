@@ -62,6 +62,34 @@ final class PluginSystemTests: XCTestCase {
         XCTAssertTrue(failure.isFailureResult)
     }
 
+    func testResolvesPluginConfigurationFromSavedValuesAndDefaults() {
+        let manifest = PluginManifest(
+            schemaVersion: 1,
+            id: "dev.openfinder.test.config",
+            name: "Config",
+            version: "0.1.0",
+            description: nil,
+            author: nil,
+            runtime: .shell,
+            entry: "run.sh",
+            actions: [],
+            permissions: .init(readFiles: "selected", writeFiles: "none", network: .init(), clipboardWrite: false, clipboardRead: false, keychainSecrets: ["apiToken"], remoteAccounts: false, runExternalCommands: false),
+            configuration: [
+                .init(key: "quality", type: "string", title: "Quality", defaultValue: "80"),
+                .init(key: "endpoint", type: "url", title: "Endpoint")
+            ]
+        )
+
+        let resolved = PluginConfigurationResolver.resolve(
+            manifest: manifest,
+            values: ["endpoint": "https://example.test/upload"],
+            secretReferences: ["apiToken": "plugin.dev.openfinder.test.config.apiToken"]
+        )
+
+        XCTAssertEqual(resolved.config, ["quality": "80", "endpoint": "https://example.test/upload"])
+        XCTAssertEqual(resolved.secrets["apiToken"]?.env, "plugin.dev.openfinder.test.config.apiToken")
+    }
+
     func testRunsShellPluginWithStructuredInputAndEvents() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderPluginTests-").appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
