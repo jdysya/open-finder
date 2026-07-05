@@ -1,225 +1,397 @@
+import AppKit
 import OpenFinderCore
 import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var selectedSettingsSection: SettingsSection? = .general
     @State private var webDAVName = ""
     @State private var webDAVBaseURL = "https://example.com/dav/"
     @State private var webDAVUsername = ""
     @State private var webDAVPassword = ""
     @State private var allowInsecureHTTP = false
+    @State private var pluginSearchText = ""
     @State private var pluginSecretDrafts: [String: String] = [:]
-    @State private var selectedPluginID: String?
+    @State private var configuringPlugin: LoadedPlugin?
 
     var body: some View {
-        TabView {
-            Form {
-                Toggle("Show hidden files by default", isOn: $app.configuration.defaultShowHiddenFiles)
-                Toggle("Confirm before permanent delete", isOn: $app.configuration.confirmBeforePermanentDelete)
-                Stepper("Max concurrent tasks: \(app.configuration.maxConcurrentTasks)", value: $app.configuration.maxConcurrentTasks, in: 1...8)
-                TextField("Python 3 path", text: Binding($app.configuration.python3Path, replacingNilWith: ""))
-                TextField("Node path", text: Binding($app.configuration.nodePath, replacingNilWith: ""))
+        NavigationSplitView {
+            settingsSidebar
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        } detail: {
+            settingsDetail
+        }
+        .frame(width: 920, height: 620)
+        .sheet(item: $configuringPlugin) { plugin in
+            pluginConfigurationDialog(plugin)
+        }
+    }
+
+    private var settingsSidebar: some View {
+        List(selection: $selectedSettingsSection) {
+            Section("Settings") {
+                ForEach(SettingsSection.primarySections) { section in
+                    SettingsSidebarRow(section: section)
+                        .tag(section)
+                }
             }
-            .padding()
-            .tabItem { Label("Runtimes", systemImage: "terminal") }
 
-            pluginSettingsTab
-            .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
+            Section("Connections") {
+                SettingsSidebarRow(section: .webDAV)
+                    .tag(SettingsSection.webDAV)
+            }
+        }
+        .listStyle(.sidebar)
+    }
 
+    @ViewBuilder
+    private var settingsDetail: some View {
+        switch selectedSettingsSection ?? .general {
+        case .general:
+            generalSettingsPage
+        case .plugins:
+            pluginSettingsPage
+        case .webDAV:
+            webDAVSettingsPage
+        }
+    }
+
+    private var generalSettingsPage: some View {
+        settingsPage(title: "General", subtitle: "Application behavior and runtime paths.", systemImage: "gearshape") {
+            settingsCard(title: "Behavior", systemImage: "switch.2") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Show hidden files by default", isOn: $app.configuration.defaultShowHiddenFiles)
+                    Toggle("Confirm before permanent delete", isOn: $app.configuration.confirmBeforePermanentDelete)
+                    Stepper("Max concurrent tasks: \(app.configuration.maxConcurrentTasks)", value: $app.configuration.maxConcurrentTasks, in: 1...8)
+                }
+            }
+
+            settingsCard(title: "Runtime Paths", systemImage: "terminal") {
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                    GridRow {
+                        Text("Python 3")
+                            .foregroundStyle(.secondary)
+                        TextField("Use system python3", text: Binding($app.configuration.python3Path, replacingNilWith: ""))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                    GridRow {
+                        Text("Node")
+                            .foregroundStyle(.secondary)
+                        TextField("Use system node", text: Binding($app.configuration.nodePath, replacingNilWith: ""))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    private var pluginSettingsPage: some View {
+        settingsPage(title: "Plugins", subtitle: "Installed plugin actions appear in file context menus when their selection rules match.", systemImage: "puzzlepiece.extension") {
             VStack(alignment: .leading, spacing: 12) {
-                Form {
-                    TextField("Display name", text: $webDAVName)
-                    TextField("Base URL", text: $webDAVBaseURL)
-                    TextField("Username", text: $webDAVUsername)
-                    SecureField("Password / token", text: $webDAVPassword)
-                    Toggle("Allow insecure HTTP for local development", isOn: $allowInsecureHTTP)
-                    Button("Add WebDAV Account") {
-                        app.addWebDAVAccount(
-                            name: webDAVName,
-                            baseURL: webDAVBaseURL,
-                            username: webDAVUsername,
-                            password: webDAVPassword,
-                            allowInsecureHTTP: allowInsecureHTTP
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("Search installed plugins…", text: $pluginSearchText)
+                            .textFieldStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(.separator.opacity(0.65), lineWidth: 1)
+                    }
+
+                    Button {
+                        app.loadPlugins()
+                    } label: {
+                        Label("Rescan", systemImage: "arrow.clockwise")
+                    }
+
+                    Button {
+                        openApplicationPluginsFolder()
+                    } label: {
+                        Label("Open Folder", systemImage: "folder")
+                    }
+                }
+
+                settingsCard(title: "Installed Plugins", systemImage: "list.bullet.rectangle") {
+                    if app.loadedPlugins.isEmpty {
+                        ContentUnavailableView(
+                            "No Plugins Loaded",
+                            systemImage: "puzzlepiece.extension",
+                            description: Text("Install plugins, then rescan this page.")
                         )
-                        webDAVPassword = ""
-                    }
-                }
-                Divider()
-                Text("Accounts")
-                    .font(.headline)
-                List(app.webDAVAccounts) { account in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(account.name)
-                            Text(account.baseURL?.absoluteString ?? "No URL")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                    } else if filteredPlugins.isEmpty {
+                        ContentUnavailableView.search(text: pluginSearchText)
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(filteredPlugins.enumerated()), id: \.element.id) { index, plugin in
+                                PluginListRow(
+                                    plugin: plugin,
+                                    configurationSummary: pluginConfigurationSummary(plugin),
+                                    onConfigure: { configuringPlugin = plugin },
+                                    onReveal: { revealPluginDirectory(plugin) }
+                                )
+                                if index < filteredPlugins.count - 1 {
+                                    Divider()
+                                        .padding(.leading, 46)
+                                }
+                            }
                         }
-                        Spacer()
-                        Button("Open") { app.openWebDAVAccountInActivePane(account) }
-                        Button("Remove", role: .destructive) { app.removeWebDAVAccount(account) }
                     }
                 }
             }
-            .padding()
-            .tabItem { Label("WebDAV", systemImage: "externaldrive.connected.to.line.below") }
         }
-        .frame(width: 760, height: 520)
     }
 
-    private var selectedPlugin: LoadedPlugin? {
-        if let selectedPluginID, let plugin = app.loadedPlugins.first(where: { $0.id == selectedPluginID }) {
-            return plugin
-        }
-        return app.loadedPlugins.first
-    }
+    private var webDAVSettingsPage: some View {
+        settingsPage(title: "WebDAV", subtitle: "Add remote accounts and open them in the active pane.", systemImage: "externaldrive.connected.to.line.below") {
+            settingsCard(title: "Add Account", systemImage: "plus.circle") {
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                    GridRow {
+                        Text("Display name")
+                            .foregroundStyle(.secondary)
+                        TextField("My WebDAV", text: $webDAVName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                    GridRow {
+                        Text("Base URL")
+                            .foregroundStyle(.secondary)
+                        TextField("https://example.com/dav/", text: $webDAVBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                    GridRow {
+                        Text("Username")
+                            .foregroundStyle(.secondary)
+                        TextField("Username", text: $webDAVUsername)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                    GridRow {
+                        Text("Password / token")
+                            .foregroundStyle(.secondary)
+                        SecureField("Password / token", text: $webDAVPassword)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 420)
+                    }
+                }
+                .font(.callout)
 
-    private var pluginSettingsTab: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Plugins")
-                        .font(.headline)
-                    Text("Configure global plugin parameters here; matching actions appear in the file context menu.")
-                        .font(.caption)
+                Toggle("Allow insecure HTTP for local development", isOn: $allowInsecureHTTP)
+
+                Button("Add WebDAV Account") {
+                    app.addWebDAVAccount(
+                        name: webDAVName,
+                        baseURL: webDAVBaseURL,
+                        username: webDAVUsername,
+                        password: webDAVPassword,
+                        allowInsecureHTTP: allowInsecureHTTP
+                    )
+                    webDAVPassword = ""
+                }
+            }
+
+            settingsCard(title: "Accounts", systemImage: "externaldrive") {
+                if app.webDAVAccounts.isEmpty {
+                    Text("No WebDAV accounts configured.")
                         .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Rescan") {
-                    app.loadPlugins()
-                    selectFirstPluginIfNeeded()
-                }
-            }
-            .padding([.horizontal, .top], 14)
-            .padding(.bottom, 8)
-
-            NavigationSplitView {
-                List(selection: $selectedPluginID) {
-                    ForEach(app.loadedPlugins) { plugin in
-                        PluginListRow(plugin: plugin)
-                            .tag(plugin.id)
-                    }
-                }
-                .navigationSplitViewColumnWidth(min: 210, ideal: 230)
-            } detail: {
-                if let plugin = selectedPlugin {
-                    pluginDetail(plugin)
                 } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "puzzlepiece.extension")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("No Plugins Loaded")
-                            .font(.headline)
-                        Text("Install or rescan plugins to configure them.")
-                            .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        ForEach(Array(app.webDAVAccounts.enumerated()), id: \.element.id) { index, account in
+                            HStack(spacing: 12) {
+                                Image(systemName: "server.rack")
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(account.name)
+                                        .font(.headline)
+                                    Text(account.baseURL?.absoluteString ?? "No URL")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("Open") { app.openWebDAVAccountInActivePane(account) }
+                                Button("Remove", role: .destructive) { app.removeWebDAVAccount(account) }
+                            }
+                            .padding(.vertical, 9)
+                            if index < app.webDAVAccounts.count - 1 {
+                                Divider()
+                                    .padding(.leading, 36)
+                            }
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
-        .onAppear { selectFirstPluginIfNeeded() }
-        .onChange(of: app.loadedPlugins) { _, _ in selectFirstPluginIfNeeded() }
     }
 
-    private func selectFirstPluginIfNeeded() {
-        guard selectedPluginID == nil || !app.loadedPlugins.contains(where: { $0.id == selectedPluginID }) else { return }
-        selectedPluginID = app.loadedPlugins.first?.id
-    }
-
-    private func pluginDetail(_ plugin: LoadedPlugin) -> some View {
+    private func settingsPage<Content: View>(title: String, subtitle: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "puzzlepiece.extension.fill")
-                        .font(.system(size: 34))
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(plugin.manifest.name)
-                            .font(.title3.weight(.semibold))
-                        Text(plugin.manifest.id)
-                            .font(.caption.monospaced())
+                        .frame(width: 34)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(title)
+                            .font(.title2.weight(.semibold))
+                        Text(subtitle)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
-                        if let description = plugin.manifest.description {
-                            Text(description)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     Spacer()
-                    Text("v\(plugin.manifest.version)")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.quaternary, in: Capsule())
                 }
-
-                settingsCard(title: "Actions", systemImage: "cursorarrow.click") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(plugin.manifest.actions) { action in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(action.title)
-                                        .font(.headline)
-                                    Spacer()
-                                    if let category = action.category {
-                                        Text(category)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 7)
-                                            .padding(.vertical, 3)
-                                            .background(.quaternary, in: Capsule())
-                                    }
-                                }
-                                Text(selectionSummary(action.selection))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(matchSummary(action.match))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if action.id != plugin.manifest.actions.last?.id {
-                                Divider()
-                            }
-                        }
-                    }
-                }
-
-                settingsCard(title: "Configuration", systemImage: "slider.horizontal.3") {
-                    pluginConfigurationSection(plugin)
-                }
-
-                settingsCard(title: "Permissions", systemImage: "lock.shield") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(permissionRows(plugin.manifest.permissions), id: \.self) { row in
-                            Label(row, systemImage: "checkmark.circle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                settingsCard(title: "Location", systemImage: "folder") {
-                    Text(plugin.directory.path)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .foregroundStyle(.secondary)
-                }
+                content()
             }
-            .padding(16)
+            .padding(24)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(.regularMaterial)
     }
 
     private func settingsCard<Content: View>(title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Label(title, systemImage: systemImage)
                 .font(.headline)
             content()
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var filteredPlugins: [LoadedPlugin] {
+        let query = pluginSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return app.loadedPlugins }
+        return app.loadedPlugins.filter { plugin in
+            plugin.manifest.name.localizedCaseInsensitiveContains(query)
+                || plugin.manifest.id.localizedCaseInsensitiveContains(query)
+                || (plugin.manifest.description?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    private func pluginConfigurationSummary(_ plugin: LoadedPlugin) -> String {
+        let count = plugin.manifest.configuration.count + plugin.manifest.permissions.keychainSecrets.count
+        return count == 0 ? "No configuration" : "\(count) configurable item\(count == 1 ? "" : "s")"
+    }
+
+    private func openApplicationPluginsFolder() {
+        let url = AppModel.applicationSupportDirectory().appendingPathComponent("Plugins", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
+    private func revealPluginDirectory(_ plugin: LoadedPlugin) {
+        NSWorkspace.shared.activateFileViewerSelecting([plugin.directory])
+    }
+
+    private func pluginConfigurationDialog(_ plugin: LoadedPlugin) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 38)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(plugin.manifest.name)
+                        .font(.title3.weight(.semibold))
+                    Text(plugin.manifest.id)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    if let description = plugin.manifest.description {
+                        Text(description)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text("v\(plugin.manifest.version)")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.quaternary, in: Capsule())
+                Button("Done") { configuringPlugin = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    settingsCard(title: "Configuration", systemImage: "slider.horizontal.3") {
+                        pluginConfigurationSection(plugin)
+                    }
+
+                    settingsCard(title: "Actions", systemImage: "cursorarrow.click") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(plugin.manifest.actions) { action in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(action.title)
+                                            .font(.headline)
+                                        Spacer()
+                                        if let category = action.category {
+                                            Text(category)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 7)
+                                                .padding(.vertical, 3)
+                                                .background(.quaternary, in: Capsule())
+                                        }
+                                    }
+                                    Text(selectionSummary(action.selection))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(matchSummary(action.match))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if action.id != plugin.manifest.actions.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+
+                    settingsCard(title: "Permissions", systemImage: "lock.shield") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(permissionRows(plugin.manifest.permissions), id: \.self) { row in
+                                Label(row, systemImage: "checkmark.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    settingsCard(title: "Location", systemImage: "folder") {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(plugin.directory.path)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            Spacer()
+                            Button("Reveal") { revealPluginDirectory(plugin) }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .frame(width: 680, height: 620)
     }
 
     @ViewBuilder
@@ -229,10 +401,17 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 9) {
                 ForEach(plugin.manifest.configuration, id: \.key) { field in
                     GridRow {
-                        Text(field.title)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(field.title)
+                            if field.required {
+                                Text("Required")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         pluginConfigControl(plugin: plugin, field: field)
                     }
                 }
@@ -243,7 +422,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            .font(.caption)
+            .font(.callout)
         }
     }
 
@@ -256,7 +435,7 @@ struct SettingsView: View {
                 }
             }
             .labelsHidden()
-            .frame(maxWidth: 280)
+            .frame(maxWidth: 320)
         } else if field.type == "bool" || field.type == "boolean" {
             Toggle("", isOn: Binding(
                 get: { pluginConfigBinding(plugin: plugin, field: field).wrappedValue == "true" },
@@ -266,7 +445,7 @@ struct SettingsView: View {
         } else {
             TextField(field.defaultValue ?? "", text: pluginConfigBinding(plugin: plugin, field: field))
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 280)
+                .frame(maxWidth: 320)
         }
     }
 
@@ -277,7 +456,7 @@ struct SettingsView: View {
                 text: pluginSecretDraftBinding(pluginID: plugin.id, key: key)
             )
             .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 220)
+            .frame(maxWidth: 250)
             Button("Save") {
                 app.setPluginSecret(pluginSecretDrafts[pluginSecretDraftKey(pluginID: plugin.id, key: key)] ?? "", pluginID: plugin.id, key: key)
                 pluginSecretDrafts[pluginSecretDraftKey(pluginID: plugin.id, key: key)] = ""
@@ -357,23 +536,95 @@ struct SettingsView: View {
     }
 }
 
-private struct PluginListRow: View {
-    let plugin: LoadedPlugin
+private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+    case general
+    case plugins
+    case webDAV
+
+    static let primarySections: [SettingsSection] = [.general, .plugins]
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .plugins: "Plugins"
+        case .webDAV: "WebDAV"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .plugins: "puzzlepiece.extension"
+        case .webDAV: "externaldrive.connected.to.line.below"
+        }
+    }
+}
+
+private struct SettingsSidebarRow: View {
+    let section: SettingsSection
 
     var body: some View {
-        HStack(spacing: 9) {
+        Label(section.title, systemImage: section.systemImage)
+            .labelStyle(.titleAndIcon)
+    }
+}
+
+private struct PluginListRow: View {
+    let plugin: LoadedPlugin
+    let configurationSummary: String
+    let onConfigure: () -> Void
+    let onReveal: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
             Image(systemName: "puzzlepiece.extension.fill")
+                .font(.title3)
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(plugin.manifest.name)
-                    .lineLimit(1)
-                Text("\(plugin.manifest.actions.count) action(s)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .frame(width: 30)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(plugin.manifest.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text("v\(plugin.manifest.version)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+                if let description = plugin.manifest.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 10) {
+                    Text("\(plugin.manifest.actions.count) action\(plugin.manifest.actions.count == 1 ? "" : "s")")
+                    Text(configurationSummary)
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 16)
+
+            Button {
+                onConfigure()
+            } label: {
+                Label("Configure", systemImage: "gearshape")
+            }
+
+            Button {
+                onReveal()
+            } label: {
+                Label("Reveal", systemImage: "folder")
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 11)
     }
 }
 
