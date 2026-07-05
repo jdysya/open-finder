@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.plugins.copy-markdown-image",
+  "name": "Copy Markdown Image Link",
+  "version": "0.1.0",
+  "description": "Creates Markdown image references for selected local images.",
+  "author": "OpenFinder",
+  "runtime": { "type": "python3", "minimumVersion": "3.9" },
+  "entry": "copy_markdown_image.py",
+  "actions": [
+    {
+      "id": "copy-markdown-image",
+      "title": "Copy Markdown Image Link",
+      "category": "Markdown",
+      "selection": { "minItems": 1, "maxItems": 50, "allowDirectories": false },
+      "match": {
+        "extensions": ["png", "jpg", "jpeg", "gif", "webp", "svg"],
+        "uttypes": ["public.image"],
+        "mimePrefixes": ["image/"],
+        "matchMode": "all"
+      },
+      "output": { "resultType": "markdownLinks", "canCopyToClipboard": true }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "none",
+    "network": { "required": false, "hosts": [] },
+    "clipboardWrite": true,
+    "clipboardRead": false,
+    "keychainSecrets": [],
+    "remoteAccounts": false,
+    "runExternalCommands": false
+  },
+  "configuration": []
+}

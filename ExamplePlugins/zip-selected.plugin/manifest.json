@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.plugins.zip-selected",
+  "name": "Zip Selected Files",
+  "version": "0.1.0",
+  "description": "Creates a zip archive in the task output directory.",
+  "author": "OpenFinder",
+  "runtime": { "type": "python3", "minimumVersion": "3.9" },
+  "entry": "zip_selected.py",
+  "actions": [
+    {
+      "id": "zip-selected",
+      "title": "Zip Selected Files",
+      "category": "Archive",
+      "selection": { "minItems": 1, "maxItems": 100, "allowDirectories": true },
+      "match": null,
+      "output": { "resultType": "archive", "canCopyToClipboard": true }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "taskOutput",
+    "network": { "required": false, "hosts": [] },
+    "clipboardWrite": true,
+    "clipboardRead": false,
+    "keychainSecrets": [],
+    "remoteAccounts": false,
+    "runExternalCommands": false
+  },
+  "configuration": []
+}

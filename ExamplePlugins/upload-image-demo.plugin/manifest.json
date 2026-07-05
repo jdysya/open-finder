@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.plugins.upload-image-demo",
+  "name": "Upload Image Demo",
+  "version": "0.1.0",
+  "description": "Demo uploader that emits deterministic Markdown links without contacting a real service.",
+  "author": "OpenFinder",
+  "runtime": { "type": "python3", "minimumVersion": "3.9" },
+  "entry": "upload_demo.py",
+  "actions": [
+    {
+      "id": "upload-image-demo",
+      "title": "Upload Image Demo",
+      "category": "Upload",
+      "selection": { "minItems": 1, "maxItems": 20, "allowDirectories": false },
+      "match": {
+        "extensions": ["png", "jpg", "jpeg", "gif", "webp"],
+        "uttypes": ["public.image"],
+        "mimePrefixes": ["image/"],
+        "matchMode": "all"
+      },
+      "output": { "resultType": "markdownLinks", "canCopyToClipboard": true }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "none",
+    "network": { "required": true, "hosts": ["example.invalid"] },
+    "clipboardWrite": true,
+    "clipboardRead": false,
+    "keychainSecrets": ["apiToken"],
+    "remoteAccounts": false,
+    "runExternalCommands": false
+  },
+  "configuration": []
+}

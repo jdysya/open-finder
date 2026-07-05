@@ -1,0 +1,689 @@
+import AppKit
+import Foundation
+import OpenFinderCore
+import SwiftUI
+
+@MainActor
+final class AppModel: ObservableObject {
+    enum PaneID: String {
+        case left
+        case right
+    }
+
+    @Published var leftPane: BrowserPaneModel
+    @Published var rightPane: BrowserPaneModel
+    @Published var activePane: PaneID = .left
+    @Published var taskRecords: [TaskRecord] = []
+    @Published var taskLogs: [UUID: [TaskLogLine]] = [:]
+    @Published var loadedPlugins: [LoadedPlugin] = []
+    @Published var webDAVAccounts: [RemoteAccount] = []
+    @Published var statusMessage: String = "Ready"
+    @Published var configuration = AppConfiguration()
+
+    let taskQueue: TaskQueueService
+    private let remoteDirectory: RemoteAccountDirectory
+    private let keychainStore: KeychainStore
+    private let pluginRegistry = PluginRegistry()
+    private var taskPollingTask: Task<Void, Never>?
+
+    init() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let remoteDirectory = RemoteAccountDirectory(storageURL: Self.applicationSupportDirectory().appendingPathComponent("remote-accounts.json"))
+        let keychainStore: KeychainStore = MacKeychainStore()
+        self.remoteDirectory = remoteDirectory
+        self.keychainStore = keychainStore
+        self.taskQueue = TaskQueueService(maxConcurrentTasks: 2)
+        self.leftPane = BrowserPaneModel(id: .left, location: .local(path: home.path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+        self.rightPane = BrowserPaneModel(id: .right, location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+        Task {
+            await loadInitialState()
+        }
+        startTaskPolling()
+    }
+
+    var activeBrowser: BrowserPaneModel { activePane == .left ? leftPane : rightPane }
+    var inactiveBrowser: BrowserPaneModel { activePane == .left ? rightPane : leftPane }
+
+    func loadInitialState() async {
+        await leftPane.refresh()
+        await rightPane.refresh()
+        loadPlugins()
+        webDAVAccounts = remoteDirectory.all()
+        await refreshTasks()
+    }
+
+    func loadPlugins() {
+        var plugins: [LoadedPlugin] = []
+        let projectPlugins = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("ExamplePlugins", isDirectory: true)
+        let bundledPlugins = Bundle.main.resourceURL?.appendingPathComponent("BuiltinPlugins", isDirectory: true)
+        let appSupportPlugins = Self.applicationSupportDirectory().appendingPathComponent("Plugins", isDirectory: true)
+        for directory in [projectPlugins, bundledPlugins, appSupportPlugins].compactMap({ $0 }) {
+            if let scanned = try? pluginRegistry.scan(directory: directory) {
+                plugins.append(contentsOf: scanned)
+            }
+        }
+        loadedPlugins = Array(Dictionary(grouping: plugins, by: \.id).compactMap { $0.value.first })
+    }
+
+    func pluginActions(for items: [FileItem]) -> [(LoadedPlugin, PluginActionManifest)] {
+        loadedPlugins.flatMap { plugin in
+            PluginMatcher.actions(in: plugin.manifest, matching: items).map { (plugin, $0) }
+        }
+    }
+
+    func runPlugin(_ plugin: LoadedPlugin, action: PluginActionManifest, items: [FileItem], pane: BrowserPaneModel) {
+        Task {
+            let taskID = UUID()
+            let tempDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("OpenFinderTasks", isDirectory: true)
+                .appendingPathComponent(taskID.uuidString, isDirectory: true)
+            let outputDirectory = tempDirectory.appendingPathComponent("output", isDirectory: true)
+            try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            let input = PluginInput(
+                schemaVersion: 1,
+                taskID: taskID,
+                actionID: action.id,
+                app: .init(name: "OpenFinder", version: "0.1.0"),
+                context: .init(activePane: pane.id.rawValue, currentLocation: pane.location),
+                files: items.map(PluginInputFile.init(item:)),
+                config: [:],
+                secrets: [:],
+                tempDirectory: tempDirectory.path,
+                outputDirectory: outputDirectory.path
+            )
+            do {
+                let runner = ProcessPluginRunner(runtimePaths: .init(python3Path: configuration.python3Path, nodePath: configuration.nodePath))
+                let queuedID = try await taskQueue.enqueue(.init(kind: .plugin(pluginID: plugin.id, actionID: action.id), title: "\(plugin.manifest.name): \(action.title)") { context in
+                    await context.appendLog("Starting plugin \(plugin.manifest.name) / \(action.title)")
+                    let result = try await runner.run(.init(
+                        manifest: plugin.manifest,
+                        action: action,
+                        input: input,
+                        environment: [:],
+                        pluginDirectory: plugin.directory,
+                        workingDirectory: plugin.directory,
+                        onEvent: { event in
+                            Task {
+                                switch event {
+                                case .log(let level, let message):
+                                    await context.appendLog(message, level: level)
+                                case .progress(let fraction, let message):
+                                    await context.updateProgress(fraction, message)
+                                case .result(_, let message, _, _):
+                                    if let message { await context.appendLog(message) }
+                                }
+                            }
+                        }
+                    ))
+                    if result.exitCode != 0 {
+                        throw OpenFinderError.operationFailed(result.stderr.isEmpty ? "Plugin exited with \(result.exitCode)" : result.stderr)
+                    }
+                    if let failure = result.events.last(where: { $0.isFailureResult }) {
+                        throw OpenFinderError.operationFailed(failure.resultMessage ?? "Plugin reported failure")
+                    }
+                    return .success(summary: result.events.compactMap { event in
+                        if case .result(_, let message, _, _) = event { return message }
+                        return nil
+                    }.last ?? "Plugin completed", clipboard: result.events.compactMap(\.clipboardText).last)
+                })
+                statusMessage = "Queued plugin task \(queuedID.uuidString.prefix(8))"
+                await observeTask(queuedID)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func copySelectionToOtherPane(move: Bool) {
+        let source = activeBrowser
+        let destination = inactiveBrowser
+        let selected = source.selectedItems
+        guard !selected.isEmpty else { return }
+        Task {
+            do {
+                let title = move ? "Move \(selected.count) item(s)" : "Copy \(selected.count) item(s)"
+                let remoteDirectory = self.remoteDirectory
+                let keychainStore = self.keychainStore
+                let queuedID = try await taskQueue.enqueue(.init(kind: move ? .localMove : .localCopy, title: title) { context in
+                    await context.appendLog("\(title) to \(destination.location.displayPath)")
+                    try await FileTransferService.copyOrMove(
+                        selected,
+                        from: source.location,
+                        to: destination.location,
+                        move: move,
+                        remoteDirectory: remoteDirectory,
+                        keychainStore: keychainStore,
+                        progress: { fraction, message in
+                            Task { await context.updateProgress(fraction, message) }
+                        }
+                    )
+                    await context.updateProgress(1.0, "Finished")
+                    return .success(summary: title, clipboard: nil)
+                })
+                await observeTask(queuedID)
+                await source.refresh()
+                await destination.refresh()
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+
+    func addWebDAVAccount(name: String, baseURL: String, username: String, password: String, allowInsecureHTTP: Bool) {
+        do {
+            guard let url = URL(string: baseURL), url.scheme == "https" || (allowInsecureHTTP && url.scheme == "http") else {
+                throw OpenFinderError.operationFailed("Enter an HTTPS WebDAV URL, or explicitly allow insecure HTTP for development.")
+            }
+            let accountID = UUID()
+            let secretRef = "remote.webdav.\(accountID.uuidString).password"
+            if !password.isEmpty {
+                try keychainStore.setSecret(password, for: secretRef)
+            }
+            let account = RemoteAccount(
+                id: accountID,
+                name: name.isEmpty ? url.host(percentEncoded: false) ?? "WebDAV" : name,
+                provider: .webDAV,
+                baseURL: url,
+                username: username.isEmpty ? nil : username,
+                secretKeychainRef: password.isEmpty ? nil : secretRef,
+                options: allowInsecureHTTP ? ["allowInsecureHTTP": "true"] : [:]
+            )
+            remoteDirectory.save(account)
+            webDAVAccounts = remoteDirectory.all()
+            statusMessage = "Added WebDAV account \(account.name)"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func removeWebDAVAccount(_ account: RemoteAccount) {
+        do {
+            if let ref = account.secretKeychainRef { try keychainStore.deleteSecret(for: ref) }
+            remoteDirectory.remove(id: account.id)
+            webDAVAccounts = remoteDirectory.all()
+            statusMessage = "Removed WebDAV account \(account.name)"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func openWebDAVAccountInActivePane(_ account: RemoteAccount) {
+        Task {
+            await activeBrowser.navigate(to: .webDAV(accountID: account.id, path: "/"))
+        }
+    }
+
+    func refreshTasks() async {
+        let records = await taskQueue.history().sorted { $0.createdAt > $1.createdAt }
+        var logs: [UUID: [TaskLogLine]] = [:]
+        for record in records {
+            logs[record.id] = await taskQueue.logs(for: record.id)
+        }
+        taskRecords = records
+        taskLogs = logs
+    }
+
+    func cancelTask(_ id: UUID) {
+        Task {
+            await taskQueue.cancel(id)
+            statusMessage = "Cancelled task \(id.uuidString.prefix(8))"
+            await refreshTasks()
+        }
+    }
+
+    func retryTask(_ id: UUID) {
+        Task {
+            do {
+                let retryID = try await taskQueue.retry(id)
+                statusMessage = "Retried task \(retryID.uuidString.prefix(8))"
+                await refreshTasks()
+                await observeTask(retryID)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func copyLogs(for id: UUID) {
+        let text = (taskLogs[id] ?? []).map { line in
+            "[\(line.level)] \(line.message)"
+        }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        statusMessage = "Copied logs for \(id.uuidString.prefix(8))"
+    }
+
+    private func startTaskPolling() {
+        taskPollingTask?.cancel()
+        taskPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshTasks()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+    }
+
+    func observeTask(_ id: UUID) async {
+        do {
+            let record = try await taskQueue.waitForTerminalStatus(id, timeout: 86_400)
+            if let clipboard = record.clipboardText {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(clipboard, forType: .string)
+            }
+            await refreshTasks()
+        } catch {
+            statusMessage = error.localizedDescription
+            await refreshTasks()
+        }
+    }
+
+    func revealSelectedInFinder() {
+        activeBrowser.revealSelectedInFinder()
+    }
+
+    func openSelectedInTerminal() {
+        activeBrowser.openSelectedInTerminal()
+    }
+
+    func quickLookSelected() {
+        activeBrowser.quickLookSelected()
+    }
+
+    static func applicationSupportDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser
+        return base.appendingPathComponent("OpenFinder", isDirectory: true)
+    }
+}
+
+struct PendingDeletion: Identifiable {
+    let id = UUID()
+    let items: [FileItem]
+}
+
+@MainActor
+final class BrowserPaneModel: ObservableObject, Identifiable {
+    let id: AppModel.PaneID
+    @Published var location: Location
+    @Published var items: [FileItem] = []
+    @Published var selection: Set<String> = []
+    @Published var filterText: String = ""
+    @Published var showHiddenFiles: Bool = false
+    @Published var isLoading: Bool = false
+    @Published var errorMessage: String?
+    @Published var pendingDeletion: PendingDeletion?
+    @Published private(set) var history: [Location]
+    @Published private(set) var historyIndex: Int = 0
+
+    private let provider = LocalFileProvider()
+    private let remoteDirectory: RemoteAccountDirectory
+    private let keychainStore: KeychainStore
+
+    init(id: AppModel.PaneID, location: Location, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) {
+        self.id = id
+        self.location = location
+        self.history = [location]
+        self.remoteDirectory = remoteDirectory
+        self.keychainStore = keychainStore
+    }
+
+    var visibleItems: [FileItem] {
+        FileBrowserFilter.apply(items, text: filterText)
+    }
+
+    var selectedItems: [FileItem] {
+        items.filter { selection.contains($0.id) }
+    }
+
+    var hasRemoteSelection: Bool {
+        selectedItems.contains { item in
+            if case .local = item.location { return false }
+            return true
+        }
+    }
+
+    var canGoBack: Bool { historyIndex > 0 }
+    var canGoForward: Bool { historyIndex + 1 < history.count }
+
+    func refresh() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            items = try await listItems(at: location)
+            selection.formIntersection(Set(items.map(\.id)))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    func navigate(to newLocation: Location, recordHistory: Bool = true) async {
+        location = newLocation
+        selection = []
+        if recordHistory {
+            if historyIndex + 1 < history.count { history.removeSubrange((historyIndex + 1)..<history.count) }
+            history.append(newLocation)
+            historyIndex = history.count - 1
+        }
+        await refresh()
+    }
+
+    func open(_ item: FileItem) {
+        if item.isDirectory {
+            Task { await navigate(to: item.location) }
+        } else if let url = item.localURL {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func goBack() {
+        guard canGoBack else { return }
+        historyIndex -= 1
+        Task { await navigate(to: history[historyIndex], recordHistory: false) }
+    }
+
+    func goForward() {
+        guard canGoForward else { return }
+        historyIndex += 1
+        Task { await navigate(to: history[historyIndex], recordHistory: false) }
+    }
+
+    func goUp() {
+        switch location {
+        case .local:
+            guard let url = location.localURL else { return }
+            let parent = url.deletingLastPathComponent()
+            Task { await navigate(to: .local(path: parent.path)) }
+        case .webDAV(let accountID, let path):
+            let parent = Self.parentRemotePath(path)
+            Task { await navigate(to: .webDAV(accountID: accountID, path: parent)) }
+        case .rclone:
+            break
+        }
+    }
+
+    func toggleHidden() {
+        showHiddenFiles.toggle()
+        Task { await refresh() }
+    }
+
+    func createFolder() {
+        Task {
+            do {
+                switch location {
+                case .local:
+                    try await provider.createFolder(at: location, name: uniqueName(base: "New Folder"))
+                case .webDAV(let accountID, let path):
+                    let remote = try webDAVProvider(accountID: accountID)
+                    try await remote.mkdir(path: Self.childRemotePath(parent: path, name: "New Folder"))
+                case .rclone:
+                    throw OpenFinderError.unsupportedLocation(location)
+                }
+                await refresh()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func createFile() {
+        Task {
+            do {
+                switch location {
+                case .local:
+                    try await provider.createFile(at: location, name: uniqueName(base: "Untitled.txt"))
+                case .webDAV(let accountID, let path):
+                    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinder-empty-\(UUID().uuidString).txt")
+                    FileManager.default.createFile(atPath: temp.path, contents: Data())
+                    defer { try? FileManager.default.removeItem(at: temp) }
+                    let remote = try webDAVProvider(accountID: accountID)
+                    _ = try await remote.upload(localURL: temp, remotePath: Self.childRemotePath(parent: path, name: "Untitled.txt"))
+                case .rclone:
+                    throw OpenFinderError.unsupportedLocation(location)
+                }
+                await refresh()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func renameFirstSelected(to newName: String) {
+        guard let item = selectedItems.first else { return }
+        Task {
+            do {
+                switch item.location {
+                case .local:
+                    _ = try await provider.rename(item, to: newName)
+                case .webDAV(let accountID, let path):
+                    let remote = try webDAVProvider(accountID: accountID)
+                    try await remote.move(from: path, to: Self.childRemotePath(parent: Self.parentRemotePath(path), name: newName))
+                case .rclone:
+                    throw OpenFinderError.unsupportedLocation(item.location)
+                }
+                await refresh()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func trashSelected() {
+        let selected = selectedItems
+        guard !selected.isEmpty else { return }
+        if selected.contains(where: { item in if case .local = item.location { return false }; return true }) {
+            pendingDeletion = PendingDeletion(items: selected)
+            return
+        }
+        delete(selected)
+    }
+
+    func confirmPendingDeletion() {
+        guard let pending = pendingDeletion else { return }
+        pendingDeletion = nil
+        delete(pending.items)
+    }
+
+    func cancelPendingDeletion() {
+        pendingDeletion = nil
+    }
+
+    private func delete(_ selected: [FileItem]) {
+        Task {
+            do {
+                for item in selected {
+                    switch item.location {
+                    case .local:
+                        try await provider.trashOrDelete([item])
+                    case .webDAV(let accountID, let path):
+                        let remote = try webDAVProvider(accountID: accountID)
+                        try await remote.delete(path: path)
+                    case .rclone:
+                        throw OpenFinderError.unsupportedLocation(item.location)
+                    }
+                }
+                await refresh()
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func revealSelectedInFinder() {
+        let urls = selectedItems.compactMap(\.localURL)
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    func openSelectedInTerminal() {
+        let url = selectedItems.first?.localURL ?? location.localURL
+        guard let url else { return }
+        TerminalService.openTerminal(at: url.hasDirectoryPath ? url : url.deletingLastPathComponent())
+    }
+
+    func quickLookSelected() {
+        QuickLookBridge.preview(urls: selectedItems.compactMap(\.localURL))
+    }
+
+
+    private func listItems(at location: Location) async throws -> [FileItem] {
+        switch location {
+        case .local:
+            return try await provider.list(location, options: .init(showHiddenFiles: showHiddenFiles, sort: .name(ascending: true)))
+        case .webDAV(let accountID, let path):
+            let remote = try webDAVProvider(accountID: accountID)
+            let remoteItems = try await remote.list(path: path)
+            let fileItems = remoteItems.map { remoteItem in
+                FileItem(
+                    id: "webdav:\(accountID.uuidString):\(remoteItem.path)",
+                    name: remoteItem.name,
+                    location: .webDAV(accountID: accountID, path: remoteItem.path),
+                    kind: remoteItem.kind,
+                    size: remoteItem.size,
+                    modificationDate: remoteItem.modificationDate,
+                    creationDate: nil,
+                    uti: nil,
+                    mimeType: remoteItem.mimeType,
+                    fileExtension: URL(fileURLWithPath: remoteItem.name).pathExtension.isEmpty ? nil : URL(fileURLWithPath: remoteItem.name).pathExtension.lowercased(),
+                    isHidden: remoteItem.name.hasPrefix("."),
+                    isReadable: true,
+                    isWritable: true
+                )
+            }
+            return sortItems(fileItems)
+        case .rclone:
+            throw OpenFinderError.unsupportedLocation(location)
+        }
+    }
+
+    private func webDAVProvider(accountID: UUID) throws -> WebDAVProvider {
+        guard let account = remoteDirectory.account(id: accountID) else {
+            throw OpenFinderError.itemNotFound("WebDAV account \(accountID)")
+        }
+        return WebDAVProvider(account: account, credentialStore: keychainStore)
+    }
+
+    private func sortItems(_ items: [FileItem]) -> [FileItem] {
+        items.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private static func childRemotePath(parent: String, name: String) -> String {
+        let cleanParent = parent == "/" ? "" : parent.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return "/" + ([cleanParent, name].filter { !$0.isEmpty }.joined(separator: "/"))
+    }
+
+    private static func parentRemotePath(_ path: String) -> String {
+        let clean = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !clean.isEmpty else { return "/" }
+        let parts = clean.split(separator: "/").dropLast()
+        return parts.isEmpty ? "/" : "/" + parts.joined(separator: "/")
+    }
+
+    private func uniqueName(base: String) -> String {
+        guard let root = location.localURL else { return base }
+        let ext = URL(fileURLWithPath: base).pathExtension
+        let stem = ext.isEmpty ? base : String(base.dropLast(ext.count + 1))
+        var candidate = base
+        var index = 2
+        while FileManager.default.fileExists(atPath: root.appendingPathComponent(candidate).path) {
+            candidate = ext.isEmpty ? "\(stem) \(index)" : "\(stem) \(index).\(ext)"
+            index += 1
+        }
+        return candidate
+    }
+}
+
+
+final class RemoteAccountDirectory: @unchecked Sendable {
+    private let lock = NSLock()
+    private let storageURL: URL?
+    private var storage: [UUID: RemoteAccount] = [:]
+
+    init(storageURL: URL? = nil) {
+        self.storageURL = storageURL
+        if let storageURL,
+           let data = try? Data(contentsOf: storageURL),
+           let accounts = try? JSONDecoder.openFinder.decode([RemoteAccount].self, from: data) {
+            self.storage = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        }
+    }
+
+    func save(_ account: RemoteAccount) {
+        lock.lock(); defer { lock.unlock() }
+        storage[account.id] = account
+        persistLocked()
+    }
+
+    func account(id: UUID) -> RemoteAccount? {
+        lock.lock(); defer { lock.unlock() }
+        return storage[id]
+    }
+
+    func all() -> [RemoteAccount] {
+        lock.lock(); defer { lock.unlock() }
+        return storage.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func remove(id: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        storage.removeValue(forKey: id)
+        persistLocked()
+    }
+
+    private func persistLocked() {
+        guard let storageURL else { return }
+        do {
+            try FileManager.default.createDirectory(at: storageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let accounts = storage.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            try JSONEncoder.openFinder.encode(accounts).write(to: storageURL, options: .atomic)
+        } catch {
+            // Persistence failure should not crash browsing; the Settings status surface reports operational failures.
+        }
+    }
+}
+
+enum FileTransferService {
+    static func copyOrMove(_ items: [FileItem], from source: Location, to destination: Location, move: Bool, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore, progress: (@Sendable (Double, String) -> Void)? = nil) async throws {
+        switch (source, destination) {
+        case (.local, .local):
+            let provider = LocalFileProvider()
+            if move { _ = try await provider.move(items, to: destination) }
+            else { _ = try await provider.copy(items, to: destination) }
+        case (.local, .webDAV(let accountID, let remotePath)):
+            let remote = try webDAVProvider(accountID: accountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+            for (index, item) in items.enumerated() {
+                guard let url = item.localURL else { continue }
+                progress?(Double(index) / Double(max(items.count, 1)), "Uploading \(item.name)")
+                _ = try await remote.upload(localURL: url, remotePath: childRemotePath(parent: remotePath, name: item.name))
+            }
+            if move { try await LocalFileProvider().trashOrDelete(items) }
+        case (.webDAV(let accountID, _), .local):
+            guard let destinationURL = destination.localURL else { throw OpenFinderError.unsupportedLocation(destination) }
+            let remote = try webDAVProvider(accountID: accountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+            for (index, item) in items.enumerated() {
+                if case .webDAV(_, let itemPath) = item.location {
+                    progress?(Double(index) / Double(max(items.count, 1)), "Downloading \(item.name)")
+                    _ = try await remote.download(remotePath: itemPath, localURL: destinationURL.appendingPathComponent(item.name, isDirectory: false))
+                    if move { try await remote.delete(path: itemPath) }
+                }
+            }
+        case (.webDAV(let sourceAccountID, _), .webDAV(let destAccountID, let destPath)) where sourceAccountID == destAccountID:
+            let remote = try webDAVProvider(accountID: sourceAccountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+            for (index, item) in items.enumerated() {
+                if case .webDAV(_, let itemPath) = item.location {
+                    progress?(Double(index) / Double(max(items.count, 1)), "Transferring \(item.name)")
+                    let target = childRemotePath(parent: destPath, name: item.name)
+                    if move { try await remote.move(from: itemPath, to: target) }
+                    else { try await remote.copy(from: itemPath, to: target) }
+                }
+            }
+        default:
+            throw OpenFinderError.operationFailed("This transfer combination is not supported yet")
+        }
+    }
+
+    private static func webDAVProvider(accountID: UUID, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) throws -> WebDAVProvider {
+        guard let account = remoteDirectory.account(id: accountID) else { throw OpenFinderError.itemNotFound("WebDAV account \(accountID)") }
+        return WebDAVProvider(account: account, credentialStore: keychainStore)
+    }
+
+    private static func childRemotePath(parent: String, name: String) -> String {
+        let cleanParent = parent == "/" ? "" : parent.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return "/" + ([cleanParent, name].filter { !$0.isEmpty }.joined(separator: "/"))
+    }
+}

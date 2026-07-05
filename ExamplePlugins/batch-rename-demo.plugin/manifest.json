@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.plugins.batch-rename-demo",
+  "name": "Batch Rename Demo",
+  "version": "0.1.0",
+  "description": "Dry-run batch rename preview for selected files.",
+  "author": "OpenFinder",
+  "runtime": { "type": "python3", "minimumVersion": "3.9" },
+  "entry": "batch_rename_demo.py",
+  "actions": [
+    {
+      "id": "batch-rename-demo",
+      "title": "Batch Rename Preview",
+      "category": "Rename",
+      "selection": { "minItems": 1, "maxItems": 200, "allowDirectories": false },
+      "match": null,
+      "output": { "resultType": "text", "canCopyToClipboard": true }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "none",
+    "network": { "required": false, "hosts": [] },
+    "clipboardWrite": true,
+    "clipboardRead": false,
+    "keychainSecrets": [],
+    "remoteAccounts": false,
+    "runExternalCommands": false
+  },
+  "configuration": []
+}

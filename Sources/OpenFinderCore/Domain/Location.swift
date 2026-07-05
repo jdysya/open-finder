@@ -1,0 +1,52 @@
+import Foundation
+
+public enum Location: Hashable, Codable, Sendable {
+    case local(path: String)
+    case webDAV(accountID: UUID, path: String)
+    case rclone(remoteID: UUID, path: String)
+
+    private enum CodingKeys: String, CodingKey { case type, path, accountID, remoteID }
+    private enum Kind: String, Codable { case local, webDAV, rclone }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(Kind.self, forKey: .type)
+        switch type {
+        case .local:
+            self = .local(path: try container.decode(String.self, forKey: .path))
+        case .webDAV:
+            self = .webDAV(accountID: try container.decode(UUID.self, forKey: .accountID), path: try container.decode(String.self, forKey: .path))
+        case .rclone:
+            self = .rclone(remoteID: try container.decode(UUID.self, forKey: .remoteID), path: try container.decode(String.self, forKey: .path))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .local(let path):
+            try container.encode(Kind.local, forKey: .type)
+            try container.encode(path, forKey: .path)
+        case .webDAV(let accountID, let path):
+            try container.encode(Kind.webDAV, forKey: .type)
+            try container.encode(accountID, forKey: .accountID)
+            try container.encode(path, forKey: .path)
+        case .rclone(let remoteID, let path):
+            try container.encode(Kind.rclone, forKey: .type)
+            try container.encode(remoteID, forKey: .remoteID)
+            try container.encode(path, forKey: .path)
+        }
+    }
+
+    public var displayPath: String {
+        switch self {
+        case .local(let path): path
+        case .webDAV(_, let path): "webdav:\(path)"
+        case .rclone(_, let path): "rclone:\(path)"
+        }
+    }
+
+    public var localURL: URL? {
+        if case .local(let path) = self { URL(fileURLWithPath: path) } else { nil }
+    }
+}
