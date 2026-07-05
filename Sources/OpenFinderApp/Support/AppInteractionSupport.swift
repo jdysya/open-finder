@@ -34,6 +34,7 @@ enum FileTableKeyboardCommand: Equatable {
     case createFolder
     case copyToOtherPane
     case moveToOtherPane
+    case selectAll
 }
 
 enum FileTableKeyboardShortcut {
@@ -50,6 +51,7 @@ enum FileTableKeyboardShortcut {
             if characters == "[" { return .goBack }
             if characters == "]" { return .goForward }
             if keyCode == 126 { return .goUp }
+            if characters?.lowercased() == "a" { return .selectAll }
             if characters?.lowercased() == "r" { return .refresh }
             if characters?.lowercased() == "n" { return .createFile }
         }
@@ -62,6 +64,44 @@ enum FileTableKeyboardShortcut {
             if characters?.lowercased() == "v" { return .moveToOtherPane }
         }
         return nil
+    }
+}
+
+enum LocalPathCompletion {
+    static func resolvedPath(_ input: String, relativeTo baseURL: URL) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawPath: String
+        if trimmed.hasPrefix("~") {
+            rawPath = NSString(string: trimmed).expandingTildeInPath
+        } else if trimmed.hasPrefix("/") {
+            rawPath = trimmed
+        } else {
+            rawPath = baseURL.appendingPathComponent(trimmed).path
+        }
+        return URL(fileURLWithPath: rawPath).standardizedFileURL.path
+    }
+
+    static func suggestions(for input: String, relativeTo baseURL: URL, limit: Int = 6) -> [String] {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let resolved = resolvedPath(trimmed, relativeTo: baseURL)
+        let inputEndsWithSeparator = trimmed.hasSuffix("/")
+        let typedURL = URL(fileURLWithPath: resolved)
+        let directoryURL = inputEndsWithSeparator ? typedURL : typedURL.deletingLastPathComponent()
+        let prefix = inputEndsWithSeparator ? "" : typedURL.lastPathComponent.lowercased()
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isHiddenKey]
+        guard let children = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else {
+            return []
+        }
+        return children.compactMap { url -> String? in
+            guard prefix.isEmpty || url.lastPathComponent.lowercased().hasPrefix(prefix) else { return nil }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
+            guard values.isDirectory == true || values.isPackage == true else { return nil }
+            return url.standardizedFileURL.path
+        }
+        .sorted()
+        .prefix(limit)
+        .map(\.self)
     }
 }
 

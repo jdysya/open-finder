@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.plugins.remove-quarantine",
+  "name": "Remove App Quarantine",
+  "version": "0.1.0",
+  "description": "Runs sudo xattr -dr com.apple.quarantine on one selected .app bundle.",
+  "author": "OpenFinder",
+  "runtime": { "type": "python3", "minimumVersion": "3.9" },
+  "entry": "remove_quarantine.py",
+  "actions": [
+    {
+      "id": "remove-app-quarantine",
+      "title": "Remove App Quarantine",
+      "category": "Security",
+      "selection": { "minItems": 1, "maxItems": 1, "allowDirectories": true },
+      "match": {
+        "extensions": ["app"],
+        "uttypes": ["com.apple.application-bundle"],
+        "mimePrefixes": [],
+        "matchMode": "all"
+      },
+      "output": { "resultType": "text", "canCopyToClipboard": false }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "selected",
+    "network": { "required": false, "hosts": [] },
+    "clipboardWrite": false,
+    "clipboardRead": false,
+    "keychainSecrets": [],
+    "remoteAccounts": false,
+    "runExternalCommands": true
+  },
+  "configuration": []
+}

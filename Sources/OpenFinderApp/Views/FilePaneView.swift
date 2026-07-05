@@ -7,6 +7,9 @@ struct FilePaneView: View {
     let isActive: Bool
     @State private var renameText = ""
     @State private var showingRename = false
+    @State private var pathDraft = ""
+    @State private var pathSuggestions: [String] = []
+    @FocusState private var isPathFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +56,8 @@ struct FilePaneView: View {
         } message: {
             Text("Enter a new name for the selected item.")
         }
+        .onAppear { resetPathDraft() }
+        .onChange(of: pane.location) { _, _ in resetPathDraft() }
     }
 
     private var pathBar: some View {
@@ -61,23 +66,77 @@ struct FilePaneView: View {
                 Label(pane.id.rawValue.capitalized, systemImage: isActive ? "rectangle.inset.filled" : "rectangle")
                     .font(.headline)
                     .foregroundStyle(isActive ? .primary : .secondary)
-                Text(pane.location.displayPath)
+                TextField("Path", text: $pathDraft)
                     .font(.system(.body, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                    .textFieldStyle(.plain)
+                    .focused($isPathFocused)
+                    .onSubmit(commitPathDraft)
+                    .onChange(of: pathDraft) { _, _ in updatePathSuggestions() }
+                    .help("Edit path and press Return to jump")
                 Spacer()
                 if pane.isLoading { ProgressView().controlSize(.small) }
+            }
+            if isPathFocused && !pathSuggestions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text("补全")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(pathSuggestions, id: \.self) { suggestion in
+                            Button {
+                                pathDraft = suggestion
+                                commitPathDraft()
+                            } label: {
+                                Text(URL(fileURLWithPath: suggestion).lastPathComponent)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help(suggestion)
+                        }
+                    }
+                }
             }
             HStack {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .foregroundStyle(.secondary)
                 TextField("Filter", text: $pane.filterText)
                     .textFieldStyle(.roundedBorder)
+                if pane.selection.count > 1 {
+                    Text("已选 \(pane.selection.count) 项")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(8)
         .background(.bar)
+    }
+
+    private func resetPathDraft() {
+        pathDraft = pane.location.displayPath
+        updatePathSuggestions()
+    }
+
+    private func updatePathSuggestions() {
+        guard case .local = pane.location, let baseURL = pane.location.localURL else {
+            pathSuggestions = []
+            return
+        }
+        pathSuggestions = LocalPathCompletion.suggestions(for: pathDraft, relativeTo: baseURL, limit: 6)
+            .filter { $0 != LocalPathCompletion.resolvedPath(pathDraft, relativeTo: baseURL) }
+    }
+
+    private func commitPathDraft() {
+        guard case .local = pane.location, let baseURL = pane.location.localURL else { return }
+        let resolved = LocalPathCompletion.resolvedPath(pathDraft, relativeTo: baseURL)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory), isDirectory.boolValue else {
+            pane.errorMessage = "Path does not exist or is not a folder: \(resolved)"
+            return
+        }
+        isPathFocused = false
+        Task { await pane.navigate(to: .local(path: resolved)) }
     }
 
     private func handleTableAction(_ action: FileTableAction, _ items: [FileItem]) {
@@ -114,6 +173,8 @@ struct FilePaneView: View {
             pane.createFile()
         case .createFolder:
             pane.createFolder()
+        case .selectAll:
+            pane.selectAllVisible()
         case .plugin(let plugin, let action):
             app.runPlugin(plugin, action: action, items: items, pane: pane)
         }

@@ -456,6 +456,10 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         items.filter { selection.contains($0.id) }
     }
 
+    func selectAllVisible() {
+        selection = Set(visibleItems.map(\.id))
+    }
+
     var hasRemoteSelection: Bool {
         selectedItems.contains { item in
             if case .local = item.location { return false }

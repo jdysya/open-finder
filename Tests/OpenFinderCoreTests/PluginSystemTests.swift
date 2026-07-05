@@ -90,6 +90,64 @@ final class PluginSystemTests: XCTestCase {
         XCTAssertEqual(resolved.secrets["apiToken"]?.env, "plugin.dev.openfinder.test.config.apiToken")
     }
 
+    func testRemoveQuarantinePluginOnlyMatchesSingleAppPackage() throws {
+        let manifestURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("ExamplePlugins/remove-quarantine.plugin/manifest.json")
+        let manifest = try JSONDecoder.openFinder.decode(PluginManifest.self, from: Data(contentsOf: manifestURL))
+        let action = try XCTUnwrap(manifest.actions.first)
+        let app = FileItem(
+            id: "local:/Applications/Demo.app",
+            name: "Demo.app",
+            location: .local(path: "/Applications/Demo.app"),
+            kind: .package,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: "com.apple.application-bundle",
+            mimeType: nil,
+            fileExtension: "app",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let zip = FileItem(
+            id: "local:/tmp/Demo.zip",
+            name: "Demo.zip",
+            location: .local(path: "/tmp/Demo.zip"),
+            kind: .file,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: "public.zip-archive",
+            mimeType: "application/zip",
+            fileExtension: "zip",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let appNamedFolder = FileItem(
+            id: "local:/tmp/NotAnApplication.app",
+            name: "NotAnApplication.app",
+            location: .local(path: "/tmp/NotAnApplication.app"),
+            kind: .directory,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: nil,
+            fileExtension: "app",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+
+        XCTAssertEqual(manifest.id, "dev.openfinder.plugins.remove-quarantine")
+        XCTAssertTrue(PluginMatcher.action(action, matches: [app]))
+        XCTAssertFalse(PluginMatcher.action(action, matches: [zip]))
+        XCTAssertFalse(PluginMatcher.action(action, matches: [appNamedFolder]))
+        XCTAssertFalse(PluginMatcher.action(action, matches: [app, app]))
+    }
+
     func testRunsShellPluginWithStructuredInputAndEvents() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderPluginTests-").appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }

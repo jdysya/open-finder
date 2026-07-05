@@ -39,6 +39,7 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(FileTableKeyboardShortcut.action(characters: "n", keyCode: 45, modifiers: [.command, .shift]), .createFolder)
         XCTAssertEqual(FileTableKeyboardShortcut.action(characters: "c", keyCode: 8, modifiers: [.command, .option]), .copyToOtherPane)
         XCTAssertEqual(FileTableKeyboardShortcut.action(characters: "v", keyCode: 9, modifiers: [.command, .option]), .moveToOtherPane)
+        XCTAssertEqual(FileTableKeyboardShortcut.action(characters: "a", keyCode: 0, modifiers: [.command]), .selectAll)
     }
 
     func testDroppedLocalFileURLsBecomeLocalFileItems() async throws {
@@ -52,5 +53,33 @@ final class AppInteractionTests: XCTestCase {
 
         XCTAssertEqual(items.map(\.name), ["drop.txt"])
         XCTAssertEqual(items.first?.location, .local(path: file.path))
+    }
+
+    func testLocalPathCompletionSuggestsMatchingDirectoriesAndPackages() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderPathCompletion-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let app = root.appendingPathComponent("Alpha.app", isDirectory: true)
+        let folder = root.appendingPathComponent("Alpha Folder", isDirectory: true)
+        let ignoredFile = root.appendingPathComponent("Alpha.txt")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "ignored".write(to: ignoredFile, atomically: true, encoding: .utf8)
+
+        let suggestions = LocalPathCompletion.suggestions(
+            for: root.appendingPathComponent("Al").path,
+            relativeTo: root,
+            limit: 5
+        )
+
+        XCTAssertEqual(suggestions, [folder.path, app.path].sorted())
+    }
+
+    func testLocalPathCompletionResolvesRelativeInputAgainstCurrentDirectory() {
+        let base = URL(fileURLWithPath: "/tmp/open-finder-base", isDirectory: true)
+
+        let resolved = LocalPathCompletion.resolvedPath("Child", relativeTo: base)
+
+        XCTAssertEqual(resolved, "/tmp/open-finder-base/Child")
     }
 }

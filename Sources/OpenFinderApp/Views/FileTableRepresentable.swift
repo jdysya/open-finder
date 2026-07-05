@@ -18,6 +18,7 @@ enum FileTableAction {
     case toggleHidden
     case createFile
     case createFolder
+    case selectAll
     case plugin(LoadedPlugin, PluginActionManifest)
 }
 
@@ -279,8 +280,16 @@ struct FileTableRepresentable: NSViewRepresentable {
             case .createFolder: perform(.createFolder)
             case .copyToOtherPane: perform(.copyToOtherPane)
             case .moveToOtherPane: perform(.moveToOtherPane)
+            case .selectAll: selectAll()
             }
             return true
+        }
+
+        private func selectAll() {
+            guard let tableView else { return }
+            let indexes = IndexSet(integersIn: 0..<parent.items.count)
+            tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+            parent.selection = Set(parent.items.map(\.id))
         }
 
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
