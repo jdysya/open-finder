@@ -21,6 +21,9 @@ struct FilePaneView: View {
                 onOpen: { pane.open($0) },
                 onActivate: { app.activePane = pane.id },
                 onDropFileURLs: { app.dropLocalFileURLs($0, into: pane) },
+                remoteFileDownloader: { item, destination in
+                    try await pane.downloadRemoteFile(item, to: destination)
+                },
                 pluginActionsForSelection: { app.pluginActions(for: $0) },
                 onAction: handleTableAction
             )
@@ -47,7 +50,7 @@ struct FilePaneView: View {
             Button("Delete", role: .destructive) { pane.confirmPendingDeletion() }
             Button("Cancel", role: .cancel) { pane.cancelPendingDeletion() }
         } message: {
-            Text("WebDAV does not provide Trash semantics here. This will permanently delete the selected remote item(s).")
+            Text("This remote provider does not provide Trash semantics here. This will permanently delete the selected remote item(s).")
         }
         .alert("Rename", isPresented: $showingRename) {
             TextField("New name", text: $renameText)

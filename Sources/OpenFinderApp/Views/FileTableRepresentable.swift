@@ -29,6 +29,7 @@ struct FileTableRepresentable: NSViewRepresentable {
     var onOpen: (FileItem) -> Void
     var onActivate: () -> Void
     var onDropFileURLs: ([URL]) -> Void
+    var remoteFileDownloader: @Sendable (FileItem, URL) async throws -> Void
     var pluginActionsForSelection: ([FileItem]) -> [(LoadedPlugin, PluginActionManifest)]
     var onAction: (FileTableAction, [FileItem]) -> Void
 
@@ -85,6 +86,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         if context.coordinator.lastRenderedItems != items || context.coordinator.lastRenderedDirectorySizeText != directorySizeText {
             context.coordinator.lastRenderedItems = items
             context.coordinator.lastRenderedDirectorySizeText = directorySizeText
+            context.coordinator.clearCompletedOrCancelledFilePromises()
             table.reloadData()
         }
         let indexes = IndexSet(items.enumerated().compactMap { offset, item in selection.contains(item.id) ? offset : nil })
@@ -107,6 +109,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         var lastRenderedDirectorySizeText: [String: String] = [:]
         private var selectionAnchorRow: Int?
         private var isSyncingSelection = false
+        private var remoteFilePromiseDelegates: [UUID: RemoteFilePromiseDelegate] = [:]
         private let dateFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
@@ -116,6 +119,10 @@ struct FileTableRepresentable: NSViewRepresentable {
 
         init(_ parent: FileTableRepresentable) {
             self.parent = parent
+        }
+
+        func clearCompletedOrCancelledFilePromises() {
+            remoteFilePromiseDelegates.removeAll()
         }
 
         func activate() {
@@ -328,8 +335,28 @@ struct FileTableRepresentable: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-            guard row >= 0, row < parent.items.count, let url = parent.items[row].localURL else { return nil }
-            return url as NSURL
+            guard row >= 0, row < parent.items.count else { return nil }
+            let item = parent.items[row]
+            if let url = item.localURL {
+                return url as NSURL
+            }
+            guard !item.isDirectory, item.isReadable, let fileName = safeRemoteFileName(item.name) else { return nil }
+            let id = UUID()
+            let delegate = RemoteFilePromiseDelegate(
+                item: item,
+                downloader: parent.remoteFileDownloader,
+                fileName: fileName,
+                onCompletion: { [weak self] in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.remoteFilePromiseDelegates.removeValue(forKey: id)
+                    }
+                }
+            )
+            remoteFilePromiseDelegates[id] = delegate
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                self?.remoteFilePromiseDelegates.removeValue(forKey: id)
+            }
+            return NSFilePromiseProvider(fileType: "public.data", delegate: delegate)
         }
 
         func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
@@ -366,6 +393,65 @@ struct FileTableRepresentable: NSViewRepresentable {
             let pair = actions[sender.tag]
             parent.onAction(.plugin(pair.0, pair.1), selected)
         }
+    }
+}
+
+private func safeRemoteFileName(_ name: String) -> String? {
+    let baseName = URL(fileURLWithPath: name).lastPathComponent
+    guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else { return nil }
+    return baseName
+}
+
+final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
+    private let item: FileItem
+    private let downloader: @Sendable (FileItem, URL) async throws -> Void
+    private let fileName: String
+    private let onCompletion: () -> Void
+
+    init(
+        item: FileItem,
+        downloader: @escaping @Sendable (FileItem, URL) async throws -> Void,
+        fileName: String? = nil,
+        onCompletion: @escaping () -> Void = {}
+    ) {
+        self.item = item
+        self.downloader = downloader
+        self.fileName = fileName ?? item.name
+        self.onCompletion = onCompletion
+    }
+
+    func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        fileName
+    }
+
+    func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void) {
+        let item = item
+        let downloader = downloader
+        let fileName = fileName
+        let completion = FilePromiseCompletion(completionHandler, cleanup: onCompletion)
+        Task {
+            do {
+                try await downloader(item, url.appendingPathComponent(fileName, isDirectory: false))
+                completion.call(nil)
+            } catch {
+                completion.call(error)
+            }
+        }
+    }
+}
+
+private final class FilePromiseCompletion: @unchecked Sendable {
+    private let handler: (Error?) -> Void
+    private let cleanup: () -> Void
+
+    init(_ handler: @escaping (Error?) -> Void, cleanup: @escaping () -> Void) {
+        self.handler = handler
+        self.cleanup = cleanup
+    }
+
+    func call(_ error: Error?) {
+        handler(error)
+        cleanup()
     }
 }
 

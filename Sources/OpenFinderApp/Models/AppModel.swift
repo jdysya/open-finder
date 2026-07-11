@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     private let pluginRegistry = PluginRegistry()
     private let remoteConnectorRegistry: RemoteConnectorRegistry
     private let remoteProviderRegistry: RemoteProviderRegistry
+    private let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
     private var taskPollingTask: Task<Void, Never>?
     private var didLoadInitialState = false
 
@@ -63,6 +64,7 @@ final class AppModel: ObservableObject {
                 revision: location.connectorID.rawValue
             )
         }
+        self.remoteProviderResolver = remoteProviderResolver
         self.taskQueue = TaskQueueService(maxConcurrentTasks: 2)
         self.leftPane = BrowserPaneModel(
             id: .left,
@@ -196,8 +198,6 @@ final class AppModel: ObservableObject {
                 guard !items.isEmpty else { return }
                 let sourceLocation = items.first?.location ?? .local(path: urls[0].deletingLastPathComponent().path)
                 let title = "Copy dropped \(items.count) item(s)"
-                let remoteDirectory = self.remoteDirectory
-                let keychainStore = self.keychainStore
                 let queuedID = try await taskQueue.enqueue(.init(kind: .localCopy, title: title) { context in
                     await context.appendLog("\(title) to \(destinationLocation.displayPath)")
                     try await FileTransferService.copyOrMove(
@@ -205,8 +205,7 @@ final class AppModel: ObservableObject {
                         from: sourceLocation,
                         to: destinationLocation,
                         move: false,
-                        remoteDirectory: remoteDirectory,
-                        keychainStore: keychainStore,
+                        remoteProviderResolver: self.remoteProviderResolver,
                         progress: { fraction, message in
                             Task { await context.updateProgress(fraction, message) }
                         }
@@ -283,8 +282,6 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let title = move ? "Move \(selected.count) item(s)" : "Copy \(selected.count) item(s)"
-                let remoteDirectory = self.remoteDirectory
-                let keychainStore = self.keychainStore
                 let queuedID = try await taskQueue.enqueue(.init(kind: move ? .localMove : .localCopy, title: title) { context in
                     await context.appendLog("\(title) to \(destinationLocation.displayPath)")
                     try await FileTransferService.copyOrMove(
@@ -293,8 +290,7 @@ final class AppModel: ObservableObject {
                         to: destinationLocation,
                         move: move,
                         overwriteExisting: overwriteExisting,
-                        remoteDirectory: remoteDirectory,
-                        keychainStore: keychainStore,
+                        remoteProviderResolver: self.remoteProviderResolver,
                         progress: { fraction, message in
                             Task { await context.updateProgress(fraction, message) }
                         }
@@ -354,14 +350,17 @@ final class AppModel: ObservableObject {
     }
 
     func removeRemoteAccount(_ account: RemoteAccount) {
-        do {
-            if let ref = account.secretKeychainRef { try keychainStore.deleteSecret(for: ref) }
-            remoteDirectory.remove(id: account.id)
-            remoteAccounts = remoteDirectory.all()
-            let connectorName = remoteConnectorRegistry.connector(for: account)?.displayName ?? "Remote"
-            statusMessage = "Removed \(connectorName) account \(account.name)"
-        } catch {
-            statusMessage = error.localizedDescription
+        Task {
+            await remoteProviderRegistry.invalidate(accountID: account.id.uuidString)
+            do {
+                if let ref = account.secretKeychainRef { try keychainStore.deleteSecret(for: ref) }
+                remoteDirectory.remove(id: account.id)
+                remoteAccounts = remoteDirectory.all()
+                let connectorName = remoteConnectorRegistry.connector(for: account)?.displayName ?? "Remote"
+                statusMessage = "Removed \(connectorName) account \(account.name)"
+            } catch {
+                statusMessage = error.localizedDescription
+            }
         }
     }
 
@@ -574,6 +573,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var directorySizeCache: [String: Int64] = [:]
     private var directorySizeTasks: [String: Task<Void, Never>] = [:]
     private var remoteParent: RemotePath?
+    private let remoteMaterializationDirectory: URL
 
     init(
         id: AppModel.PaneID,
@@ -584,10 +584,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         self.location = location
         self.history = [location]
         self.remoteProviderResolver = remoteProviderResolver
+        self.remoteMaterializationDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenFinderRemoteFiles-\(UUID().uuidString)", isDirectory: true)
     }
 
     deinit {
         for task in directorySizeTasks.values { task.cancel() }
+        try? FileManager.default.removeItem(at: remoteMaterializationDirectory)
     }
 
     var visibleItems: [FileItem] {
@@ -647,6 +650,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             Task { await navigate(to: item.location) }
         } else if let url = item.localURL {
             NSWorkspace.shared.open(url)
+        } else {
+            Task {
+                do {
+                    NSWorkspace.shared.open(try await materializeRemoteFile(item))
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -799,7 +810,18 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func quickLookSelected() {
-        QuickLookBridge.preview(urls: selectedItems.compactMap(\.localURL))
+        let items = selectedItems
+        Task {
+            do {
+                var urls = items.compactMap(\.localURL)
+                for item in items where item.localURL == nil && !item.isDirectory {
+                    urls.append(try await materializeRemoteFile(item))
+                }
+                QuickLookBridge.preview(urls: urls)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
 
@@ -898,6 +920,37 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         try await remoteProviderResolver(remoteLocation)
     }
 
+    private func materializeRemoteFile(_ item: FileItem) async throws -> URL {
+        let remoteLocation = try remoteLocation(for: item.location)
+        let remote = try await remoteProvider(for: remoteLocation)
+        try FileManager.default.createDirectory(at: remoteMaterializationDirectory, withIntermediateDirectories: true)
+        let name = try safeRemoteFileName(item.name)
+        let destination = remoteMaterializationDirectory.appendingPathComponent(name, isDirectory: false)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        _ = try await remote.download(item: remoteLocation.path, to: destination)
+        return destination
+    }
+
+    func downloadRemoteFile(_ item: FileItem, to destination: URL) async throws {
+        guard !item.isDirectory, item.localURL == nil else {
+            throw OpenFinderError.operationFailed("Only remote files can be dragged out")
+        }
+        _ = try safeRemoteFileName(item.name)
+        let remoteLocation = try remoteLocation(for: item.location)
+        let remote = try await remoteProvider(for: remoteLocation)
+        _ = try await remote.download(item: remoteLocation.path, to: destination)
+    }
+
+    private func safeRemoteFileName(_ name: String) throws -> String {
+        let baseName = URL(fileURLWithPath: name).lastPathComponent
+        guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else {
+            throw OpenFinderError.operationFailed("Remote file has an unsafe name")
+        }
+        return baseName
+    }
+
     private func sortItems(_ items: [FileItem]) -> [FileItem] {
         items.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
@@ -969,53 +1022,153 @@ final class RemoteAccountDirectory: @unchecked Sendable {
 }
 
 enum FileTransferService {
-    static func copyOrMove(_ items: [FileItem], from source: Location, to destination: Location, move: Bool, overwriteExisting: Bool = false, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore, progress: (@Sendable (Double, String) -> Void)? = nil) async throws {
-        switch (source, destination) {
-        case (.local, .local):
+    static func copyOrMove(_ items: [FileItem], from source: Location, to destination: Location, move: Bool, overwriteExisting: Bool = false, remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider, progress: (@Sendable (Double, String) -> Void)? = nil) async throws {
+        if case .local = source, case .local = destination {
             let provider = LocalFileProvider()
             if move { _ = try await provider.move(items, to: destination, overwriteExisting: overwriteExisting) }
             else { _ = try await provider.copy(items, to: destination, overwriteExisting: overwriteExisting) }
-        case (.local, .webDAV(let accountID, let remotePath)):
-            let remote = try webDAVProvider(accountID: accountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+            return
+        }
+
+        if case .local = source {
+            let remoteDestination = try remoteLocation(for: destination)
+            let remote = try await remoteProviderResolver(remoteDestination)
+            let existingItems = Dictionary(uniqueKeysWithValues: try await remote.list(directory: remoteDestination.path).items.map { ($0.name, $0) })
             for (index, item) in items.enumerated() {
                 guard let url = item.localURL else { continue }
+                if existingItems[item.name] != nil {
+                    throw OpenFinderError.operationFailed(
+                        overwriteExisting
+                            ? "Replacing existing remote items is not supported yet"
+                            : "Remote destination already contains: \(item.name)"
+                    )
+                }
                 progress?(Double(index) / Double(max(items.count, 1)), "Uploading \(item.name)")
-                _ = try await remote.upload(
-                    localURL: url,
-                    to: .init(identifier: remotePath, displayPath: remotePath),
-                    named: item.name
-                )
+                try await upload(localURL: url, to: remoteDestination.path, remote: remote)
             }
             if move { try await LocalFileProvider().trashOrDelete(items) }
-        case (.webDAV(let accountID, _), .local):
+            return
+        }
+
+        if case .local = destination {
             guard let destinationURL = destination.localURL else { throw OpenFinderError.unsupportedLocation(destination) }
-            let remote = try webDAVProvider(accountID: accountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+            let remoteSource = try remoteLocation(for: source)
+            let remote = try await remoteProviderResolver(remoteSource)
             for (index, item) in items.enumerated() {
-                if case .webDAV(_, let itemPath) = item.location {
-                    progress?(Double(index) / Double(max(items.count, 1)), "Downloading \(item.name)")
-                    let remoteItem = RemotePath(identifier: itemPath, displayPath: itemPath)
-                    _ = try await remote.download(item: remoteItem, to: destinationURL.appendingPathComponent(item.name, isDirectory: false))
-                    if move { try await remote.delete(item: remoteItem) }
-                }
+                let remoteItem = try remoteLocation(for: item.location).path
+                progress?(Double(index) / Double(max(items.count, 1)), "Downloading \(item.name)")
+                try await download(
+                    remotePath: remoteItem,
+                    kind: item.kind,
+                    named: item.name,
+                    to: try safeChildURL(in: destinationURL, named: item.name, isDirectory: item.isDirectory),
+                    remote: remote,
+                    overwriteExisting: overwriteExisting
+                )
+                if move { try await remote.delete(item: remoteItem) }
             }
-        case (.webDAV(let sourceAccountID, _), .webDAV(let destAccountID, let destPath)) where sourceAccountID == destAccountID:
-            let remote = try webDAVProvider(accountID: sourceAccountID, remoteDirectory: remoteDirectory, keychainStore: keychainStore)
-            for (index, item) in items.enumerated() {
-                if case .webDAV(_, let itemPath) = item.location {
-                    progress?(Double(index) / Double(max(items.count, 1)), "Transferring \(item.name)")
-                    let remoteItem = RemotePath(identifier: itemPath, displayPath: itemPath)
-                    let remoteDestination = RemotePath(identifier: destPath, displayPath: destPath)
-                    if move { try await remote.move(item: remoteItem, to: remoteDestination, named: item.name) }
-                    else { try await remote.copy(item: remoteItem, to: remoteDestination, named: item.name) }
-                }
-            }
-        default:
-            throw OpenFinderError.operationFailed("This transfer combination is not supported yet")
+            return
+        }
+
+        let remoteSource = try remoteLocation(for: source)
+        let remoteDestination = try remoteLocation(for: destination)
+        guard remoteSource.accountID == remoteDestination.accountID,
+              remoteSource.connectorID == remoteDestination.connectorID else {
+            throw OpenFinderError.operationFailed("Transferring directly between different remote accounts is not supported yet")
+        }
+        let remote = try await remoteProviderResolver(remoteSource)
+        for (index, item) in items.enumerated() {
+            let remoteItem = try remoteLocation(for: item.location).path
+            progress?(Double(index) / Double(max(items.count, 1)), "Transferring \(item.name)")
+            if move { try await remote.move(item: remoteItem, to: remoteDestination.path, named: item.name) }
+            else { try await remote.copy(item: remoteItem, to: remoteDestination.path, named: item.name) }
         }
     }
 
-    private static func webDAVProvider(accountID: UUID, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) throws -> WebDAVProvider {
-        guard let account = remoteDirectory.account(id: accountID) else { throw OpenFinderError.itemNotFound("WebDAV account \(accountID)") }
-        return WebDAVProvider(account: account, credentialStore: keychainStore)
+    private static func remoteLocation(for location: Location) throws -> RemoteLocation {
+        switch location {
+        case .remote(let remoteLocation):
+            return remoteLocation
+        case .webDAV(let accountID, let path):
+            return .init(accountID: accountID, connectorID: .webDAV, path: .init(identifier: path, displayPath: path))
+        case .local, .rclone:
+            throw OpenFinderError.unsupportedLocation(location)
+        }
+    }
+
+    private static func upload(localURL: URL, to parent: RemotePath, remote: any RemoteProvider) async throws {
+        let values = try localURL.resourceValues(forKeys: [.isDirectoryKey])
+        if values.isDirectory == true {
+            let name = localURL.lastPathComponent
+            try await remote.createDirectory(in: parent, named: name)
+            let listing = try await remote.list(directory: parent)
+            guard let created = listing.items.first(where: { $0.name == name && $0.kind == .directory }) else {
+                throw OpenFinderError.operationFailed("Remote directory was not visible after creation: \(name)")
+            }
+            let children = try FileManager.default.contentsOfDirectory(
+                at: localURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []
+            ).sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            for child in children {
+                try await upload(localURL: child, to: created.remotePath, remote: remote)
+            }
+        } else {
+            _ = try await remote.upload(localURL: localURL, to: parent, named: localURL.lastPathComponent)
+        }
+    }
+
+    private static func download(
+        remotePath: RemotePath,
+        kind: FileKind,
+        named name: String,
+        to destination: URL,
+        remote: any RemoteProvider,
+        overwriteExisting: Bool
+    ) async throws {
+        let fileManager = FileManager.default
+        if kind == .directory || kind == .package {
+            guard !fileManager.fileExists(atPath: destination.path) else {
+                throw OpenFinderError.operationFailed("Replacing existing local directories is not supported yet")
+            }
+            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+            let listing = try await remote.list(directory: remotePath)
+            for child in listing.items {
+                try await download(
+                    remotePath: child.remotePath,
+                    kind: child.kind,
+                    named: child.name,
+                    to: try safeChildURL(
+                        in: destination,
+                        named: child.name,
+                        isDirectory: child.kind == .directory || child.kind == .package
+                    ),
+                    remote: remote,
+                    overwriteExisting: false
+                )
+            }
+        } else {
+            if !fileManager.fileExists(atPath: destination.path) {
+                _ = try await remote.download(item: remotePath, to: destination)
+                return
+            }
+            guard overwriteExisting else {
+                throw OpenFinderError.operationFailed("Local destination already contains: \(name)")
+            }
+            let staged = destination.deletingLastPathComponent()
+                .appendingPathComponent(".openfinder-remote-replace-\(UUID().uuidString)")
+            defer { try? fileManager.removeItem(at: staged) }
+            _ = try await remote.download(item: remotePath, to: staged)
+            try fileManager.removeItem(at: destination)
+            try fileManager.moveItem(at: staged, to: destination)
+        }
+    }
+
+    private static func safeChildURL(in parent: URL, named name: String, isDirectory: Bool) throws -> URL {
+        let baseName = URL(fileURLWithPath: name).lastPathComponent
+        guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else {
+            throw OpenFinderError.operationFailed("Remote item has an unsafe name")
+        }
+        return parent.appendingPathComponent(baseName, isDirectory: isDirectory)
     }
 }

@@ -163,6 +163,180 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(items.first?.location, .local(path: file.path))
     }
 
+    func testDroppingLocalFileIntoKodboxPaneUploadsThroughConfiguredRemoteProvider() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderKodboxDrop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let localFile = root.appendingPathComponent("drop.txt")
+        try Data("drop contents".utf8).write(to: localFile)
+
+        let account = RemoteAccount(
+            name: "Kodbox",
+            provider: .kodbox,
+            baseURL: URL(string: "https://kodbox.test/")!,
+            username: "alice",
+            secretKeychainRef: nil,
+            options: ["connectorID": RemoteConnectorID.kodbox.rawValue]
+        )
+        let remoteDirectory = RemoteAccountDirectory()
+        remoteDirectory.save(account)
+        let destination = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let provider = TransferRecordingRemoteProvider()
+        let registry = RemoteProviderRegistry(factory: { _, _ in provider })
+        let app = AppModel(
+            remoteDirectory: remoteDirectory,
+            configurationStore: JSONConfigStore(url: temporaryConfigurationURL()),
+            keychainStore: InMemoryKeychainStore(),
+            remoteProviderRegistry: registry
+        )
+        app.rightPane.location = .remote(.init(accountID: account.id, connectorID: .kodbox, path: destination))
+
+        app.dropLocalFileURLs([localFile], into: app.rightPane)
+
+        try await waitUntil { await provider.hasUploaded(named: "drop.txt", contents: Data("drop contents".utf8)) }
+    }
+
+    func testOpeningRemoteFileDownloadsItBeforeOpeningWithSystemApplication() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let remoteFile = RemotePath(identifier: "{source:5}/preview.txt", displayPath: "/Personal/preview.txt")
+        let provider = TransferRecordingRemoteProvider(downloadContents: Data("preview".utf8))
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+        let item = FileItem(
+            id: "remote-preview",
+            name: "preview.txt",
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: remoteFile)),
+            kind: .file,
+            size: 7,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+
+        pane.open(item)
+
+        try await waitUntil { await provider.hasDownloaded(identifier: remoteFile.identifier) }
+    }
+
+    func testDroppingLocalFolderIntoKodboxRecursivelyCreatesDirectoriesAndUploadsFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderKodboxFolderDrop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let folder = source.appendingPathComponent("Documents", isDirectory: true)
+        let nested = folder.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("hidden".utf8).write(to: folder.appendingPathComponent(".hidden.txt"))
+        try Data("top level".utf8).write(to: folder.appendingPathComponent("top.txt"))
+        try Data("nested".utf8).write(to: nested.appendingPathComponent("nested.txt"))
+
+        let folderItem = try await LocalFileProvider().stat(.local(path: folder.path))
+        let destination = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let provider = TransferRecordingRemoteProvider()
+
+        try await FileTransferService.copyOrMove(
+            [folderItem],
+            from: .local(path: source.path),
+            to: .remote(.init(accountID: UUID(), connectorID: .kodbox, path: destination)),
+            move: false,
+            remoteProviderResolver: { _ in provider }
+        )
+
+        let createdDirectories = await provider.createdDirectoryPaths()
+        let uploadedNames = await provider.uploadedNames()
+        let uploadedContents = await provider.uploadedContents()
+        XCTAssertEqual(createdDirectories, [
+            "{source:5}/Documents",
+            "{source:5}/Documents/Nested"
+        ])
+        XCTAssertEqual(Set(uploadedNames), Set([".hidden.txt", "nested.txt", "top.txt"]))
+        XCTAssertEqual(Set(uploadedContents), Set([Data("hidden".utf8), Data("nested".utf8), Data("top level".utf8)]))
+    }
+
+    func testRemoteFilePromiseWritesDownloadedFileToRequestedDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderFilePromise-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let item = FileItem(
+            id: "remote-promise",
+            name: "promised.txt",
+            location: .remote(.init(
+                accountID: UUID(),
+                connectorID: .kodbox,
+                path: .init(identifier: "{source:5}/promised.txt", displayPath: "/Personal/promised.txt")
+            )),
+            kind: .file,
+            size: 8,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let expected = Data("promised".utf8)
+        let delegate = RemoteFilePromiseDelegate(item: item) { _, destination in
+            try expected.write(to: destination)
+        }
+        let provider = NSFilePromiseProvider(fileType: "public.data", delegate: delegate)
+        let completion = expectation(description: "file promise completion")
+        var promiseError: Error?
+
+        delegate.filePromiseProvider(provider, writePromiseTo: root) { error in
+            promiseError = error
+            completion.fulfill()
+        }
+
+        await fulfillment(of: [completion], timeout: 1)
+        XCTAssertNil(promiseError)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("promised.txt")), expected)
+    }
+
+    func testRemoteFolderOverwriteDoesNotDeleteExistingRootBeforeReplacementSucceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderRemoteOverwrite-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let folder = source.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: folder.appendingPathComponent("replacement.txt"))
+
+        let destination = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let provider = TransferRecordingRemoteProvider()
+        await provider.seedDirectory(named: "Documents", in: destination)
+        let folderItem = try await LocalFileProvider().stat(.local(path: folder.path))
+
+        do {
+            try await FileTransferService.copyOrMove(
+                [folderItem],
+                from: .local(path: source.path),
+                to: .remote(.init(accountID: UUID(), connectorID: .kodbox, path: destination)),
+                move: false,
+                overwriteExisting: true,
+                remoteProviderResolver: { _ in provider }
+            )
+            XCTFail("Expected remote replacement to be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("not supported"))
+        }
+
+        let deletedPaths = await provider.deletedPaths()
+        let createdDirectories = await provider.createdDirectoryPaths()
+        let uploadedNames = await provider.uploadedNames()
+        XCTAssertTrue(deletedPaths.isEmpty)
+        XCTAssertTrue(createdDirectories.isEmpty)
+        XCTAssertTrue(uploadedNames.isEmpty)
+    }
+
     func testLocalPathCompletionSuggestsMatchingDirectoriesAndPackages() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderPathCompletion-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -441,6 +615,107 @@ final class AppInteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Condition was not satisfied before timeout")
+    }
+}
+
+private actor TransferRecordingRemoteProvider: RemoteProvider {
+    private let downloadContents: Data
+    private var uploads: [(name: String, contents: Data)] = []
+    private var downloads: [String] = []
+    private var createdDirectories: [String] = []
+    private var deletions: [String] = []
+    private var directoryEntries: [String: [RemoteItem]] = [:]
+
+    init(downloadContents: Data = Data()) {
+        self.downloadContents = downloadContents
+    }
+
+    func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
+        .init(
+            current: directory,
+            parent: nil,
+            items: directoryEntries[directory.identifier] ?? [],
+            capabilities: .init(isReadable: true, isWritable: true)
+        )
+    }
+
+    func createDirectory(in parent: RemotePath, named name: String) async throws {
+        let separator = parent.identifier.hasSuffix("/") ? "" : "/"
+        let identifier = "\(parent.identifier)\(separator)\(name)"
+        createdDirectories.append(identifier)
+        directoryEntries[parent.identifier, default: []].append(.init(
+            id: identifier,
+            name: name,
+            path: .init(identifier: identifier, displayPath: "\(parent.displayPath)/\(name)"),
+            kind: .directory,
+            size: nil,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: nil,
+            isReadable: true,
+            isWritable: true
+        ))
+    }
+
+    func delete(item: RemotePath) async throws {
+        deletions.append(item.identifier)
+        for parent in directoryEntries.keys {
+            directoryEntries[parent]?.removeAll { $0.remotePath.identifier == item.identifier }
+        }
+    }
+    func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+
+    func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID {
+        uploads.append((name: name, contents: try Data(contentsOf: localURL)))
+        return UUID()
+    }
+
+    func download(item: RemotePath, to localURL: URL) async throws -> TaskID {
+        downloads.append(item.identifier)
+        try downloadContents.write(to: localURL)
+        return UUID()
+    }
+
+    func hasUploaded(named name: String, contents: Data) -> Bool {
+        uploads.contains { $0.name == name && $0.contents == contents }
+    }
+
+    func hasDownloaded(identifier: String) -> Bool {
+        downloads.contains(identifier)
+    }
+
+    func createdDirectoryPaths() -> [String] {
+        createdDirectories
+    }
+
+    func uploadedNames() -> [String] {
+        uploads.map(\.name)
+    }
+
+    func uploadedContents() -> [Data] {
+        uploads.map(\.contents)
+    }
+
+    func deletedPaths() -> [String] {
+        deletions
+    }
+
+    func seedDirectory(named name: String, in parent: RemotePath) {
+        let separator = parent.identifier.hasSuffix("/") ? "" : "/"
+        let identifier = "\(parent.identifier)\(separator)\(name)"
+        directoryEntries[parent.identifier, default: []].append(.init(
+            id: identifier,
+            name: name,
+            path: .init(identifier: identifier, displayPath: "\(parent.displayPath)/\(name)"),
+            kind: .directory,
+            size: nil,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: nil,
+            isReadable: true,
+            isWritable: true
+        ))
     }
 }
 
