@@ -302,6 +302,121 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("promised.txt")), expected)
     }
 
+    func testDownloadingRemoteFileRejectsBackslashInUntrustedRemoteName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderUnsafeRemoteName-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let accountID = UUID()
+        let provider = TransferRecordingRemoteProvider(downloadContents: Data("unexpected".utf8))
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: .init(identifier: "{source:5}/", displayPath: "/Personal"))),
+            remoteProviderResolver: { _ in provider }
+        )
+        let item = FileItem(
+            id: "unsafe-remote-file",
+            name: "folder\\escape.txt",
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: .init(identifier: "{source:5}/unsafe", displayPath: "/Personal/unsafe"))),
+            kind: .file,
+            size: 0,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+
+        do {
+            try await pane.downloadRemoteFile(item, to: root.appendingPathComponent("escape.txt"))
+            XCTFail("Expected unsafe remote name to be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("unsafe name"))
+        }
+
+        let downloadedUnsafeItem = await provider.hasDownloaded(identifier: "{source:5}/unsafe")
+        XCTAssertFalse(downloadedUnsafeItem)
+    }
+
+    func testRemoteFilePromiseRejectsBackslashInUntrustedRemoteName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderUnsafePromise-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let item = FileItem(
+            id: "unsafe-promise",
+            name: "folder\\escape.txt",
+            location: .remote(.init(accountID: UUID(), connectorID: .kodbox, path: .init(identifier: "{source:5}/unsafe", displayPath: "/Personal/unsafe"))),
+            kind: .file,
+            size: 0,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let delegate = RemoteFilePromiseDelegate(item: item) { _, destination in
+            try Data("unexpected".utf8).write(to: destination)
+        }
+        let provider = NSFilePromiseProvider(fileType: "public.data", delegate: delegate)
+        let completion = expectation(description: "unsafe file promise completion")
+        var promiseError: Error?
+
+        delegate.filePromiseProvider(provider, writePromiseTo: root) { error in
+            promiseError = error
+            completion.fulfill()
+        }
+
+        await fulfillment(of: [completion], timeout: 1)
+        XCTAssertNotNil(promiseError)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("folder\\escape.txt").path))
+    }
+
+    func testRemoteToRemoteOverwriteRejectsExistingDestinationBeforeProviderCopy() async throws {
+        let accountID = UUID()
+        let sourceDirectory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let destinationDirectory = RemotePath(identifier: "{source:6}/", displayPath: "/Shared")
+        let sourceItemPath = RemotePath(identifier: "{source:5}/existing.txt", displayPath: "/Personal/existing.txt")
+        let provider = TransferRecordingRemoteProvider()
+        await provider.seedFile(named: "existing.txt", in: destinationDirectory)
+        let item = FileItem(
+            id: "remote-existing",
+            name: "existing.txt",
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: sourceItemPath)),
+            kind: .file,
+            size: 0,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+
+        do {
+            try await FileTransferService.copyOrMove(
+                [item],
+                from: .remote(.init(accountID: accountID, connectorID: .kodbox, path: sourceDirectory)),
+                to: .remote(.init(accountID: accountID, connectorID: .kodbox, path: destinationDirectory)),
+                move: false,
+                overwriteExisting: true,
+                remoteProviderResolver: { _ in provider }
+            )
+            XCTFail("Expected remote replacement to be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("not supported"))
+        }
+
+        let copyCount = await provider.copyCount()
+        XCTAssertEqual(copyCount, 0)
+    }
+
     func testRemoteFolderOverwriteDoesNotDeleteExistingRootBeforeReplacementSucceeds() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinderRemoteOverwrite-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -624,6 +739,7 @@ private actor TransferRecordingRemoteProvider: RemoteProvider {
     private var downloads: [String] = []
     private var createdDirectories: [String] = []
     private var deletions: [String] = []
+    private var copies: [String] = []
     private var directoryEntries: [String: [RemoteItem]] = [:]
 
     init(downloadContents: Data = Data()) {
@@ -664,7 +780,9 @@ private actor TransferRecordingRemoteProvider: RemoteProvider {
         }
     }
     func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
-    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {
+        copies.append(name)
+    }
 
     func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID {
         uploads.append((name: name, contents: try Data(contentsOf: localURL)))
@@ -699,6 +817,27 @@ private actor TransferRecordingRemoteProvider: RemoteProvider {
 
     func deletedPaths() -> [String] {
         deletions
+    }
+
+    func copyCount() -> Int {
+        copies.count
+    }
+
+    func seedFile(named name: String, in parent: RemotePath) {
+        let separator = parent.identifier.hasSuffix("/") ? "" : "/"
+        let identifier = "\(parent.identifier)\(separator)\(name)"
+        directoryEntries[parent.identifier, default: []].append(.init(
+            id: identifier,
+            name: name,
+            path: .init(identifier: identifier, displayPath: "\(parent.displayPath)/\(name)"),
+            kind: .file,
+            size: 0,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: "text/plain",
+            isReadable: true,
+            isWritable: true
+        ))
     }
 
     func seedDirectory(named name: String, in parent: RemotePath) {

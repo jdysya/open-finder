@@ -945,7 +945,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     private func safeRemoteFileName(_ name: String) throws -> String {
         let baseName = URL(fileURLWithPath: name).lastPathComponent
-        guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else {
+        guard baseName == name,
+              !name.contains("/"),
+              !name.contains("\\"),
+              !baseName.isEmpty,
+              baseName != ".",
+              baseName != ".." else {
             throw OpenFinderError.operationFailed("Remote file has an unsafe name")
         }
         return baseName
@@ -1077,7 +1082,15 @@ enum FileTransferService {
             throw OpenFinderError.operationFailed("Transferring directly between different remote accounts is not supported yet")
         }
         let remote = try await remoteProviderResolver(remoteSource)
+        let existingNames = Set(try await remote.list(directory: remoteDestination.path).items.map(\.name))
         for (index, item) in items.enumerated() {
+            if existingNames.contains(item.name) {
+                throw OpenFinderError.operationFailed(
+                    overwriteExisting
+                        ? "Replacing existing remote items is not supported yet"
+                        : "Remote destination already contains: \(item.name)"
+                )
+            }
             let remoteItem = try remoteLocation(for: item.location).path
             progress?(Double(index) / Double(max(items.count, 1)), "Transferring \(item.name)")
             if move { try await remote.move(item: remoteItem, to: remoteDestination.path, named: item.name) }
@@ -1166,7 +1179,12 @@ enum FileTransferService {
 
     private static func safeChildURL(in parent: URL, named name: String, isDirectory: Bool) throws -> URL {
         let baseName = URL(fileURLWithPath: name).lastPathComponent
-        guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else {
+        guard baseName == name,
+              !name.contains("/"),
+              !name.contains("\\"),
+              !baseName.isEmpty,
+              baseName != ".",
+              baseName != ".." else {
             throw OpenFinderError.operationFailed("Remote item has an unsafe name")
         }
         return parent.appendingPathComponent(baseName, isDirectory: isDirectory)

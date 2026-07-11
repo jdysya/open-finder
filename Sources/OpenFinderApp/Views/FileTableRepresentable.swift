@@ -398,14 +398,19 @@ struct FileTableRepresentable: NSViewRepresentable {
 
 private func safeRemoteFileName(_ name: String) -> String? {
     let baseName = URL(fileURLWithPath: name).lastPathComponent
-    guard baseName == name, !baseName.isEmpty, baseName != ".", baseName != ".." else { return nil }
+    guard baseName == name,
+          !name.contains("/"),
+          !name.contains("\\"),
+          !baseName.isEmpty,
+          baseName != ".",
+          baseName != ".." else { return nil }
     return baseName
 }
 
 final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
     private let item: FileItem
     private let downloader: @Sendable (FileItem, URL) async throws -> Void
-    private let fileName: String
+    private let fileName: String?
     private let onCompletion: () -> Void
 
     init(
@@ -416,18 +421,22 @@ final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
     ) {
         self.item = item
         self.downloader = downloader
-        self.fileName = fileName ?? item.name
+        self.fileName = safeRemoteFileName(fileName ?? item.name)
         self.onCompletion = onCompletion
     }
 
     func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
-        fileName
+        fileName ?? ""
     }
 
     func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void) {
         let item = item
         let downloader = downloader
-        let fileName = fileName
+        guard let fileName else {
+            FilePromiseCompletion(completionHandler, cleanup: onCompletion)
+                .call(OpenFinderError.operationFailed("Remote file has an unsafe name"))
+            return
+        }
         let completion = FilePromiseCompletion(completionHandler, cleanup: onCompletion)
         Task {
             do {
