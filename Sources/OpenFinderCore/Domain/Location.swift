@@ -4,9 +4,10 @@ public enum Location: Hashable, Codable, Sendable {
     case local(path: String)
     case webDAV(accountID: UUID, path: String)
     case rclone(remoteID: UUID, path: String)
+    case remote(RemoteLocation)
 
-    private enum CodingKeys: String, CodingKey { case type, path, accountID, remoteID }
-    private enum Kind: String, Codable { case local, webDAV, rclone }
+    private enum CodingKeys: String, CodingKey { case type, path, accountID, remoteID, remote }
+    private enum Kind: String, Codable { case local, webDAV, rclone, remote }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -18,6 +19,8 @@ public enum Location: Hashable, Codable, Sendable {
             self = .webDAV(accountID: try container.decode(UUID.self, forKey: .accountID), path: try container.decode(String.self, forKey: .path))
         case .rclone:
             self = .rclone(remoteID: try container.decode(UUID.self, forKey: .remoteID), path: try container.decode(String.self, forKey: .path))
+        case .remote:
+            self = .remote(try container.decode(RemoteLocation.self, forKey: .remote))
         }
     }
 
@@ -35,6 +38,9 @@ public enum Location: Hashable, Codable, Sendable {
             try container.encode(Kind.rclone, forKey: .type)
             try container.encode(remoteID, forKey: .remoteID)
             try container.encode(path, forKey: .path)
+        case .remote(let remote):
+            try container.encode(Kind.remote, forKey: .type)
+            try container.encode(remote, forKey: .remote)
         }
     }
 
@@ -43,6 +49,7 @@ public enum Location: Hashable, Codable, Sendable {
         case .local(let path): path
         case .webDAV(_, let path): "webdav:\(path)"
         case .rclone(_, let path): "rclone:\(path)"
+        case .remote(let remote): "\(remote.connectorID.rawValue):\(remote.path.displayPath)"
         }
     }
 

@@ -33,14 +33,47 @@ final class WebDAVProviderTests: XCTestCase {
         }
         let provider = makeProvider()
 
-        let items = try await provider.list(path: "/photos/")
+        let listing = try await provider.list(directory: RemotePath(identifier: "/photos/", displayPath: "/photos/"))
+        let items = listing.items
 
         XCTAssertEqual(items.map(\.name), ["demo.png", "folder"])
-        XCTAssertEqual(items.map(\.path), ["/photos/demo.png", "/photos/folder"])
+        XCTAssertEqual(items.map(\.remotePath.displayPath), ["/photos/demo.png", "/photos/folder"])
         XCTAssertEqual(items[0].kind, .file)
         XCTAssertEqual(items[0].size, 42)
         XCTAssertEqual(items[0].mimeType, "image/png")
         XCTAssertEqual(items[1].kind, .directory)
+    }
+
+    func testListingReturnsParentAndDownloadUsesRemotePathIdentifier() async throws {
+        let recorder = RequestRecorder()
+        MockURLProtocol.handler = { request in
+            recorder.append((request.httpMethod ?? "", request.url!.absoluteString, nil, nil))
+            if request.httpMethod == "PROPFIND" {
+                let body = """
+                <?xml version="1.0" encoding="utf-8"?>
+                <D:multistatus xmlns:D="DAV:">
+                  <D:response>
+                    <D:href>/dav/opaque-child-id/</D:href>
+                    <D:propstat><D:prop><D:displayname>Opaque Child</D:displayname><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
+                  </D:response>
+                </D:multistatus>
+                """
+                return (HTTPURLResponse(url: request.url!, statusCode: 207, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("download".utf8))
+        }
+        let provider = makeProvider()
+        let child = RemotePath(identifier: "/opaque-child-id/", displayPath: "/Personal Space/Opaque Child")
+        let expectedParent = RemotePath(identifier: "/", displayPath: "/Personal Space")
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinder-WebDAV-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let listing = try await provider.list(directory: child)
+        _ = try await provider.download(item: child, to: destination)
+
+        XCTAssertEqual(listing.parent, expectedParent)
+        XCTAssertEqual(recorder.values.map(\.0), ["PROPFIND", "GET"])
+        XCTAssertTrue(recorder.values[1].1.hasSuffix("/dav/opaque-child-id"))
     }
 
     func testSendsWebDAVMutationMethodsWithEncodedDestination() async throws {
@@ -52,10 +85,11 @@ final class WebDAVProviderTests: XCTestCase {
         }
         let provider = makeProvider()
 
-        try await provider.mkdir(path: "/new folder")
-        try await provider.delete(path: "/old.txt")
-        try await provider.move(from: "/old name.txt", to: "/new name.txt")
-        try await provider.copy(from: "/source.txt", to: "/copy.txt")
+        let root = RemotePath(identifier: "/", displayPath: "/")
+        try await provider.createDirectory(in: root, named: "new folder")
+        try await provider.delete(item: RemotePath(identifier: "/old.txt", displayPath: "/old.txt"))
+        try await provider.move(item: RemotePath(identifier: "/old name.txt", displayPath: "/old name.txt"), to: root, named: "new name.txt")
+        try await provider.copy(item: RemotePath(identifier: "/source.txt", displayPath: "/source.txt"), to: root, named: "copy.txt")
 
         let requests = seen.values
         XCTAssertEqual(requests.map(\.0), ["MKCOL", "DELETE", "MOVE", "COPY"])
@@ -75,7 +109,7 @@ final class WebDAVProviderTests: XCTestCase {
         let missingProvider = WebDAVProvider(account: missingSecretAccount, credentialStore: InMemoryKeychainStore(), session: session)
 
         do {
-            _ = try await missingProvider.list(path: "/")
+            _ = try await missingProvider.list(directory: RemotePath(identifier: "/", displayPath: "/"))
             XCTFail("Expected missing secret failure")
         } catch OpenFinderError.missingSecret("missing") {
             // expected
@@ -88,7 +122,7 @@ final class WebDAVProviderTests: XCTestCase {
         let httpAccount = RemoteAccount(id: UUID(), name: "HTTP", provider: .webDAV, baseURL: URL(string: "http://example.test/dav/")!, username: "me", secretKeychainRef: "secret", options: [:])
         let httpProvider = WebDAVProvider(account: httpAccount, credentialStore: keychain, session: session)
         do {
-            _ = try await httpProvider.list(path: "/")
+            _ = try await httpProvider.list(directory: RemotePath(identifier: "/", displayPath: "/"))
             XCTFail("Expected insecure transport failure")
         } catch OpenFinderError.operationFailed(let message) {
             XCTAssertTrue(message.contains("HTTPS"))
@@ -113,7 +147,7 @@ final class WebDAVProviderTests: XCTestCase {
         let provider = makeProvider()
 
         do {
-            try await provider.delete(path: "/locked.txt")
+            try await provider.delete(item: RemotePath(identifier: "/locked.txt", displayPath: "/locked.txt"))
             XCTFail("Expected 207 child failure")
         } catch OpenFinderError.webDAVUnexpectedStatus(423, "DELETE") {
             // expected
@@ -145,9 +179,9 @@ final class WebDAVProviderTests: XCTestCase {
         }
         let provider = makeProvider()
 
-        let items = try await provider.list(path: "/photos/")
+        let items = try await provider.list(directory: RemotePath(identifier: "/photos/", displayPath: "/photos/")).items
 
-        XCTAssertEqual(items.map(\.path), ["/photos/absolute.png"])
+        XCTAssertEqual(items.map(\.remotePath.displayPath), ["/photos/absolute.png"])
         XCTAssertEqual(items.first?.size, 7)
     }
 
@@ -164,13 +198,13 @@ final class WebDAVProviderTests: XCTestCase {
         let upload = root.appendingPathComponent("upload.txt")
         try "upload".write(to: upload, atomically: true, encoding: .utf8)
 
-        _ = try await provider.upload(localURL: upload, remotePath: "/upload.txt")
+        _ = try await provider.upload(localURL: upload, to: RemotePath(identifier: "/", displayPath: "/"), named: "upload.txt")
         XCTAssertEqual(recorder.values.first?.2, "*")
 
         let existingDownload = root.appendingPathComponent("download.txt")
         try "existing".write(to: existingDownload, atomically: true, encoding: .utf8)
         do {
-            _ = try await provider.download(remotePath: "/download.txt", localURL: existingDownload)
+            _ = try await provider.download(item: RemotePath(identifier: "/download.txt", displayPath: "/download.txt"), to: existingDownload)
             XCTFail("Expected local destination conflict")
         } catch OpenFinderError.operationFailed(let message) {
             XCTAssertTrue(message.contains("already exists"))
@@ -193,7 +227,7 @@ final class WebDAVProviderTests: XCTestCase {
         try "upload".write(to: upload, atomically: true, encoding: .utf8)
 
         do {
-            _ = try await provider.upload(localURL: upload, remotePath: "/upload.txt")
+            _ = try await provider.upload(localURL: upload, to: RemotePath(identifier: "/", displayPath: "/"), named: "upload.txt")
             XCTFail("Expected unsafe overwrite-style status to fail")
         } catch OpenFinderError.webDAVUnexpectedStatus(200, "PUT") {
             // expected

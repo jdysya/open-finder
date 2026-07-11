@@ -11,8 +11,8 @@ public actor WebDAVProvider: RemoteProvider {
         self.session = session
     }
 
-    public func list(path: String) async throws -> [RemoteItem] {
-        var request = try request(path: path, method: "PROPFIND")
+    public func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
+        var request = try request(path: directory.identifier, method: "PROPFIND")
         request.setValue("1", forHTTPHeaderField: "Depth")
         request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(Self.propfindBody.utf8)
@@ -20,21 +20,38 @@ public actor WebDAVProvider: RemoteProvider {
         try validate(response, data: data, method: "PROPFIND", allowed: [207])
         let basePath = account.baseURL?.path ?? "/"
         let items = try WebDAVMultiStatusParser.parse(data: data).map { Self.item($0, relativeToBasePath: basePath) }
-        let normalizedSelf = Self.normalizedRemotePath(path)
-        return items.filter { Self.normalizedRemotePath($0.path) != normalizedSelf }
+        let normalizedSelf = Self.normalizedRemotePath(directory.identifier)
+        return RemoteDirectoryListing(
+            current: directory,
+            parent: Self.parentPath(for: directory),
+            items: items.filter { Self.normalizedRemotePath($0.remotePath.identifier) != normalizedSelf },
+            capabilities: .init(isReadable: true, isWritable: true)
+        )
     }
 
-    public func mkdir(path: String) async throws {
+    public func createDirectory(in parent: RemotePath, named name: String) async throws {
+        try await makeDirectory(at: Self.childPath(in: parent.identifier, named: name))
+    }
+
+    private func makeDirectory(at path: String) async throws {
         let (data, response) = try await session.data(for: request(path: path, method: "MKCOL"))
         try validate(response, data: data, method: "MKCOL", allowed: [200, 201, 204])
     }
 
-    public func delete(path: String) async throws {
+    public func delete(item: RemotePath) async throws {
+        try await delete(at: item.identifier)
+    }
+
+    private func delete(at path: String) async throws {
         let (data, response) = try await session.data(for: request(path: path, method: "DELETE"))
         try validate(response, data: data, method: "DELETE", allowed: [200, 202, 204, 207])
     }
 
-    public func move(from: String, to: String) async throws {
+    public func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {
+        try await move(from: item.identifier, to: Self.childPath(in: destination.identifier, named: name))
+    }
+
+    private func move(from: String, to: String) async throws {
         var request = try request(path: from, method: "MOVE")
         request.setValue(try url(for: to).absoluteString, forHTTPHeaderField: "Destination")
         request.setValue("F", forHTTPHeaderField: "Overwrite")
@@ -42,7 +59,11 @@ public actor WebDAVProvider: RemoteProvider {
         try validate(response, data: data, method: "MOVE", allowed: [200, 201, 204, 207])
     }
 
-    public func copy(from: String, to: String) async throws {
+    public func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {
+        try await copy(from: item.identifier, to: Self.childPath(in: destination.identifier, named: name))
+    }
+
+    private func copy(from: String, to: String) async throws {
         var request = try request(path: from, method: "COPY")
         request.setValue(try url(for: to).absoluteString, forHTTPHeaderField: "Destination")
         request.setValue("F", forHTTPHeaderField: "Overwrite")
@@ -50,7 +71,11 @@ public actor WebDAVProvider: RemoteProvider {
         try validate(response, data: data, method: "COPY", allowed: [200, 201, 204, 207])
     }
 
-    public func upload(localURL: URL, remotePath: String) async throws -> TaskID {
+    public func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID {
+        try await upload(localURL: localURL, toPath: Self.childPath(in: parent.identifier, named: name))
+    }
+
+    private func upload(localURL: URL, toPath remotePath: String) async throws -> TaskID {
         var request = try request(path: remotePath, method: "PUT")
         request.setValue("*", forHTTPHeaderField: "If-None-Match")
         request.httpBody = try Data(contentsOf: localURL)
@@ -59,13 +84,17 @@ public actor WebDAVProvider: RemoteProvider {
         return UUID()
     }
 
-    public func download(remotePath: String, localURL: URL) async throws -> TaskID {
+    public func download(item: RemotePath, to localURL: URL) async throws -> TaskID {
+        try await download(from: item.identifier, to: localURL)
+    }
+
+    private func download(from remotePath: String, to localURL: URL) async throws -> TaskID {
         guard !FileManager.default.fileExists(atPath: localURL.path) else {
             throw OpenFinderError.operationFailed("Local destination already exists: \(localURL.path)")
         }
         let (data, response) = try await session.data(for: request(path: remotePath, method: "GET"))
         try validate(response, data: data, method: "GET", allowed: [200])
-        try data.write(to: localURL, options: .withoutOverwriting)
+        try data.write(to: localURL, options: Data.WritingOptions.withoutOverwriting)
         return UUID()
     }
 
@@ -105,6 +134,28 @@ public actor WebDAVProvider: RemoteProvider {
         return url
     }
 
+    private static func childPath(in parent: String, named name: String) -> String {
+        let normalizedParent = normalizedRemotePath(parent)
+        return normalizedParent == "/" ? "/\(name)" : "\(normalizedParent)/\(name)"
+    }
+
+    private static func parentPath(for path: RemotePath) -> RemotePath? {
+        let identifier = normalizedRemotePath(path.identifier)
+        guard identifier != "/" else { return nil }
+        let parentID = parentIdentifier(for: identifier)
+        let displayPath = normalizedRemotePath(path.displayPath)
+        let parentDisplay = parentIdentifier(for: displayPath)
+        return RemotePath(
+            identifier: parentID,
+            displayPath: parentDisplay
+        )
+    }
+
+    private static func parentIdentifier(for normalizedPath: String) -> String {
+        let components = normalizedPath.split(separator: "/", omittingEmptySubsequences: true).dropLast()
+        return components.isEmpty ? "/" : "/" + components.joined(separator: "/")
+    }
+
     private func validate(_ response: URLResponse, data: Data, method: String, allowed: Set<Int>) throws {
         guard let http = response as? HTTPURLResponse else { throw OpenFinderError.operationFailed("Missing HTTP response") }
         guard allowed.contains(http.statusCode) else { throw OpenFinderError.webDAVUnexpectedStatus(http.statusCode, method) }
@@ -115,16 +166,18 @@ public actor WebDAVProvider: RemoteProvider {
 
 
     private static func item(_ item: RemoteItem, relativeToBasePath basePath: String) -> RemoteItem {
-        let relativePath = relativeRemotePath(from: item.path, basePath: basePath)
+        let relativePath = relativeRemotePath(from: item.remotePath.identifier, basePath: basePath)
         return RemoteItem(
             id: "webdav:\(relativePath)",
             name: item.name,
-            path: relativePath,
+            path: RemotePath(identifier: relativePath, displayPath: relativePath),
             kind: item.kind,
             size: item.size,
             modificationDate: item.modificationDate,
             etag: item.etag,
-            mimeType: item.mimeType
+            mimeType: item.mimeType,
+            isReadable: item.isReadable,
+            isWritable: item.isWritable
         )
     }
 
@@ -280,7 +333,7 @@ final class WebDAVMultiStatusParser: NSObject, XMLParserDelegate {
             if let href {
                 let decodedPath = href.removingPercentEncoding ?? href
                 let name = (displayName?.isEmpty == false ? displayName : URL(string: decodedPath)?.lastPathComponent) ?? decodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                items.append(RemoteItem(id: "webdav:\(decodedPath)", name: name, path: decodedPath, kind: isCollection ? .directory : .file, size: contentLength, modificationDate: lastModified, etag: etag, mimeType: contentType))
+                items.append(RemoteItem(id: "webdav:\(decodedPath)", name: name, path: RemotePath(identifier: decodedPath, displayPath: decodedPath), kind: isCollection ? .directory : .file, size: contentLength, modificationDate: lastModified, etag: etag, mimeType: contentType, isReadable: true, isWritable: true))
             }
             insideResponse = false
         default: break

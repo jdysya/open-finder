@@ -5,10 +5,11 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @State private var selectedSettingsSection: SettingsSection? = .general
-    @State private var webDAVName = ""
-    @State private var webDAVBaseURL = "https://example.com/dav/"
-    @State private var webDAVUsername = ""
-    @State private var webDAVPassword = ""
+    @State private var selectedConnectorID: RemoteConnectorID = .kodbox
+    @State private var remoteName = ""
+    @State private var remoteEndpoint = RemoteConnectorRegistry.builtIn.connector(id: .kodbox)?.defaultEndpoint ?? "https://example.com/index.php/dav/"
+    @State private var remoteUsername = ""
+    @State private var remotePassword = ""
     @State private var allowInsecureHTTP = false
     @State private var pluginSearchText = ""
     @State private var pluginSecretDrafts: [String: String] = [:]
@@ -37,8 +38,8 @@ struct SettingsView: View {
             }
 
             Section("Connections") {
-                SettingsSidebarRow(section: .webDAV)
-                    .tag(SettingsSection.webDAV)
+                SettingsSidebarRow(section: .connections)
+                    .tag(SettingsSection.connections)
             }
         }
         .listStyle(.sidebar)
@@ -51,8 +52,8 @@ struct SettingsView: View {
             generalSettingsPage
         case .plugins:
             pluginSettingsPage
-        case .webDAV:
-            webDAVSettingsPage
+        case .connections:
+            connectionsSettingsPage
         }
     }
 
@@ -151,35 +152,51 @@ struct SettingsView: View {
         }
     }
 
-    private var webDAVSettingsPage: some View {
-        settingsPage(title: "WebDAV", subtitle: "Add remote accounts and open them in the active pane.", systemImage: "externaldrive.connected.to.line.below") {
+    private var connectionsSettingsPage: some View {
+        settingsPage(title: "Connections", subtitle: "Add remote accounts and open them in the active pane.", systemImage: "externaldrive.connected.to.line.below") {
             settingsCard(title: "Add Account", systemImage: "plus.circle") {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                     GridRow {
+                        Text("Connector")
+                            .foregroundStyle(.secondary)
+                        Picker("Connector", selection: $selectedConnectorID) {
+                            ForEach(app.remoteConnectors) { connector in
+                                Text(connector.displayName).tag(connector.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 240, alignment: .leading)
+                        .onChange(of: selectedConnectorID) { _, connectorID in
+                            if let connector = app.remoteConnectors.first(where: { $0.id == connectorID }) {
+                                remoteEndpoint = connector.defaultEndpoint
+                            }
+                        }
+                    }
+                    GridRow {
                         Text("Display name")
                             .foregroundStyle(.secondary)
-                        TextField("My WebDAV", text: $webDAVName)
+                        TextField("My Remote", text: $remoteName)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 420)
                     }
                     GridRow {
-                        Text("Base URL")
+                        Text("Endpoint")
                             .foregroundStyle(.secondary)
-                        TextField("https://example.com/dav/", text: $webDAVBaseURL)
+                        TextField(currentConnector?.endpointHint ?? "Remote endpoint URL", text: $remoteEndpoint)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 420)
                     }
                     GridRow {
                         Text("Username")
                             .foregroundStyle(.secondary)
-                        TextField("Username", text: $webDAVUsername)
+                        TextField("Username", text: $remoteUsername)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 420)
                     }
                     GridRow {
                         Text("Password / token")
                             .foregroundStyle(.secondary)
-                        SecureField("Password / token", text: $webDAVPassword)
+                        SecureField("Password / token", text: $remotePassword)
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 420)
                     }
@@ -188,25 +205,26 @@ struct SettingsView: View {
 
                 Toggle("Allow insecure HTTP for local development", isOn: $allowInsecureHTTP)
 
-                Button("Add WebDAV Account") {
-                    app.addWebDAVAccount(
-                        name: webDAVName,
-                        baseURL: webDAVBaseURL,
-                        username: webDAVUsername,
-                        password: webDAVPassword,
+                Button("Add Account") {
+                    app.addRemoteAccount(
+                        connectorID: selectedConnectorID,
+                        name: remoteName,
+                        endpoint: remoteEndpoint,
+                        username: remoteUsername,
+                        password: remotePassword,
                         allowInsecureHTTP: allowInsecureHTTP
                     )
-                    webDAVPassword = ""
+                    remotePassword = ""
                 }
             }
 
             settingsCard(title: "Accounts", systemImage: "externaldrive") {
-                if app.webDAVAccounts.isEmpty {
-                    Text("No WebDAV accounts configured.")
+                if app.remoteAccounts.isEmpty {
+                    Text("No remote accounts configured.")
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(Array(app.webDAVAccounts.enumerated()), id: \.element.id) { index, account in
+                        ForEach(Array(app.remoteAccounts.enumerated()), id: \.element.id) { index, account in
                             HStack(spacing: 12) {
                                 Image(systemName: "server.rack")
                                     .foregroundStyle(Color.accentColor)
@@ -220,11 +238,11 @@ struct SettingsView: View {
                                         .lineLimit(1)
                                 }
                                 Spacer()
-                                Button("Open") { app.openWebDAVAccountInActivePane(account) }
-                                Button("Remove", role: .destructive) { app.removeWebDAVAccount(account) }
+                                Button("Open") { app.openRemoteAccountInActivePane(account) }
+                                Button("Remove", role: .destructive) { app.removeRemoteAccount(account) }
                             }
                             .padding(.vertical, 9)
-                            if index < app.webDAVAccounts.count - 1 {
+                            if index < app.remoteAccounts.count - 1 {
                                 Divider()
                                     .padding(.leading, 36)
                             }
@@ -280,6 +298,10 @@ struct SettingsView: View {
                 || plugin.manifest.id.localizedCaseInsensitiveContains(query)
                 || (plugin.manifest.description?.localizedCaseInsensitiveContains(query) ?? false)
         }
+    }
+
+    private var currentConnector: RemoteConnector? {
+        app.remoteConnectors.first { $0.id == selectedConnectorID }
     }
 
     private func pluginConfigurationSummary(_ plugin: LoadedPlugin) -> String {
@@ -539,7 +561,7 @@ struct SettingsView: View {
 private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
     case plugins
-    case webDAV
+    case connections
 
     static let primarySections: [SettingsSection] = [.general, .plugins]
 
@@ -549,7 +571,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general: "General"
         case .plugins: "Plugins"
-        case .webDAV: "WebDAV"
+        case .connections: "Connections"
         }
     }
 
@@ -557,7 +579,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general: "gearshape"
         case .plugins: "puzzlepiece.extension"
-        case .webDAV: "externaldrive.connected.to.line.below"
+        case .connections: "externaldrive.connected.to.line.below"
         }
     }
 }

@@ -16,7 +16,7 @@ final class AppModel: ObservableObject {
     @Published var taskRecords: [TaskRecord] = []
     @Published var taskLogs: [UUID: [TaskLogLine]] = [:]
     @Published var loadedPlugins: [LoadedPlugin] = []
-    @Published var webDAVAccounts: [RemoteAccount] = []
+    @Published var remoteAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
     @Published var pendingTransferOverwrite: PendingTransferOverwrite?
     @Published var configuration = AppConfiguration() {
@@ -28,20 +28,52 @@ final class AppModel: ObservableObject {
     private let keychainStore: KeychainStore
     private let configurationStore: JSONConfigStore
     private let pluginRegistry = PluginRegistry()
+    private let remoteConnectorRegistry: RemoteConnectorRegistry
+    private let remoteProviderRegistry: RemoteProviderRegistry
     private var taskPollingTask: Task<Void, Never>?
     private var didLoadInitialState = false
 
-    init() {
+    init(
+        remoteDirectory: RemoteAccountDirectory? = nil,
+        configurationStore: JSONConfigStore? = nil,
+        keychainStore: KeychainStore? = nil,
+        remoteConnectorRegistry: RemoteConnectorRegistry = .builtIn,
+        remoteProviderRegistry: RemoteProviderRegistry? = nil
+    ) {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let remoteDirectory = RemoteAccountDirectory(storageURL: Self.applicationSupportDirectory().appendingPathComponent("remote-accounts.json"))
-        let configurationStore = JSONConfigStore(url: Self.applicationSupportDirectory().appendingPathComponent("config.json"))
-        let keychainStore: KeychainStore = MacKeychainStore()
+        let remoteDirectory = remoteDirectory ?? RemoteAccountDirectory(storageURL: Self.applicationSupportDirectory().appendingPathComponent("remote-accounts.json"))
+        let configurationStore = configurationStore ?? JSONConfigStore(url: Self.applicationSupportDirectory().appendingPathComponent("config.json"))
+        let keychainStore = keychainStore ?? MacKeychainStore()
         self.remoteDirectory = remoteDirectory
         self.keychainStore = keychainStore
         self.configurationStore = configurationStore
+        self.remoteConnectorRegistry = remoteConnectorRegistry
+        let configuredProviderRegistry = remoteProviderRegistry ?? RemoteProviderRegistry(
+            connectorRegistry: remoteConnectorRegistry,
+            account: { accountID in
+                guard let accountID = UUID(uuidString: accountID) else { return nil }
+                return remoteDirectory.account(id: accountID)
+            },
+            credentialStore: keychainStore
+        )
+        self.remoteProviderRegistry = configuredProviderRegistry
+        let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider = { location in
+            try await configuredProviderRegistry.resolve(
+                accountID: location.accountID.uuidString,
+                revision: location.connectorID.rawValue
+            )
+        }
         self.taskQueue = TaskQueueService(maxConcurrentTasks: 2)
-        self.leftPane = BrowserPaneModel(id: .left, location: .local(path: home.path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
-        self.rightPane = BrowserPaneModel(id: .right, location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path), remoteDirectory: remoteDirectory, keychainStore: keychainStore)
+        self.leftPane = BrowserPaneModel(
+            id: .left,
+            location: .local(path: home.path),
+            remoteProviderResolver: remoteProviderResolver
+        )
+        self.rightPane = BrowserPaneModel(
+            id: .right,
+            location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path),
+            remoteProviderResolver: remoteProviderResolver
+        )
         Task {
             await loadInitialState()
         }
@@ -64,9 +96,11 @@ final class AppModel: ObservableObject {
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
-        webDAVAccounts = remoteDirectory.all()
+        remoteAccounts = remoteDirectory.all()
         await refreshTasks()
     }
+
+    var remoteConnectors: [RemoteConnector] { remoteConnectorRegistry.connectors }
 
     func loadPlugins() {
         var plugins: [LoadedPlugin] = []
@@ -279,46 +313,76 @@ final class AppModel: ObservableObject {
 
 
     func addWebDAVAccount(name: String, baseURL: String, username: String, password: String, allowInsecureHTTP: Bool) {
+        addRemoteAccount(
+            connectorID: .webDAV,
+            name: name,
+            endpoint: baseURL,
+            username: username,
+            password: password,
+            allowInsecureHTTP: allowInsecureHTTP
+        )
+    }
+
+    func addRemoteAccount(connectorID: RemoteConnectorID, name: String, endpoint: String, username: String, password: String, allowInsecureHTTP: Bool) {
         do {
-            guard let url = URL(string: baseURL), url.scheme == "https" || (allowInsecureHTTP && url.scheme == "http") else {
-                throw OpenFinderError.operationFailed("Enter an HTTPS WebDAV URL, or explicitly allow insecure HTTP for development.")
+            guard let connector = remoteConnectorRegistry.connector(id: connectorID) else {
+                throw OpenFinderError.operationFailed("Unknown remote connector: \(connectorID.rawValue)")
             }
             let accountID = UUID()
-            let secretRef = "remote.webdav.\(accountID.uuidString).password"
+            let secretRef = "remote.\(connector.id.rawValue).\(accountID.uuidString).password"
+            let account = try connector.makeAccount(
+                id: accountID,
+                name: name,
+                endpoint: endpoint,
+                username: username,
+                secretKeychainRef: password.isEmpty ? nil : secretRef,
+                allowInsecureHTTP: allowInsecureHTTP
+            )
             if !password.isEmpty {
                 try keychainStore.setSecret(password, for: secretRef)
             }
-            let account = RemoteAccount(
-                id: accountID,
-                name: name.isEmpty ? url.host(percentEncoded: false) ?? "WebDAV" : name,
-                provider: .webDAV,
-                baseURL: url,
-                username: username.isEmpty ? nil : username,
-                secretKeychainRef: password.isEmpty ? nil : secretRef,
-                options: allowInsecureHTTP ? ["allowInsecureHTTP": "true"] : [:]
-            )
             remoteDirectory.save(account)
-            webDAVAccounts = remoteDirectory.all()
-            statusMessage = "Added WebDAV account \(account.name)"
+            remoteAccounts = remoteDirectory.all()
+            statusMessage = "Added \(connector.displayName) account \(account.name)"
         } catch {
             statusMessage = error.localizedDescription
         }
     }
 
     func removeWebDAVAccount(_ account: RemoteAccount) {
+        removeRemoteAccount(account)
+    }
+
+    func removeRemoteAccount(_ account: RemoteAccount) {
         do {
             if let ref = account.secretKeychainRef { try keychainStore.deleteSecret(for: ref) }
             remoteDirectory.remove(id: account.id)
-            webDAVAccounts = remoteDirectory.all()
-            statusMessage = "Removed WebDAV account \(account.name)"
+            remoteAccounts = remoteDirectory.all()
+            let connectorName = remoteConnectorRegistry.connector(for: account)?.displayName ?? "Remote"
+            statusMessage = "Removed \(connectorName) account \(account.name)"
         } catch {
             statusMessage = error.localizedDescription
         }
     }
 
     func openWebDAVAccountInActivePane(_ account: RemoteAccount) {
+        openRemoteAccountInActivePane(account)
+    }
+
+    func openRemoteAccountInActivePane(_ account: RemoteAccount) {
         Task {
-            await activeBrowser.navigate(to: .webDAV(accountID: account.id, path: "/"))
+            guard let connector = remoteConnectorRegistry.connector(for: account) else {
+                statusMessage = "No connector is available for \(account.name)"
+                return
+            }
+            let root = connector.providerKind == .kodbox
+                ? RemotePath(identifier: KodboxProvider.syntheticRootIdentifier, displayPath: "/")
+                : RemotePath(identifier: "/", displayPath: "/")
+            await activeBrowser.navigate(to: .remote(.init(
+                accountID: account.id,
+                connectorID: connector.id,
+                path: root
+            )))
         }
     }
 
@@ -506,17 +570,20 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published private(set) var historyIndex: Int = 0
 
     private let provider = LocalFileProvider()
-    private let remoteDirectory: RemoteAccountDirectory
-    private let keychainStore: KeychainStore
+    private let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
     private var directorySizeCache: [String: Int64] = [:]
     private var directorySizeTasks: [String: Task<Void, Never>] = [:]
+    private var remoteParent: RemotePath?
 
-    init(id: AppModel.PaneID, location: Location, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) {
+    init(
+        id: AppModel.PaneID,
+        location: Location,
+        remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider
+    ) {
         self.id = id
         self.location = location
         self.history = [location]
-        self.remoteDirectory = remoteDirectory
-        self.keychainStore = keychainStore
+        self.remoteProviderResolver = remoteProviderResolver
     }
 
     deinit {
@@ -553,6 +620,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func refresh() async {
         isLoading = true
         errorMessage = nil
+        remoteParent = nil
         defer { isLoading = false }
         do {
             items = try await listItems(at: location)
@@ -600,9 +668,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             guard let url = location.localURL else { return }
             let parent = url.deletingLastPathComponent()
             Task { await navigate(to: .local(path: parent.path)) }
-        case .webDAV(let accountID, let path):
-            let parent = Self.parentRemotePath(path)
-            Task { await navigate(to: .webDAV(accountID: accountID, path: parent)) }
+        case .webDAV, .remote:
+            guard let remoteLocation = try? remoteLocation(for: location), let remoteParent else { return }
+            Task {
+                await navigate(to: .remote(.init(
+                    accountID: remoteLocation.accountID,
+                    connectorID: remoteLocation.connectorID,
+                    path: remoteParent
+                )))
+            }
         case .rclone:
             break
         }
@@ -619,9 +693,10 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 switch location {
                 case .local:
                     try await provider.createFolder(at: location, name: uniqueName(base: "New Folder"))
-                case .webDAV(let accountID, let path):
-                    let remote = try webDAVProvider(accountID: accountID)
-                    try await remote.mkdir(path: Self.childRemotePath(parent: path, name: "New Folder"))
+                case .webDAV, .remote:
+                    let remoteLocation = try remoteLocation(for: location)
+                    let remote = try await remoteProvider(for: remoteLocation)
+                    try await remote.createDirectory(in: remoteLocation.path, named: "New Folder")
                 case .rclone:
                     throw OpenFinderError.unsupportedLocation(location)
                 }
@@ -636,12 +711,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 switch location {
                 case .local:
                     try await provider.createFile(at: location, name: uniqueName(base: "Untitled.txt"))
-                case .webDAV(let accountID, let path):
+                case .webDAV, .remote:
                     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("OpenFinder-empty-\(UUID().uuidString).txt")
                     FileManager.default.createFile(atPath: temp.path, contents: Data())
                     defer { try? FileManager.default.removeItem(at: temp) }
-                    let remote = try webDAVProvider(accountID: accountID)
-                    _ = try await remote.upload(localURL: temp, remotePath: Self.childRemotePath(parent: path, name: "Untitled.txt"))
+                    let remoteLocation = try remoteLocation(for: location)
+                    let remote = try await remoteProvider(for: remoteLocation)
+                    _ = try await remote.upload(localURL: temp, to: remoteLocation.path, named: "Untitled.txt")
                 case .rclone:
                     throw OpenFinderError.unsupportedLocation(location)
                 }
@@ -657,9 +733,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 switch item.location {
                 case .local:
                     _ = try await provider.rename(item, to: newName)
-                case .webDAV(let accountID, let path):
-                    let remote = try webDAVProvider(accountID: accountID)
-                    try await remote.move(from: path, to: Self.childRemotePath(parent: Self.parentRemotePath(path), name: newName))
+                case .webDAV, .remote:
+                    let itemLocation = try remoteLocation(for: item.location)
+                    let destinationLocation = try remoteLocation(for: location)
+                    let remote = try await remoteProvider(for: itemLocation)
+                    try await remote.move(item: itemLocation.path, to: destinationLocation.path, named: newName)
                 case .rclone:
                     throw OpenFinderError.unsupportedLocation(item.location)
                 }
@@ -695,9 +773,10 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     switch item.location {
                     case .local:
                         try await provider.trashOrDelete([item])
-                    case .webDAV(let accountID, let path):
-                        let remote = try webDAVProvider(accountID: accountID)
-                        try await remote.delete(path: path)
+                    case .webDAV, .remote:
+                        let remoteLocation = try remoteLocation(for: item.location)
+                        let remote = try await remoteProvider(for: remoteLocation)
+                        try await remote.delete(item: remoteLocation.path)
                     case .rclone:
                         throw OpenFinderError.unsupportedLocation(item.location)
                     }
@@ -728,14 +807,20 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         switch location {
         case .local:
             return try await provider.list(location, options: .init(showHiddenFiles: showHiddenFiles, sort: .name(ascending: true)))
-        case .webDAV(let accountID, let path):
-            let remote = try webDAVProvider(accountID: accountID)
-            let remoteItems = try await remote.list(path: path)
-            let fileItems = remoteItems.map { remoteItem in
+        case .webDAV, .remote:
+            let remoteLocation = try remoteLocation(for: location)
+            let remote = try await remoteProvider(for: remoteLocation)
+            let listing = try await remote.list(directory: remoteLocation.path)
+            remoteParent = listing.parent
+            let fileItems = listing.items.map { remoteItem in
                 FileItem(
-                    id: "webdav:\(accountID.uuidString):\(remoteItem.path)",
+                    id: "remote:\(remoteLocation.accountID.uuidString):\(remoteItem.remotePath.identifier)",
                     name: remoteItem.name,
-                    location: .webDAV(accountID: accountID, path: remoteItem.path),
+                    location: .remote(.init(
+                        accountID: remoteLocation.accountID,
+                        connectorID: remoteLocation.connectorID,
+                        path: remoteItem.remotePath
+                    )),
                     kind: remoteItem.kind,
                     size: remoteItem.size,
                     modificationDate: remoteItem.modificationDate,
@@ -794,11 +879,23 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
     }
 
-    private func webDAVProvider(accountID: UUID) throws -> WebDAVProvider {
-        guard let account = remoteDirectory.account(id: accountID) else {
-            throw OpenFinderError.itemNotFound("WebDAV account \(accountID)")
+    private func remoteLocation(for location: Location) throws -> RemoteLocation {
+        switch location {
+        case .remote(let remoteLocation):
+            return remoteLocation
+        case .webDAV(let accountID, let path):
+            return .init(
+                accountID: accountID,
+                connectorID: .webDAV,
+                path: .init(identifier: path, displayPath: path)
+            )
+        case .local, .rclone:
+            throw OpenFinderError.unsupportedLocation(location)
         }
-        return WebDAVProvider(account: account, credentialStore: keychainStore)
+    }
+
+    private func remoteProvider(for remoteLocation: RemoteLocation) async throws -> any RemoteProvider {
+        try await remoteProviderResolver(remoteLocation)
     }
 
     private func sortItems(_ items: [FileItem]) -> [FileItem] {
@@ -806,18 +903,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory && !rhs.isDirectory }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
-    }
-
-    private static func childRemotePath(parent: String, name: String) -> String {
-        let cleanParent = parent == "/" ? "" : parent.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return "/" + ([cleanParent, name].filter { !$0.isEmpty }.joined(separator: "/"))
-    }
-
-    private static func parentRemotePath(_ path: String) -> String {
-        let clean = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !clean.isEmpty else { return "/" }
-        let parts = clean.split(separator: "/").dropLast()
-        return parts.isEmpty ? "/" : "/" + parts.joined(separator: "/")
     }
 
     private func uniqueName(base: String) -> String {
@@ -895,7 +980,11 @@ enum FileTransferService {
             for (index, item) in items.enumerated() {
                 guard let url = item.localURL else { continue }
                 progress?(Double(index) / Double(max(items.count, 1)), "Uploading \(item.name)")
-                _ = try await remote.upload(localURL: url, remotePath: childRemotePath(parent: remotePath, name: item.name))
+                _ = try await remote.upload(
+                    localURL: url,
+                    to: .init(identifier: remotePath, displayPath: remotePath),
+                    named: item.name
+                )
             }
             if move { try await LocalFileProvider().trashOrDelete(items) }
         case (.webDAV(let accountID, _), .local):
@@ -904,8 +993,9 @@ enum FileTransferService {
             for (index, item) in items.enumerated() {
                 if case .webDAV(_, let itemPath) = item.location {
                     progress?(Double(index) / Double(max(items.count, 1)), "Downloading \(item.name)")
-                    _ = try await remote.download(remotePath: itemPath, localURL: destinationURL.appendingPathComponent(item.name, isDirectory: false))
-                    if move { try await remote.delete(path: itemPath) }
+                    let remoteItem = RemotePath(identifier: itemPath, displayPath: itemPath)
+                    _ = try await remote.download(item: remoteItem, to: destinationURL.appendingPathComponent(item.name, isDirectory: false))
+                    if move { try await remote.delete(item: remoteItem) }
                 }
             }
         case (.webDAV(let sourceAccountID, _), .webDAV(let destAccountID, let destPath)) where sourceAccountID == destAccountID:
@@ -913,9 +1003,10 @@ enum FileTransferService {
             for (index, item) in items.enumerated() {
                 if case .webDAV(_, let itemPath) = item.location {
                     progress?(Double(index) / Double(max(items.count, 1)), "Transferring \(item.name)")
-                    let target = childRemotePath(parent: destPath, name: item.name)
-                    if move { try await remote.move(from: itemPath, to: target) }
-                    else { try await remote.copy(from: itemPath, to: target) }
+                    let remoteItem = RemotePath(identifier: itemPath, displayPath: itemPath)
+                    let remoteDestination = RemotePath(identifier: destPath, displayPath: destPath)
+                    if move { try await remote.move(item: remoteItem, to: remoteDestination, named: item.name) }
+                    else { try await remote.copy(item: remoteItem, to: remoteDestination, named: item.name) }
                 }
             }
         default:
@@ -926,10 +1017,5 @@ enum FileTransferService {
     private static func webDAVProvider(accountID: UUID, remoteDirectory: RemoteAccountDirectory, keychainStore: KeychainStore) throws -> WebDAVProvider {
         guard let account = remoteDirectory.account(id: accountID) else { throw OpenFinderError.itemNotFound("WebDAV account \(accountID)") }
         return WebDAVProvider(account: account, credentialStore: keychainStore)
-    }
-
-    private static func childRemotePath(parent: String, name: String) -> String {
-        let cleanParent = parent == "/" ? "" : parent.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return "/" + ([cleanParent, name].filter { !$0.isEmpty }.joined(separator: "/"))
     }
 }
