@@ -3,10 +3,12 @@ import Foundation
 public actor KodboxProvider: RemoteProvider {
     public static let syntheticRootIdentifier = "kodbox:user-space-root"
 
-    private let session: KodboxAPISession
+    let session: KodboxAPISession
+    let accountID: UUID
 
-    public init(session: KodboxAPISession) {
+    public init(session: KodboxAPISession, accountID: UUID = UUID()) {
         self.session = session
+        self.accountID = accountID
     }
 
     public func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
@@ -22,12 +24,13 @@ public actor KodboxProvider: RemoteProvider {
             form: ["path": directory.identifier],
             response: KodboxListPayload.self
         )
+        let personalScope = personalTagScope
         return RemoteDirectoryListing(
             current: directory,
             parent: nil,
-            items: payload.folderList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .directory) }
-                + payload.fileList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .file) },
-            capabilities: .init(isReadable: true, isWritable: true)
+            items: payload.folderList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .directory, personalScope: personalScope) }
+                + payload.fileList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .file, personalScope: personalScope) },
+            capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
         )
     }
 
@@ -187,6 +190,21 @@ public actor KodboxProvider: RemoteProvider {
         encoder.outputFormatting = .withoutEscapingSlashes
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
+
+    var personalTagScope: FileTagScope {
+        .init(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(
+                canAssociate: true,
+                canCreate: true,
+                canRename: true,
+                canUpdateStyle: true,
+                canDelete: true
+            )
+        )
+    }
 }
 
 private struct KodboxOptions: Decodable, Sendable {
@@ -208,8 +226,26 @@ private struct KodboxListItem: Decodable, Sendable {
     let path: String
     let size: Int64?
     let modifyTime: TimeInterval?
+    let sourceInfo: KodboxListSourceInfo?
 
-    func remoteItem(parentDisplayPath: String, kind: FileKind) -> RemoteItem {
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case path
+        case size
+        case modifyTime
+        case sourceInfo
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        size = try container.decodeIfPresent(Int64.self, forKey: .size)
+        modifyTime = try container.decodeIfPresent(TimeInterval.self, forKey: .modifyTime)
+        sourceInfo = try? container.decodeIfPresent(KodboxListSourceInfo.self, forKey: .sourceInfo)
+    }
+
+    func remoteItem(parentDisplayPath: String, kind: FileKind, personalScope: FileTagScope) -> RemoteItem {
         let displayPath = parentDisplayPath == "/"
             ? "/\(name)"
             : "\(parentDisplayPath)/\(name)"
@@ -223,8 +259,65 @@ private struct KodboxListItem: Decodable, Sendable {
             etag: nil,
             mimeType: nil,
             isReadable: true,
-            isWritable: true
+            isWritable: true,
+            tags: sourceInfo?.personalTags(in: personalScope) ?? [],
+            tagScopes: [personalScope],
+            supportsTagEditing: true
         )
+    }
+}
+
+private struct KodboxListSourceInfo: Decodable, Sendable {
+    private let tagInfo: [KodboxListTag]
+
+    private enum CodingKeys: String, CodingKey { case tagInfo }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard var entries = try? container.nestedUnkeyedContainer(forKey: .tagInfo) else {
+            tagInfo = []
+            return
+        }
+
+        var parsed: [KodboxListTag] = []
+        while !entries.isAtEnd {
+            guard let tag = try? entries.decode(KodboxListTag.self) else { break }
+            parsed.append(tag)
+        }
+        tagInfo = parsed
+    }
+
+    func personalTags(in scope: FileTagScope) -> [FileTag] {
+        var seen = Set<FileTag>()
+        return tagInfo.compactMap { $0.fileTag(in: scope) }.filter { seen.insert($0).inserted }
+    }
+}
+
+private struct KodboxListTag: Decodable, Sendable {
+    private let id: String?
+    private let name: String?
+    private let style: String?
+
+    private enum CodingKeys: String, CodingKey { case tagID, name, style }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let identifier = try? container.decode(String.self, forKey: .tagID) {
+            id = identifier
+        } else if let identifier = try? container.decode(Int.self, forKey: .tagID) {
+            id = String(identifier)
+        } else {
+            id = nil
+        }
+        name = try? container.decode(String.self, forKey: .name)
+        style = try? container.decode(String.self, forKey: .style)
+    }
+
+    func fileTag(in scope: FileTagScope) -> FileTag? {
+        guard let id, id != "0", let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return FileTag(id: id, scopeID: scope.id, name: name, color: .init(kodboxStyle: style))
     }
 }
 

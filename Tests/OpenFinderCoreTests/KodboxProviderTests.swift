@@ -89,6 +89,194 @@ final class KodboxProviderTests: XCTestCase {
         XCTAssertEqual(listing.items.map(\.modificationDate), [nil, Date(timeIntervalSince1970: 1_700_000_010)])
     }
 
+    func testListMapsPersonalTags() async throws {
+        let accountID = Self.fixtureAccountID
+        KodboxProviderURLProtocol.handler = { request in
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/list/path":
+                return Self.response(
+                    for: request,
+                    body: #"""
+                    {"code":true,"data":{"folderList":[],"fileList":[
+                      {"name":"notes.txt","path":"{source:5}/notes.txt","size":42,"modifyTime":1700000010,
+                       "sourceInfo":{"tagInfo":[{"tagID":"7","name":"Review","style":"label-blue-normal"},{"tagID":7,"name":"Review","style":"label-blue-normal"},{"tagID":"bad"}]}},
+                      {"name":"missing.txt","path":"{source:5}/missing.txt","size":1,"modifyTime":null},
+                      {"name":"null.txt","path":"{source:5}/null.txt","size":1,"modifyTime":null,"sourceInfo":{"tagInfo":null}},
+                      {"name":"zero.txt","path":"{source:5}/zero.txt","size":1,"modifyTime":null,"sourceInfo":{"tagInfo":0}},
+                      {"name":"empty.txt","path":"{source:5}/empty.txt","size":1,"modifyTime":null,"sourceInfo":{"tagInfo":[]}},
+                      {"name":"neutral.txt","path":"{source:5}/neutral.txt","size":1,"modifyTime":null,
+                       "sourceInfo":{"tagInfo":[{"tagID":"8","name":"Neutral","style":"future-style"},{"tagID":0,"name":"Invalid","style":"label-red-normal"},{"tagID":"9"}]}}
+                    ]}}
+                    """#
+                )
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+
+        let listing = try await provider.list(directory: .init(identifier: "{source:5}/", displayPath: "/Personal"))
+
+        let personalScope = Self.personalScope(accountID: accountID)
+        XCTAssertTrue(listing.capabilities.supportsTags)
+        XCTAssertEqual(listing.items.first?.tags, [
+            .init(id: "7", scopeID: personalScope.id, name: "Review", color: .blue)
+        ])
+        XCTAssertEqual(listing.items.first?.tagScopes, [personalScope])
+        XCTAssertTrue(listing.items.first?.supportsTagEditing ?? false)
+        XCTAssertTrue(listing.items.dropFirst().prefix(4).allSatisfy { $0.tags.isEmpty })
+        XCTAssertEqual(listing.items.last?.tags, [
+            .init(id: "8", scopeID: personalScope.id, name: "Neutral", color: .none)
+        ])
+    }
+
+    func testPersonalTagCatalogAndAssociationRoutes() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/tag/get", "explorer/tag/add", "explorer/tag/edit", "explorer/tag/remove":
+                return Self.response(for: request, body: Self.personalTagCatalogResponse)
+            case "explorer/tag/filesAddToTag", "explorer/tag/filesRemoveFromTag":
+                return Self.response(for: request, body: #"{"code":true,"data":{}}"#)
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+        let location = Self.personalLocation(accountID: accountID, path: "{source:5}/")
+        let item = Self.personalFileItem(accountID: accountID)
+
+        let catalog = try await provider.tagCatalog(for: location)
+        XCTAssertEqual(catalog.scopes.count, 1)
+        let scope = try XCTUnwrap(catalog.scopes.first)
+        XCTAssertEqual(scope, Self.personalScope(accountID: accountID))
+        XCTAssertEqual(catalog.tags, [
+            .init(id: "7", scopeID: scope.id, name: "Review", color: .blue),
+            .init(id: "8", scopeID: scope.id, name: "Neutral", color: .none)
+        ])
+
+        _ = try await provider.mutate(.createTag(name: "Plan", groupID: nil), in: scope)
+        _ = try await provider.mutate(.renameTag(id: "7", name: "Reviewed"), in: scope)
+        _ = try await provider.mutate(.deleteTag(id: "8"), in: scope)
+
+        let noOp = try await provider.apply(.init(), to: [item])
+        XCTAssertEqual(noOp, .init())
+
+        let result = try await provider.apply(
+            .init(
+                add: [.init(id: "7", scopeID: scope.id, name: "Review", color: .blue)],
+                remove: [.init(id: "8", scopeID: scope.id, name: "Neutral")]
+            ),
+            to: [item]
+        )
+        XCTAssertEqual(result, TagApplyResult(appliedItemIDs: [item.id]))
+
+        let tagRequests = recorder.values.filter { request in
+            switch request.url?.kodboxRoute {
+            case "explorer/tag/get", "explorer/tag/add", "explorer/tag/edit", "explorer/tag/remove", "explorer/tag/filesAddToTag", "explorer/tag/filesRemoveFromTag":
+                true
+            default:
+                false
+            }
+        }
+        XCTAssertEqual(tagRequests.map { $0.url?.kodboxRoute }, [
+            "explorer/tag/get",
+            "explorer/tag/add",
+            "explorer/tag/edit",
+            "explorer/tag/remove",
+            "explorer/tag/filesAddToTag",
+            "explorer/tag/filesRemoveFromTag"
+        ])
+        XCTAssertEqual(tagRequests.map(\.bodyFormValues), [
+            nil,
+            ["name": "Plan", "style": "label-grey-normal"],
+            ["tagID": "7", "name": "Reviewed"],
+            ["tagID": "8"],
+            ["tagID": "7", "files": "{source:5}/notes.txt"],
+            ["tagID": "8", "files": "{source:5}/notes.txt"]
+        ])
+    }
+
+    func testPersonalTagAssociationRecordsFailureAndContinuesLaterItems() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/tag/filesAddToTag":
+                if request.bodyFormValues?["files"] == "{source:5}/denied.txt" {
+                    return Self.response(for: request, body: #"{"code":false,"message":"permission denied","data":null}"#)
+                }
+                return Self.response(for: request, body: #"{"code":true,"data":{}}"#)
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+        let tag = FileTag(id: "7", scopeID: Self.personalScope(accountID: accountID).id, name: "Review")
+        let denied = Self.personalFileItem(accountID: accountID, path: "{source:5}/denied.txt")
+        let allowed = Self.personalFileItem(accountID: accountID, path: "{source:5}/allowed.txt")
+
+        let result = try await provider.apply(.init(add: [tag]), to: [denied, allowed])
+
+        XCTAssertEqual(result.appliedItemIDs, [allowed.id])
+        XCTAssertEqual(result.failures.count, 1)
+        XCTAssertEqual(result.failures.first?.itemID, denied.id)
+        XCTAssertEqual(result.failures.first?.tag, tag)
+        XCTAssertEqual(
+            recorder.values.filter { $0.url?.kodboxRoute == "explorer/tag/filesAddToTag" }.compactMap(\.bodyFormValues?["files"]),
+            ["{source:5}/denied.txt", "{source:5}/allowed.txt"]
+        )
+    }
+
+    func testPersonalTagAssociationRejectsUnsafePathsAndUnknownScopeWithoutRequest() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            throw KodboxProviderFixtureError.unexpectedRequest
+        }
+        let provider = makeProvider(accountID: accountID)
+        let personalTag = FileTag(id: "7", scopeID: Self.personalScope(accountID: accountID).id, name: "Review")
+        let unknownTag = FileTag(id: "999", scopeID: "kodbox:other:personal", name: "Unknown")
+        let unsafePaths = [
+            KodboxProvider.syntheticRootIdentifier,
+            "/",
+            "{source:5}/unsafe,comma.txt",
+            "{source:5}/unsafe__*@*__sentinel.txt"
+        ]
+
+        for path in unsafePaths {
+            let result = try await provider.apply(
+                .init(add: [personalTag]),
+                to: [Self.personalFileItem(accountID: accountID, path: path)]
+            )
+            XCTAssertEqual(result.appliedItemIDs, [])
+            XCTAssertEqual(result.failures.count, 1, "Expected unsafe path \(path) to fail locally")
+        }
+        let unknownScope = try await provider.apply(
+            .init(add: [unknownTag]),
+            to: [Self.personalFileItem(accountID: accountID)]
+        )
+        XCTAssertEqual(unknownScope.appliedItemIDs, [])
+        XCTAssertEqual(unknownScope.failures.count, 1)
+        XCTAssertTrue(recorder.values.isEmpty)
+    }
+
     func testMutationsUseNativeRoutesWithOpaqueIdentifiersAndNeverServerRoot() async throws {
         let recorder = KodboxProviderRequestRecorder()
         KodboxProviderURLProtocol.handler = { request in
@@ -323,7 +511,52 @@ final class KodboxProviderTests: XCTestCase {
         )
     }
 
+    private func makeProvider(accountID: UUID = fixtureAccountID) -> KodboxProvider {
+        KodboxProvider(session: makeSession(), accountID: accountID)
+    }
+
+    private static let fixtureAccountID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    private static func personalScope(accountID: UUID) -> FileTagScope {
+        .init(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(
+                canAssociate: true,
+                canCreate: true,
+                canRename: true,
+                canUpdateStyle: true,
+                canDelete: true
+            )
+        )
+    }
+
+    private static func personalLocation(accountID: UUID, path: String) -> Location {
+        .remote(.init(accountID: accountID, connectorID: .kodbox, path: .init(identifier: path, displayPath: "/Personal")))
+    }
+
+    private static func personalFileItem(accountID: UUID, path: String = "{source:5}/notes.txt") -> FileItem {
+        FileItem(
+            id: "remote:\(accountID.uuidString):\(path)",
+            name: URL(fileURLWithPath: path).lastPathComponent,
+            location: personalLocation(accountID: accountID, path: path),
+            kind: .file,
+            size: 42,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true,
+            supportsTagEditing: true
+        )
+    }
+
     private static let optionsResponse = #"{"code":true,"data":{"version":"1.68.10","user":{"myhome":"{source:5}/","desktop":"{source:6}/"}}}"#
+    private static let personalTagCatalogResponse = #"{"code":true,"data":[{"id":7,"name":"Review","style":"label-blue-normal"},{"id":"8","name":"Neutral","style":"future-style"},{"id":0,"name":"Invalid","style":"label-red-normal"},{"id":"bad"}]}"#
 
     private static func response(for request: URLRequest, body: String) -> (HTTPURLResponse, Data) {
         response(for: request, contentType: "application/json", data: Data(body.utf8))

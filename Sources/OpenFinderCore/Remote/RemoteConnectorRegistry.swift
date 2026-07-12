@@ -190,7 +190,7 @@ public struct RemoteConnectorRegistry: Sendable {
             credentials: .init(username: username, password: password),
             session: session
         )
-        return KodboxProvider(session: apiSession)
+        return KodboxProvider(session: apiSession, accountID: account.id)
     }
 
     private func isServerRoot(_ url: URL) -> Bool {

@@ -282,6 +282,89 @@ final class KodboxAPIClientTests: XCTestCase {
         XCTAssertEqual(recorder.values.filter { $0.url?.kodboxRoute == "explorer/list/path" }.count, 2)
     }
 
+    func testTagRequestReloginsAndRetriesExactlyOnceWithoutLeakingCredentials() async throws {
+        let password = "tag-password-not-for-diagnostics"
+        let firstToken = "tag-token-one-not-for-diagnostics"
+        let secondToken = "tag-token-two-not-for-diagnostics"
+        let recorder = KodboxRequestRecorder()
+        KodboxURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                let loginCount = recorder.values.filter { $0.url?.kodboxRoute == "user/index/loginSubmit" }.count
+                let token = loginCount == 1 ? firstToken : secondToken
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"\#(token)"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: #"{"code":true,"data":{"version":"1.68.10"}}"#)
+            case "explorer/tag/get":
+                if request.url?.queryValue(named: "accessToken") == firstToken {
+                    return Self.response(
+                        for: request,
+                        body: #"{"code":false,"message":"login expired \#(password) \#(firstToken)","data":null}"#
+                    )
+                }
+                return Self.response(for: request, body: #"{"code":true,"data":{"name":"tag-ok"}}"#)
+            default:
+                throw KodboxFixtureError.unexpectedRequest
+            }
+        }
+        let session = KodboxAPISession(
+            baseURL: URL(string: "https://kodbox.test/")!,
+            credentials: .init(username: "alice", password: password),
+            session: makeURLSession()
+        )
+
+        let response: KodboxFixturePayload = try await session.perform(.tagGet, form: [:], response: KodboxFixturePayload.self)
+
+        XCTAssertEqual(response.name, "tag-ok")
+        XCTAssertEqual(recorder.values.filter { $0.url?.kodboxRoute == "user/index/loginSubmit" }.count, 2)
+        XCTAssertEqual(recorder.values.filter { $0.url?.kodboxRoute == "explorer/tag/get" }.count, 2)
+        let tagRequests = recorder.values.filter { $0.url?.kodboxRoute == "explorer/tag/get" }
+        XCTAssertEqual(tagRequests.compactMap { $0.url?.queryValue(named: "accessToken") }, [firstToken, secondToken])
+        XCTAssertTrue(tagRequests.allSatisfy { $0.bodyFormValues == nil })
+    }
+
+    func testTagAuthenticationFailureRedactsCredentialsFromErrorDiagnostic() async throws {
+        let password = "tag-password-not-for-diagnostic"
+        let firstToken = "tag-token-one-not-for-diagnostic"
+        let secondToken = "tag-token-two-not-for-diagnostic"
+        let recorder = KodboxRequestRecorder()
+        KodboxURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                let loginCount = recorder.values.filter { $0.url?.kodboxRoute == "user/index/loginSubmit" }.count
+                let token = loginCount == 1 ? firstToken : secondToken
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"\#(token)"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: #"{"code":true,"data":{"version":"1.68.10"}}"#)
+            case "explorer/tag/get":
+                let accessToken = request.url?.queryValue(named: "accessToken") ?? "missing-token"
+                return Self.response(
+                    for: request,
+                    body: #"{"code":false,"message":"login expired \#(password) \#(accessToken)","data":null}"#
+                )
+            default:
+                throw KodboxFixtureError.unexpectedRequest
+            }
+        }
+        let session = KodboxAPISession(
+            baseURL: URL(string: "https://kodbox.test/")!,
+            credentials: .init(username: "alice", password: password),
+            session: makeURLSession()
+        )
+
+        await XCTAssertThrowsErrorAsync(try await session.perform(.tagGet, form: [:], response: KodboxFixturePayload.self)) { error in
+            let diagnostic = String(describing: error)
+            XCTAssertEqual(error as? KodboxAPIError, .authenticationFailed)
+            XCTAssertFalse(diagnostic.contains(password))
+            XCTAssertFalse(diagnostic.contains(firstToken))
+            XCTAssertFalse(diagnostic.contains(secondToken))
+        }
+        XCTAssertEqual(recorder.values.filter { $0.url?.kodboxRoute == "user/index/loginSubmit" }.count, 2)
+        XCTAssertEqual(recorder.values.filter { $0.url?.kodboxRoute == "explorer/tag/get" }.count, 2)
+    }
+
     private func makeSession() -> KodboxAPISession {
         KodboxAPISession(
             baseURL: URL(string: "https://kodbox.test/")!,
