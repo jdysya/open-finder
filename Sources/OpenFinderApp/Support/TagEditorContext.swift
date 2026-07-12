@@ -15,10 +15,16 @@ struct TagEditorScopeSection: Equatable {
 }
 
 enum TagEditorPresentation {
-    static func sections(in catalog: FileTagCatalog, searchText: String) -> [TagEditorScopeSection] {
+    static func sections(
+        in catalog: FileTagCatalog,
+        searchText: String,
+        pendingAdditions: [FileTag] = []
+    ) -> [TagEditorScopeSection] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var seenTags = Set<FileTag>()
+        let visibleTags = (catalog.tags + pendingAdditions).filter { seenTags.insert($0).inserted }
         return orderedScopes(in: catalog).compactMap { scope in
-            let tags = catalog.tags.filter { tag in
+            let tags = visibleTags.filter { tag in
                 guard tag.scopeID == scope.id else { return false }
                 return query.isEmpty || tag.name.localizedCaseInsensitiveContains(query)
             }
@@ -27,10 +33,14 @@ enum TagEditorPresentation {
         }
     }
 
-    static func creationScopes(in catalog: FileTagCatalog, searchText: String) -> [FileTagScope] {
+    static func creationScopes(
+        in catalog: FileTagCatalog,
+        searchText: String,
+        pendingAdditions: [FileTag] = []
+    ) -> [FileTagScope] {
         let name = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return [] }
-        let hasExactMatch = catalog.tags.contains {
+        let hasExactMatch = (catalog.tags + pendingAdditions).contains {
             $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
         }
         guard !hasExactMatch else { return [] }
@@ -107,6 +117,13 @@ struct TagEditorAssignmentState: Equatable {
 
     mutating func clear() {
         pendingChanges = .init()
+    }
+
+    mutating func reconcileCatalogDeletion(of tag: FileTag) {
+        pendingChanges = .init(
+            add: pendingChanges.additions.filter { $0 != tag },
+            remove: pendingChanges.removals.filter { $0 != tag }
+        )
     }
 
     private mutating func set(_ tag: FileTag, to desiredState: TagSelectionState, baseState: TagSelectionState) {

@@ -976,6 +976,88 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(state.effectiveSelectionState(for: tag, baseState: .empty), .empty)
     }
 
+    func testTagEditorPendingLocalCreationRemainsVisibleAndChecked() {
+        let created = FileTag.local(name: "New local tag")
+        let catalog = FileTagCatalog(scopes: [.local])
+        var state = TagEditorAssignmentState()
+
+        state.selectCreatedTag(created)
+        let sections = TagEditorPresentation.sections(
+            in: catalog,
+            searchText: "",
+            pendingAdditions: state.pendingChanges.additions
+        )
+
+        XCTAssertEqual(sections.flatMap(\.tags), [created])
+        XCTAssertEqual(state.effectiveSelectionState(for: created, baseState: .empty), .checked)
+        XCTAssertTrue(
+            TagEditorPresentation.creationScopes(
+                in: catalog,
+                searchText: created.name,
+                pendingAdditions: state.pendingChanges.additions
+            ).isEmpty
+        )
+    }
+
+    func testTagEditorCatalogDeleteReconcilesPendingAssociationDelta() {
+        let tag = FileTag(id: "7", scopeID: "personal", name: "Soon deleted")
+        var pendingAddition = TagEditorAssignmentState()
+        pendingAddition.selectCreatedTag(tag)
+
+        pendingAddition.reconcileCatalogDeletion(of: tag)
+
+        XCTAssertTrue(pendingAddition.pendingChanges.isEmpty)
+
+        var pendingRemoval = TagEditorAssignmentState()
+        pendingRemoval.toggle(tag, baseState: .checked)
+        XCTAssertEqual(pendingRemoval.pendingChanges.removals, [tag])
+
+        pendingRemoval.reconcileCatalogDeletion(of: tag)
+
+        XCTAssertTrue(pendingRemoval.pendingChanges.isEmpty)
+    }
+
+    func testTagEditorCatalogControlsRequireAnActiveWritableSelection() {
+        let scope = FileTagScope(
+            id: "personal",
+            kind: .personal,
+            displayName: "Personal",
+            capabilities: .init(
+                canAssociate: true,
+                canCreate: true,
+                canRename: true,
+                canUpdateStyle: true,
+                canDelete: true
+            )
+        )
+        let item = FileItem(
+            id: "item",
+            name: "item.txt",
+            location: .local(path: "/tmp/item.txt"),
+            kind: .file,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: nil,
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true,
+            tags: [],
+            tagScopes: [scope],
+            supportsTagEditing: true
+        )
+        let context = TagEditorContext(selectedItems: [item], commonEditableScope: scope)
+        context.replaceCatalog(.init(scopes: [scope]))
+        XCTAssertTrue(context.canManageCatalog)
+
+        context.refreshSelectedItems(from: [])
+
+        XCTAssertTrue(context.catalog.scopes.first?.capabilities.canCreate == true)
+        XCTAssertFalse(context.canManageCatalog)
+    }
+
     func testTagEditorSelectsOnlyMatchingServerAssignedCreatedTag() {
         let scope = FileTagScope(
             id: "personal",

@@ -58,7 +58,7 @@ struct TagEditorView: View {
             Spacer()
             if !TagEditorPresentation.manageableScopes(in: context.catalog).isEmpty {
                 Button("管理…") { showingManagement = true }
-                    .disabled(context.operationState != .idle || context.isReadOnly)
+                    .disabled(!context.canManageCatalog)
                     .accessibilityHint("打开标签目录管理页面")
             }
         }
@@ -67,7 +67,7 @@ struct TagEditorView: View {
 
     private var tagList: some View {
         List {
-            ForEach(TagEditorPresentation.sections(in: context.catalog, searchText: assignment.searchText), id: \.scope.id) { section in
+            ForEach(assignmentSections, id: \.scope.id) { section in
                 Section(section.scope.displayName) {
                     if section.tags.isEmpty {
                         Text("此范围暂无标签")
@@ -82,7 +82,8 @@ struct TagEditorView: View {
 
             let creationScopes = TagEditorPresentation.creationScopes(
                 in: context.catalog,
-                searchText: assignment.searchText
+                searchText: assignment.searchText,
+                pendingAdditions: assignment.pendingChanges.additions
             )
             if !creationScopes.isEmpty {
                 Section("创建") {
@@ -104,7 +105,7 @@ struct TagEditorView: View {
                 ProgressView("正在加载标签…")
                     .padding(16)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-            } else if TagEditorPresentation.sections(in: context.catalog, searchText: assignment.searchText).isEmpty,
+            } else if assignmentSections.isEmpty,
                       creationScopesAreEmpty
             {
                 ContentUnavailableView.search(text: assignment.searchText)
@@ -189,7 +190,19 @@ struct TagEditorView: View {
     }
 
     private var creationScopesAreEmpty: Bool {
-        TagEditorPresentation.creationScopes(in: context.catalog, searchText: assignment.searchText).isEmpty
+        TagEditorPresentation.creationScopes(
+            in: context.catalog,
+            searchText: assignment.searchText,
+            pendingAdditions: assignment.pendingChanges.additions
+        ).isEmpty
+    }
+
+    private var assignmentSections: [TagEditorScopeSection] {
+        TagEditorPresentation.sections(
+            in: context.catalog,
+            searchText: assignment.searchText,
+            pendingAdditions: assignment.pendingChanges.additions
+        )
     }
 
     private var operationLabel: String {
@@ -235,8 +248,19 @@ struct TagEditorView: View {
 
     private func performCatalogMutation(_ mutation: FileTagCatalogMutation) async -> FileTag? {
         let existingTags = Set(context.catalog.tags)
+        let deletedTag: FileTag?
+        if case .deleteTag(let id) = mutation {
+            deletedTag = context.catalog.tags.first {
+                $0.scopeID == context.commonEditableScope.id && $0.id == id
+            }
+        } else {
+            deletedTag = nil
+        }
         await onManage(mutation)
         guard context.errorMessage == nil else { return nil }
+        if let deletedTag {
+            assignment.reconcileCatalogDeletion(of: deletedTag)
+        }
         if case .createTag(let name, _) = mutation {
             return TagEditorPresentation.newlyCreatedTag(
                 in: context.catalog,
@@ -303,6 +327,7 @@ struct TagCatalogManagementView: View {
                 editor
                     .frame(minWidth: 245)
             }
+            .disabled(!context.canManageCatalog)
             Divider()
             HStack {
                 if context.operationState != .idle {
@@ -331,6 +356,7 @@ struct TagCatalogManagementView: View {
             set: { if !$0 { tagPendingDeletion = nil } }
         )) {
             Button("删除", role: .destructive) { performConfirmedDeletion() }
+                .disabled(!context.canManageCatalog)
             Button("取消", role: .cancel) { tagPendingDeletion = nil }
         } message: {
             Text("删除团队公共标签会移除该团队中此标签的所有文件关联。此操作无法撤销。")
@@ -340,6 +366,7 @@ struct TagCatalogManagementView: View {
             set: { if !$0 { tagPendingDeletion = nil } }
         )) {
             Button("删除", role: .destructive) { performConfirmedDeletion() }
+                .disabled(!context.canManageCatalog)
             Button("取消", role: .cancel) { tagPendingDeletion = nil }
         } message: {
             Text("此操作无法撤销。")
@@ -358,6 +385,7 @@ struct TagCatalogManagementView: View {
                 }
             }
             .frame(maxWidth: 240)
+            .disabled(!context.canManageCatalog)
             .onChange(of: state.scopeID) { _, _ in beginCreate() }
         }
         .padding(12)
