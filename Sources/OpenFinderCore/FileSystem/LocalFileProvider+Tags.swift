@@ -1,6 +1,11 @@
 import Foundation
 
 extension LocalFileProvider: TagProvider {
+    private static let tagMutationQueue = DispatchQueue(
+        label: "dev.openfinder.local-file-provider.tag-mutation",
+        qos: .userInitiated
+    )
+
     public func tagCatalog(for location: Location) async throws -> FileTagCatalog {
         _ = try localURL(for: location)
         let items = try await list(
@@ -24,7 +29,7 @@ extension LocalFileProvider: TagProvider {
         let validAdditions = localAdditions.filter { !$0.name.isEmpty }
         let validRemovals = localRemovals.filter { !$0.name.isEmpty }
 
-        return try await Self.runFileIO {
+        return try await Self.runTagMutation {
             var appliedItemIDs: [String] = []
             var failures: [TagApplyFailure] = []
 
@@ -92,5 +97,11 @@ extension LocalFileProvider: TagProvider {
             result.append(name)
         }
         return result
+    }
+
+    private static func runTagMutation<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        try await runFileIO {
+            try tagMutationQueue.sync(execute: operation)
+        }
     }
 }

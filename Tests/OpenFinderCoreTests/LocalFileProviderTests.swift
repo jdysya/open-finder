@@ -75,6 +75,22 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertEqual(try tagNames(of: file), ["Keep", "Added"])
     }
 
+    func testConcurrentTagAdditionsPreserveAllNames() async throws {
+        let file = tempRoot.appendingPathComponent("tagged.txt")
+        try Data().write(to: file)
+        try (file as NSURL).setResourceValue(["Keep"], forKey: .tagNamesKey)
+
+        let provider = LocalFileProvider()
+        let item = try await provider.stat(.local(path: file.path))
+        async let first = provider.apply(.init(add: [.local(name: "A")]), to: [item])
+        async let second = provider.apply(.init(add: [.local(name: "B")]), to: [item])
+        let (firstResult, secondResult) = try await (first, second)
+
+        XCTAssertEqual(firstResult.appliedItemIDs, [item.id])
+        XCTAssertEqual(secondResult.appliedItemIDs, [item.id])
+        XCTAssertEqual(Set(try tagNames(of: file)), Set(["Keep", "A", "B"]))
+    }
+
     func testApplyTagChangesSupportsTaggedFoldersAndLeavesEmptyChangesUntouched() async throws {
         let folder = tempRoot.appendingPathComponent("tagged", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
