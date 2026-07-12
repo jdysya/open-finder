@@ -1080,6 +1080,8 @@ final class AppInteractionTests: XCTestCase {
         await fixture.provider.waitForApplySuspension()
 
         XCTAssertEqual(context.operationState, .applyingChanges)
+        await fixture.pane.reloadTagCatalog()
+        XCTAssertEqual(context.operationState, .applyingChanges)
         var applicationCount = await fixture.provider.applicationCount()
         XCTAssertEqual(applicationCount, 1)
         await fixture.pane.applyTagChanges(.init(add: [fixture.createdTag]))
@@ -1118,6 +1120,8 @@ final class AppInteractionTests: XCTestCase {
         }
         await fixture.provider.waitForMutationSuspension()
 
+        XCTAssertEqual(context.operationState, .mutatingCatalog)
+        await fixture.pane.reloadTagCatalog()
         XCTAssertEqual(context.operationState, .mutatingCatalog)
         var mutationCount = await fixture.provider.mutationCount()
         XCTAssertEqual(mutationCount, 1)

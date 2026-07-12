@@ -906,12 +906,20 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func reloadTagCatalog() async {
-        guard let session = tagEditorSession else { return }
+        guard let session = tagEditorSession,
+              session.context.operationState == .idle
+        else {
+            return
+        }
         await reloadTagCatalog(for: session)
     }
 
     private func reloadTagCatalog(for session: TagEditorSession) async {
-        guard isCurrentTagEditorSession(session) else { return }
+        guard isCurrentTagEditorSession(session),
+              session.context.operationState == .idle
+        else {
+            return
+        }
         session.context.begin(.loadingCatalog)
         do {
             let catalog = try await session.provider.tagCatalog(for: session.location)
