@@ -62,8 +62,25 @@ public struct RemoteItem: Identifiable, Codable, Hashable, Sendable {
     public let mimeType: String?
     public let isReadable: Bool
     public let isWritable: Bool
+    public let tags: [FileTag]
+    public let tagScopes: [FileTagScope]
+    public let supportsTagEditing: Bool
 
-    public init(id: String, name: String, path: RemotePath, kind: FileKind, size: Int64?, modificationDate: Date?, etag: String?, mimeType: String?, isReadable: Bool, isWritable: Bool) {
+    public init(
+        id: String,
+        name: String,
+        path: RemotePath,
+        kind: FileKind,
+        size: Int64?,
+        modificationDate: Date?,
+        etag: String?,
+        mimeType: String?,
+        isReadable: Bool,
+        isWritable: Bool,
+        tags: [FileTag] = [],
+        tagScopes: [FileTagScope] = [],
+        supportsTagEditing: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.path = path.displayPath
@@ -75,16 +92,71 @@ public struct RemoteItem: Identifiable, Codable, Hashable, Sendable {
         self.mimeType = mimeType
         self.isReadable = isReadable
         self.isWritable = isWritable
+        self.tags = tags
+        self.tagScopes = tagScopes
+        self.supportsTagEditing = supportsTagEditing
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case path
+        case remotePath
+        case kind
+        case size
+        case modificationDate
+        case etag
+        case mimeType
+        case isReadable
+        case isWritable
+        case tags
+        case tagScopes
+        case supportsTagEditing
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        remotePath = try container.decode(RemotePath.self, forKey: .remotePath)
+        kind = try container.decode(FileKind.self, forKey: .kind)
+        size = try container.decodeIfPresent(Int64.self, forKey: .size)
+        modificationDate = try container.decodeIfPresent(Date.self, forKey: .modificationDate)
+        etag = try container.decodeIfPresent(String.self, forKey: .etag)
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        isReadable = try container.decode(Bool.self, forKey: .isReadable)
+        isWritable = try container.decode(Bool.self, forKey: .isWritable)
+        tags = try container.decodeIfPresent([FileTag].self, forKey: .tags) ?? []
+        tagScopes = try container.decodeIfPresent([FileTagScope].self, forKey: .tagScopes) ?? []
+        supportsTagEditing = try container.decodeIfPresent(Bool.self, forKey: .supportsTagEditing) ?? false
     }
 }
 
 public struct RemoteDirectoryCapabilities: Codable, Hashable, Sendable {
     public let isReadable: Bool
     public let isWritable: Bool
+    public let supportsTags: Bool
 
-    public init(isReadable: Bool, isWritable: Bool) {
+    public init(isReadable: Bool, isWritable: Bool, supportsTags: Bool = false) {
         self.isReadable = isReadable
         self.isWritable = isWritable
+        self.supportsTags = supportsTags
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isReadable
+        case isWritable
+        case supportsTags
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isReadable: try container.decode(Bool.self, forKey: .isReadable),
+            isWritable: try container.decode(Bool.self, forKey: .isWritable),
+            supportsTags: try container.decodeIfPresent(Bool.self, forKey: .supportsTags) ?? false
+        )
     }
 }
 
