@@ -43,12 +43,16 @@ final class TagEditorContext: ObservableObject, Identifiable {
     }
 
     var canAssociateTags: Bool {
-        isActive && !selectedItems.isEmpty && commonEditableScope.capabilities.canAssociate && !isReadOnly
+        isActive
+            && operationState == .idle
+            && !selectedItems.isEmpty
+            && commonEditableScope.capabilities.canAssociate
+            && !isReadOnly
     }
 
     var canManageCatalog: Bool {
         let capabilities = commonEditableScope.capabilities
-        return isActive && !selectedItems.isEmpty && !isReadOnly && (
+        return isActive && operationState == .idle && !selectedItems.isEmpty && !isReadOnly && (
             capabilities.canCreate
                 || capabilities.canRename
                 || capabilities.canUpdateStyle

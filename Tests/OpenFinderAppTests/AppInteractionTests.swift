@@ -1066,6 +1066,84 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(fixture.pane.location, fixture.secondLocation)
     }
 
+    func testTagApplyRejectsReentryUntilRefreshAndContextUpdateComplete() async throws {
+        let fixture = Self.suspendingTagFixture()
+        await fixture.pane.refresh()
+        fixture.pane.selection = [fixture.firstItemID]
+        let preparedContext = await fixture.pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        await fixture.provider.suspendNextApply()
+
+        let application = Task { @MainActor in
+            await fixture.pane.applyTagChanges(.init(add: [fixture.createdTag]))
+        }
+        await fixture.provider.waitForApplySuspension()
+
+        XCTAssertEqual(context.operationState, .applyingChanges)
+        var applicationCount = await fixture.provider.applicationCount()
+        XCTAssertEqual(applicationCount, 1)
+        await fixture.pane.applyTagChanges(.init(add: [fixture.createdTag]))
+        applicationCount = await fixture.provider.applicationCount()
+        XCTAssertEqual(applicationCount, 1)
+        XCTAssertEqual(context.operationState, .applyingChanges)
+
+        await fixture.provider.suspendNextList(directoryID: fixture.firstDirectoryID)
+        await fixture.provider.resumeApply()
+        await fixture.provider.waitForListSuspension()
+
+        XCTAssertEqual(context.operationState, .applyingChanges)
+        await fixture.pane.applyTagChanges(.init(add: [fixture.createdTag]))
+        applicationCount = await fixture.provider.applicationCount()
+        XCTAssertEqual(applicationCount, 1)
+        XCTAssertEqual(context.operationState, .applyingChanges)
+
+        await fixture.provider.resumeList()
+        await application.value
+
+        XCTAssertEqual(context.operationState, .idle)
+        XCTAssertEqual(context.selectedItems.map(\.id), fixture.pane.items.filter { context.selectedItemIDs.contains($0.id) }.map(\.id))
+    }
+
+    func testTagMutationRejectsReentryUntilRefreshAndContextUpdateComplete() async throws {
+        let fixture = Self.suspendingTagFixture()
+        await fixture.pane.refresh()
+        fixture.pane.selection = [fixture.firstItemID]
+        let preparedContext = await fixture.pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        await fixture.provider.suspendNextMutation()
+        let mutation = FileTagCatalogMutation.createTag(name: fixture.createdTag.name, groupID: nil)
+
+        let catalogMutation = Task { @MainActor in
+            await fixture.pane.mutateTagCatalog(mutation)
+        }
+        await fixture.provider.waitForMutationSuspension()
+
+        XCTAssertEqual(context.operationState, .mutatingCatalog)
+        var mutationCount = await fixture.provider.mutationCount()
+        XCTAssertEqual(mutationCount, 1)
+        await fixture.pane.mutateTagCatalog(mutation)
+        mutationCount = await fixture.provider.mutationCount()
+        XCTAssertEqual(mutationCount, 1)
+        XCTAssertEqual(context.operationState, .mutatingCatalog)
+
+        await fixture.provider.suspendNextList(directoryID: fixture.firstDirectoryID)
+        await fixture.provider.resumeMutation()
+        await fixture.provider.waitForListSuspension()
+
+        XCTAssertEqual(context.operationState, .mutatingCatalog)
+        await fixture.pane.mutateTagCatalog(mutation)
+        mutationCount = await fixture.provider.mutationCount()
+        XCTAssertEqual(mutationCount, 1)
+        XCTAssertEqual(context.operationState, .mutatingCatalog)
+
+        await fixture.provider.resumeList()
+        await catalogMutation.value
+
+        XCTAssertEqual(context.operationState, .idle)
+        XCTAssertEqual(context.catalog.tags, [fixture.existingTag, fixture.createdTag])
+        XCTAssertEqual(context.selectedItems.map(\.id), fixture.pane.items.filter { context.selectedItemIDs.contains($0.id) }.map(\.id))
+    }
+
     func testTagEditorDisablesControlsWhenRefreshRemovesEverySelectedItem() async throws {
         let accountID = UUID()
         let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
@@ -1248,6 +1326,7 @@ final class AppInteractionTests: XCTestCase {
     private struct SuspendingTagFixture {
         let pane: BrowserPaneModel
         let provider: SuspendingTagRemoteProvider
+        let firstDirectoryID: String
         let firstItemID: String
         let secondItemID: String
         let secondLocation: Location
@@ -1298,6 +1377,7 @@ final class AppInteractionTests: XCTestCase {
         return .init(
             pane: pane,
             provider: provider,
+            firstDirectoryID: firstDirectory.identifier,
             firstItemID: paneItemID(accountID: accountID, path: firstPath),
             secondItemID: paneItemID(accountID: accountID, path: secondPath),
             secondLocation: .remote(.init(accountID: accountID, connectorID: .kodbox, path: secondDirectory)),
@@ -1425,6 +1505,8 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
     private let mutatedCatalog: FileTagCatalog
     private let applyResult: TagApplyResult
     private var listedPaths: [String] = []
+    private var applications: [FileTagChangeSet] = []
+    private var mutations: [FileTagCatalogMutation] = []
     private var suspendsCatalog = false
     private var suspendsApply = false
     private var suspendsMutation = false
@@ -1486,6 +1568,7 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
     }
 
     func apply(_ changes: FileTagChangeSet, to items: [FileItem]) async throws -> TagApplyResult {
+        applications.append(changes)
         guard suspendsApply else { return applyResult }
         suspendsApply = false
         return await withCheckedContinuation { continuation in
@@ -1497,6 +1580,7 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
     }
 
     func mutate(_ mutation: FileTagCatalogMutation, in scope: FileTagScope) async throws -> FileTagCatalog {
+        mutations.append(mutation)
         guard suspendsMutation else { return mutatedCatalog }
         suspendsMutation = false
         return await withCheckedContinuation { continuation in
@@ -1581,6 +1665,14 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
 
     func listedIdentifiers() -> [String] {
         listedPaths
+    }
+
+    func applicationCount() -> Int {
+        applications.count
+    }
+
+    func mutationCount() -> Int {
+        mutations.count
     }
 }
 

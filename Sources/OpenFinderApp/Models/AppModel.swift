@@ -926,6 +926,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func applyTagChanges(_ changes: FileTagChangeSet) async {
         guard let session = tagEditorSession,
               isCurrentTagEditorSession(session),
+              session.context.operationState == .idle,
               session.context.canAssociateTags,
               !changes.isEmpty
         else {
@@ -957,6 +958,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async {
         guard let session = tagEditorSession,
               isCurrentTagEditorSession(session),
+              session.context.operationState == .idle,
               session.context.canManageCatalog
         else {
             return
@@ -974,12 +976,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
 
         guard isCurrentTagEditorSession(session) else { return }
-        if let catalog {
-            session.context.replaceCatalog(catalog)
-        }
         await refresh(preservingTagEditorSession: session)
         guard isCurrentTagEditorSession(session) else { return }
         session.context.refreshSelectedItems(from: items)
+        if let catalog {
+            session.context.replaceCatalog(catalog)
+        }
         session.context.completeCatalogMutation(errorMessage: operationError)
         if let operationError {
             errorMessage = operationError
