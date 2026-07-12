@@ -5,7 +5,7 @@ struct TagEditorView: View {
     @ObservedObject var context: TagEditorContext
     let onApply: (FileTagChangeSet) async -> Void
     let onRetry: () async -> Void
-    let onManage: (FileTagCatalogMutation) async -> Void
+    let onManage: (FileTagCatalogMutation) async -> Bool
     let onDismiss: () -> Void
 
     @State private var assignment = TagEditorAssignmentState()
@@ -93,7 +93,7 @@ struct TagEditorView: View {
                         } label: {
                             Label("在“\(scope.displayName)”中创建“\(trimmedSearchText)”", systemImage: "plus")
                         }
-                        .disabled(context.operationState != .idle || context.isReadOnly)
+                        .disabled(!context.canCreateTag(in: scope))
                         .accessibilityHint(scope.kind == .local ? "创建并分配 Finder 标签" : "创建服务端标签后分配")
                     }
                 }
@@ -223,7 +223,7 @@ struct TagEditorView: View {
 
     private func createTag(named rawName: String, in scope: FileTagScope) async {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty, context.canCreateTag(in: scope) else { return }
         if scope.kind == .local {
             assignment.selectCreatedTag(.local(name: name))
             assignment.searchText = ""
@@ -231,8 +231,8 @@ struct TagEditorView: View {
         }
 
         let existingTags = Set(context.catalog.tags)
-        await onManage(.createTag(name: name, groupID: nil))
-        guard context.errorMessage == nil,
+        let mutationSucceeded = await onManage(.createTag(name: name, groupID: nil))
+        guard mutationSucceeded,
               let created = TagEditorPresentation.newlyCreatedTag(
                   in: context.catalog,
                   previously: existingTags,
@@ -256,8 +256,8 @@ struct TagEditorView: View {
         } else {
             deletedTag = nil
         }
-        await onManage(mutation)
-        guard context.errorMessage == nil else { return nil }
+        let mutationSucceeded = await onManage(mutation)
+        guard mutationSucceeded else { return nil }
         if let deletedTag {
             assignment.reconcileCatalogDeletion(of: deletedTag)
         }

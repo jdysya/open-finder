@@ -71,10 +71,11 @@ struct FilePaneView: View {
                 },
                 onRetry: { await pane.reloadTagCatalog() },
                 onManage: { mutation in
-                    await pane.mutateTagCatalog(mutation)
-                    if context.errorMessage == nil {
+                    let mutationSucceeded = await pane.mutateTagCatalog(mutation)
+                    if mutationSucceeded {
                         await pane.reloadTagCatalog()
                     }
+                    return mutationSucceeded
                 },
                 onDismiss: { tagEditorContext = nil }
             )

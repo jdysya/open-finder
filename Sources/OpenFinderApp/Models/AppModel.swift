@@ -963,13 +963,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
     }
 
-    func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async {
+    @discardableResult
+    func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async -> Bool {
         guard let session = tagEditorSession,
               isCurrentTagEditorSession(session),
               session.context.operationState == .idle,
               session.context.canManageCatalog
         else {
-            return
+            return false
         }
 
         session.context.begin(.mutatingCatalog)
@@ -983,9 +984,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             operationError = error.localizedDescription
         }
 
-        guard isCurrentTagEditorSession(session) else { return }
+        guard isCurrentTagEditorSession(session) else { return false }
         await refresh(preservingTagEditorSession: session)
-        guard isCurrentTagEditorSession(session) else { return }
+        guard isCurrentTagEditorSession(session) else { return false }
         session.context.refreshSelectedItems(from: items)
         if let catalog {
             session.context.replaceCatalog(catalog)
@@ -994,6 +995,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         if let operationError {
             errorMessage = operationError
         }
+        return catalog != nil
     }
 
 

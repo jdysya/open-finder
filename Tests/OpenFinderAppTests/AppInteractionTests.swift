@@ -1051,11 +1051,80 @@ final class AppInteractionTests: XCTestCase {
         let context = TagEditorContext(selectedItems: [item], commonEditableScope: scope)
         context.replaceCatalog(.init(scopes: [scope]))
         XCTAssertTrue(context.canManageCatalog)
+        XCTAssertTrue(context.canCreateTag(in: scope))
+
+        let localContext = TagEditorContext(selectedItems: [item], commonEditableScope: .local)
+        localContext.replaceCatalog(.init(scopes: [.local]))
+        XCTAssertTrue(localContext.canCreateTag(in: .local))
 
         context.refreshSelectedItems(from: [])
+        localContext.refreshSelectedItems(from: [])
 
         XCTAssertTrue(context.catalog.scopes.first?.capabilities.canCreate == true)
         XCTAssertFalse(context.canManageCatalog)
+        XCTAssertFalse(context.canCreateTag(in: scope))
+        XCTAssertFalse(localContext.canCreateTag(in: .local))
+    }
+
+    func testTagEditorDeleteSuccessReconcilesDeltaEvenWhenCatalogReloadFailsThenRetries() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canDelete: true)
+        )
+        let deletedTag = FileTag(id: "7", scopeID: scope.id, name: "Delete me")
+        let path = RemotePath(identifier: "{source:5}/note", displayPath: "/Personal/note")
+        let initial = RemoteDirectoryListing(
+            current: directory,
+            parent: nil,
+            items: [Self.taggedRemoteItem(id: "note", name: "note", path: path, scope: scope, tags: [deletedTag])],
+            capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+        )
+        let refreshed = RemoteDirectoryListing(
+            current: directory,
+            parent: nil,
+            items: [Self.taggedRemoteItem(id: "note", name: "note", path: path, scope: scope, tags: [])],
+            capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+        )
+        let provider = TagRecordingRemoteProvider(
+            listings: [initial, refreshed],
+            catalog: .init(scopes: [scope], tags: [deletedTag]),
+            mutatedCatalog: .init(scopes: [scope]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [Self.paneItemID(accountID: accountID, path: path)]
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        var assignment = TagEditorAssignmentState()
+        assignment.toggle(deletedTag, baseState: .checked)
+        await provider.failCatalog(with: "reload offline")
+
+        let mutationSucceeded = await pane.mutateTagCatalog(.deleteTag(id: deletedTag.id))
+        if mutationSucceeded {
+            assignment.reconcileCatalogDeletion(of: deletedTag)
+        }
+        await pane.reloadTagCatalog()
+
+        XCTAssertTrue(mutationSucceeded)
+        XCTAssertTrue(assignment.pendingChanges.isEmpty)
+        XCTAssertTrue(context.canRetryCatalog)
+        XCTAssertTrue(context.errorMessage?.contains("reload offline") == true)
+
+        await provider.restoreCatalog()
+        await pane.reloadTagCatalog()
+
+        XCTAssertFalse(context.isReadOnly)
+        XCTAssertTrue(assignment.pendingChanges.isEmpty)
     }
 
     func testTagEditorSelectsOnlyMatchingServerAssignedCreatedTag() {
@@ -1252,7 +1321,7 @@ final class AppInteractionTests: XCTestCase {
         let newContext = try XCTUnwrap(preparedNewContext)
         let listingsBeforeResume = await fixture.provider.listedIdentifiers()
         await fixture.provider.resumeMutation()
-        await catalogMutation.value
+        _ = await catalogMutation.value
 
         let listingsAfterResume = await fixture.provider.listedIdentifiers()
         XCTAssertEqual(listingsAfterResume, listingsBeforeResume)
@@ -1338,7 +1407,7 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(context.operationState, .mutatingCatalog)
 
         await fixture.provider.resumeList()
-        await catalogMutation.value
+        _ = await catalogMutation.value
 
         XCTAssertEqual(context.operationState, .idle)
         XCTAssertEqual(context.catalog.tags, [fixture.existingTag, fixture.createdTag])
@@ -1693,6 +1762,10 @@ private actor TagRecordingRemoteProvider: RemoteProvider, TagProvider {
 
     func restoreCatalog() {
         catalogErrorMessage = nil
+    }
+
+    func failCatalog(with message: String) {
+        catalogErrorMessage = message
     }
 
     func recordedMutations() -> [FileTagCatalogMutation] {

@@ -228,6 +228,11 @@ final class TagEditorContext: ObservableObject, Identifiable {
         isActive && isReadOnly && errorMessage != nil
     }
 
+    func canCreateTag(in scope: FileTagScope) -> Bool {
+        guard scope.id == commonEditableScope.id, scope.capabilities.canCreate else { return false }
+        return scope.kind == .local ? canAssociateTags : canManageCatalog
+    }
+
     func selectionState(for tag: FileTag) -> TagSelectionState {
         tagSelectionStates[tag] ?? .empty
     }
