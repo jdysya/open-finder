@@ -48,7 +48,7 @@ OpenFinder reads the current team catalog before a catalog mutation and sends th
 Team catalog management and item association have separate permissions:
 
 - `sourceInfo.isGroupRoot == true` enables team tag creation, rename, move, and delete for that scope.
-- Item `canWrite == true` enables association, provided the item belongs to the same account and `groupID` as the tag.
+- The decoded item's writable state enables association, provided the item belongs to the same account and `groupID` as the tag. For compatibility with existing Kodbox listings, an absent or malformed `canWrite` value currently defaults to writable.
 - A writable non-admin can associate existing team tags without receiving catalog-management capabilities.
 - An admin cannot associate a tag with a read-only item or with an item from another team scope.
 
@@ -71,9 +71,8 @@ When writing a personal style, neutral and gray both encode as `label-grey-norma
 
 ## Association safety and failure behavior
 
-Kodbox's association endpoints encode one or more paths in the `files` form field using server-reserved delimiters. OpenFinder therefore rejects the following before sending any association request for that item:
+Kodbox's association endpoints encode one or more paths in the `files` form field using server-reserved delimiters. An empty change set is a successful no-op and sends no association request. For a non-empty change set, OpenFinder rejects the following before sending any association request for that item:
 
-- an empty change set;
 - the OpenFinder synthetic Kodbox root or `/`;
 - any path containing `,`;
 - any path containing `__*@*__`;
