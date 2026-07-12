@@ -103,7 +103,7 @@ final class KodboxProviderTests: XCTestCase {
                     body: #"""
                     {"code":true,"data":{"folderList":[],"fileList":[
                       {"name":"notes.txt","path":"{source:5}/notes.txt","size":42,"modifyTime":1700000010,
-                       "sourceInfo":{"tagInfo":[{"tagID":"7","name":"Review","style":"label-blue-normal"},{"tagID":7,"name":"Review","style":"label-blue-normal"},{"tagID":"bad"}]}},
+                       "sourceInfo":{"tagInfo":[null,0,"not-a-tag",{"tagID":"7","name":"Review","style":"label-blue-normal"},{"tagID":7,"name":"Review","style":"label-blue-normal"},{"tagID":"bad"}]}},
                       {"name":"missing.txt","path":"{source:5}/missing.txt","size":1,"modifyTime":null},
                       {"name":"null.txt","path":"{source:5}/null.txt","size":1,"modifyTime":null,"sourceInfo":{"tagInfo":null}},
                       {"name":"zero.txt","path":"{source:5}/zero.txt","size":1,"modifyTime":null,"sourceInfo":{"tagInfo":0}},

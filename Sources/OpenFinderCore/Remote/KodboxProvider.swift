@@ -301,7 +301,12 @@ private struct KodboxListTag: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey { case tagID, name, style }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            id = nil
+            name = nil
+            style = nil
+            return
+        }
         if let identifier = try? container.decode(String.self, forKey: .tagID) {
             id = identifier
         } else if let identifier = try? container.decode(Int.self, forKey: .tagID) {
