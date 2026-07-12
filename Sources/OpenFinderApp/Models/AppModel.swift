@@ -560,6 +560,11 @@ private struct TagEditorSession {
     let provider: any TagProvider
 }
 
+private struct BrowserPaneListing {
+    let items: [FileItem]
+    let remoteParent: RemotePath?
+}
+
 @MainActor
 final class BrowserPaneModel: ObservableObject, Identifiable {
     let id: AppModel.PaneID
@@ -651,10 +656,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let refreshedLocationGeneration = locationGeneration
         isLoading = true
         errorMessage = nil
-        remoteParent = nil
         defer { isLoading = false }
         do {
-            let listedItems = try await listItems(at: refreshedLocation)
+            let listing = try await listItems(at: refreshedLocation)
             guard location == refreshedLocation,
                   locationGeneration == refreshedLocationGeneration
             else {
@@ -663,7 +667,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             if let session, !isCurrentTagEditorSession(session) {
                 return
             }
-            items = listedItems
+            remoteParent = listing.remoteParent
+            items = listing.items
             if session != nil {
                 isRestoringTagEditorSelection = true
                 selection.formIntersection(Set(items.map(\.id)))
@@ -920,7 +925,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func applyTagChanges(_ changes: FileTagChangeSet) async {
         guard let session = tagEditorSession,
               isCurrentTagEditorSession(session),
-              !session.context.isReadOnly,
+              session.context.canAssociateTags,
               !changes.isEmpty
         else {
             return
@@ -951,7 +956,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async {
         guard let session = tagEditorSession,
               isCurrentTagEditorSession(session),
-              !session.context.isReadOnly
+              session.context.canManageCatalog
         else {
             return
         }
@@ -981,15 +986,17 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
 
-    private func listItems(at location: Location) async throws -> [FileItem] {
+    private func listItems(at location: Location) async throws -> BrowserPaneListing {
         switch location {
         case .local:
-            return try await provider.list(location, options: .init(showHiddenFiles: showHiddenFiles, sort: .name(ascending: true)))
+            return .init(
+                items: try await provider.list(location, options: .init(showHiddenFiles: showHiddenFiles, sort: .name(ascending: true))),
+                remoteParent: nil
+            )
         case .webDAV, .remote:
             let remoteLocation = try remoteLocation(for: location)
             let remote = try await remoteProvider(for: remoteLocation)
             let listing = try await remote.list(directory: remoteLocation.path)
-            remoteParent = listing.parent
             let fileItems = listing.items.map { remoteItem in
                 FileItem(
                     id: "remote:\(remoteLocation.accountID.uuidString):\(remoteItem.remotePath.identifier)",
@@ -1014,7 +1021,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     supportsTagEditing: remoteItem.supportsTagEditing
                 )
             }
-            return sortItems(fileItems)
+            return .init(items: sortItems(fileItems), remoteParent: listing.parent)
         case .rclone:
             throw OpenFinderError.unsupportedLocation(location)
         }

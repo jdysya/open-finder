@@ -878,6 +878,11 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(context.selectionState(for: mixedTag), .mixed)
         XCTAssertTrue(context.canAssociateTags)
         XCTAssertFalse(context.canManageCatalog)
+
+        let mutationsBeforeDirectCall = await provider.recordedMutations()
+        await pane.mutateTagCatalog(.createTag(name: "Blocked", groupID: nil))
+        let mutationsAfterDirectCall = await provider.recordedMutations()
+        XCTAssertEqual(mutationsAfterDirectCall, mutationsBeforeDirectCall)
     }
 
     func testTagEditorCatalogFailureRetainsVisibleTagsAndCanRetry() async throws {
@@ -1107,6 +1112,62 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertTrue(context.selectedItems.isEmpty)
         XCTAssertFalse(context.canAssociateTags)
         XCTAssertFalse(context.canManageCatalog)
+
+        let applicationsBeforeDirectCall = await provider.appliedChanges()
+        let mutationsBeforeDirectCall = await provider.recordedMutations()
+        await pane.applyTagChanges(.init(add: [tag]))
+        await pane.mutateTagCatalog(.createTag(name: "Blocked", groupID: nil))
+        let applicationsAfterDirectCall = await provider.appliedChanges()
+        let mutationsAfterDirectCall = await provider.recordedMutations()
+        XCTAssertEqual(applicationsAfterDirectCall, applicationsBeforeDirectCall)
+        XCTAssertEqual(mutationsAfterDirectCall, mutationsBeforeDirectCall)
+    }
+
+    func testDelayedRemoteListingCannotOverwriteCurrentRemoteParent() async throws {
+        let accountID = UUID()
+        let directoryA = RemotePath(identifier: "a", displayPath: "/A")
+        let directoryB = RemotePath(identifier: "b", displayPath: "/B")
+        let parentA = RemotePath(identifier: "parent-a", displayPath: "/Parent A")
+        let parentB = RemotePath(identifier: "parent-b", displayPath: "/Parent B")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true)
+        )
+        let provider = SuspendingTagRemoteProvider(
+            listings: [
+                directoryA.identifier: .init(current: directoryA, parent: parentA, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                directoryB.identifier: .init(current: directoryB, parent: parentB, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                parentA.identifier: .init(current: parentA, parent: nil, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                parentB.identifier: .init(current: parentB, parent: nil, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true))
+            ],
+            catalog: .init(scopes: [scope]),
+            mutatedCatalog: .init(scopes: [scope]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directoryA)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        await provider.suspendNextList(directoryID: directoryA.identifier)
+        let staleRefresh = Task { @MainActor in
+            await pane.refresh()
+        }
+        await provider.waitForListSuspension()
+
+        let locationB = Location.remote(.init(accountID: accountID, connectorID: .kodbox, path: directoryB))
+        await pane.navigate(to: locationB)
+        await provider.resumeList()
+        await staleRefresh.value
+        pane.goUp()
+
+        let parentBLocation = Location.remote(.init(accountID: accountID, connectorID: .kodbox, path: parentB))
+        try await waitUntil { pane.location == parentBLocation }
+        XCTAssertNil(pane.errorMessage)
     }
 
     private static func paneItemID(accountID: UUID, path: RemotePath) -> String {
@@ -1326,6 +1387,10 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
     private var catalogSuspendedWaiter: CheckedContinuation<Void, Never>?
     private var applySuspendedWaiter: CheckedContinuation<Void, Never>?
     private var mutationSuspendedWaiter: CheckedContinuation<Void, Never>?
+    private var suspendedListDirectoryID: String?
+    private var suspendedListResponse: RemoteDirectoryListing?
+    private var listContinuation: CheckedContinuation<RemoteDirectoryListing, Error>?
+    private var listSuspendedWaiter: CheckedContinuation<Void, Never>?
 
     init(
         listings: [String: RemoteDirectoryListing],
@@ -1344,7 +1409,15 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
         guard let listing = listings[directory.identifier] else {
             throw OpenFinderError.itemNotFound(directory.identifier)
         }
-        return listing
+        guard suspendedListDirectoryID == directory.identifier else { return listing }
+        suspendedListDirectoryID = nil
+        suspendedListResponse = listing
+        return try await withCheckedThrowingContinuation { continuation in
+            listContinuation = continuation
+            let waiter = listSuspendedWaiter
+            listSuspendedWaiter = nil
+            waiter?.resume()
+        }
     }
 
     func createDirectory(in parent: RemotePath, named name: String) async throws {}
@@ -1399,6 +1472,10 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
         suspendsMutation = true
     }
 
+    func suspendNextList(directoryID: String) {
+        suspendedListDirectoryID = directoryID
+    }
+
     func waitForCatalogSuspension() async {
         guard catalogContinuation == nil else { return }
         await withCheckedContinuation { continuation in
@@ -1420,6 +1497,13 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
         }
     }
 
+    func waitForListSuspension() async {
+        guard listContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            listSuspendedWaiter = continuation
+        }
+    }
+
     func resumeCatalog() {
         let continuation = catalogContinuation
         catalogContinuation = nil
@@ -1436,6 +1520,16 @@ private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
         let continuation = mutationContinuation
         mutationContinuation = nil
         continuation?.resume(returning: mutatedCatalog)
+    }
+
+    func resumeList() {
+        let continuation = listContinuation
+        let response = suspendedListResponse
+        listContinuation = nil
+        suspendedListResponse = nil
+        if let response {
+            continuation?.resume(returning: response)
+        }
     }
 
     func listedIdentifiers() -> [String] {
