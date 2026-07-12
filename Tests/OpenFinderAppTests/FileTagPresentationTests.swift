@@ -145,11 +145,39 @@ final class FileTagPresentationTests: XCTestCase {
         cell.configure(tags: tags, availableWidth: 260)
         XCTAssertEqual(cell.contentStack.arrangedSubviews.count, 3)
 
-        cell.frame.size.width = 54
+        cell.frame.size.width = 60
         cell.layoutSubtreeIfNeeded()
 
+        XCTAssertEqual(cell.contentStack.arrangedSubviews.count, 2)
+        XCTAssertTrue(cell.contentStack.arrangedSubviews.first is NSStackView)
+        XCTAssertEqual((cell.contentStack.arrangedSubviews.last as? NSTextField)?.stringValue, "+2")
+    }
+
+    func testNarrowCellShowsSingleLongTagInsteadOfOverflowOnly() throws {
+        let longName = "这是一个需要尾部截断但仍然必须显示的标签"
+        let cell = FileTagCellView(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
+
+        cell.configure(tags: [FileTag.local(name: longName)], availableWidth: 60)
+
         XCTAssertEqual(cell.contentStack.arrangedSubviews.count, 1)
-        XCTAssertEqual((cell.contentStack.arrangedSubviews.first as? NSTextField)?.stringValue, "+3")
+        let tagStack = try XCTUnwrap(cell.contentStack.arrangedSubviews.first as? NSStackView)
+        let nameField = try XCTUnwrap(tagStack.arrangedSubviews.last as? NSTextField)
+        XCTAssertEqual(nameField.stringValue, longName)
+        XCTAssertEqual(nameField.lineBreakMode, .byTruncatingTail)
+        XCTAssertEqual(nameField.contentCompressionResistancePriority(for: .horizontal), .defaultLow)
+        XCTAssertEqual(cell.accessibilityLabel(), "标签：\(longName)")
+    }
+
+    func testNarrowCellKeepsFirstLongTagAndCountsOnlyRemainingOverflow() {
+        let tags = ["A very long first tag name", "Bravo", "Charlie"].map(FileTag.local(name:))
+        let cell = FileTagCellView(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
+
+        cell.configure(tags: tags, availableWidth: 80)
+
+        XCTAssertEqual(cell.contentStack.arrangedSubviews.count, 2)
+        XCTAssertTrue(cell.contentStack.arrangedSubviews.first is NSStackView)
+        XCTAssertEqual((cell.contentStack.arrangedSubviews.last as? NSTextField)?.stringValue, "+2")
+        XCTAssertEqual(cell.accessibilityLabel(), "标签：A very long first tag name、Bravo、Charlie")
     }
 
     func testTagActionRequiresWritableSelectionWithCommonAssociableScope() {

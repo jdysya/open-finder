@@ -99,6 +99,7 @@ final class FileTagCellView: NSTableCellView {
         in tags: [FileTagCellTag],
         availableWidth: CGFloat
     ) -> Int {
+        guard !tags.isEmpty else { return 0 }
         let usableWidth = max(0, availableWidth - 12)
         var usedWidth: CGFloat = 0
         var visibleCount = 0
@@ -115,7 +116,7 @@ final class FileTagCellView: NSTableCellView {
             usedWidth += interTagSpacing + tagWidth
             visibleCount += 1
         }
-        return visibleCount
+        return max(1, visibleCount)
     }
 
     private func makeTagView(_ tag: FileTagCellTag) -> NSView {
