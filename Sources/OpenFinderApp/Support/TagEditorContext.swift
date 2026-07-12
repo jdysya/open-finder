@@ -9,6 +9,161 @@ enum TagEditorOperationState: Equatable {
     case mutatingCatalog
 }
 
+struct TagEditorScopeSection: Equatable {
+    let scope: FileTagScope
+    let tags: [FileTag]
+}
+
+enum TagEditorPresentation {
+    static func sections(in catalog: FileTagCatalog, searchText: String) -> [TagEditorScopeSection] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return orderedScopes(in: catalog).compactMap { scope in
+            let tags = catalog.tags.filter { tag in
+                guard tag.scopeID == scope.id else { return false }
+                return query.isEmpty || tag.name.localizedCaseInsensitiveContains(query)
+            }
+            guard query.isEmpty || !tags.isEmpty else { return nil }
+            return TagEditorScopeSection(scope: scope, tags: tags)
+        }
+    }
+
+    static func creationScopes(in catalog: FileTagCatalog, searchText: String) -> [FileTagScope] {
+        let name = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return [] }
+        let hasExactMatch = catalog.tags.contains {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+        guard !hasExactMatch else { return [] }
+        return orderedScopes(in: catalog).filter(\.capabilities.canCreate)
+    }
+
+    static func manageableScopes(in catalog: FileTagCatalog) -> [FileTagScope] {
+        orderedScopes(in: catalog).filter { scope in
+            guard scope.kind != .local else { return false }
+            let capabilities = scope.capabilities
+            return capabilities.canCreate
+                || capabilities.canRename
+                || capabilities.canUpdateStyle
+                || capabilities.canDelete
+                || capabilities.canOrganizeGroups
+        }
+    }
+
+    static func newlyCreatedTag(
+        in catalog: FileTagCatalog,
+        previously existingTags: Set<FileTag>,
+        scopeID: String,
+        name: String
+    ) -> FileTag? {
+        catalog.tags.first {
+            !existingTags.contains($0)
+                && $0.scopeID == scopeID
+                && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    private static func orderedScopes(in catalog: FileTagCatalog) -> [FileTagScope] {
+        var seen = Set<String>()
+        return catalog.scopes
+            .filter { seen.insert($0.id).inserted }
+            .sorted { lhs, rhs in
+                let lhsRank = rank(lhs.kind)
+                let rhsRank = rank(rhs.kind)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                if lhs.displayName != rhs.displayName { return lhs.displayName < rhs.displayName }
+                return lhs.id < rhs.id
+            }
+    }
+
+    private static func rank(_ kind: FileTagScopeKind) -> Int {
+        switch kind {
+        case .local: 0
+        case .personal: 1
+        case .team: 2
+        }
+    }
+}
+
+struct TagEditorAssignmentState: Equatable {
+    var searchText = ""
+    private(set) var pendingChanges = FileTagChangeSet()
+
+    func effectiveSelectionState(for tag: FileTag, baseState: TagSelectionState) -> TagSelectionState {
+        if pendingChanges.additions.contains(tag) { return .checked }
+        if pendingChanges.removals.contains(tag) { return .empty }
+        return baseState
+    }
+
+    mutating func toggle(_ tag: FileTag, baseState: TagSelectionState) {
+        let next: TagSelectionState = effectiveSelectionState(for: tag, baseState: baseState) == .checked
+            ? .empty
+            : .checked
+        set(tag, to: next, baseState: baseState)
+    }
+
+    mutating func selectCreatedTag(_ tag: FileTag) {
+        set(tag, to: .checked, baseState: .empty)
+    }
+
+    mutating func clear() {
+        pendingChanges = .init()
+    }
+
+    private mutating func set(_ tag: FileTag, to desiredState: TagSelectionState, baseState: TagSelectionState) {
+        var additions = pendingChanges.additions.filter { $0 != tag }
+        var removals = pendingChanges.removals.filter { $0 != tag }
+        switch (baseState, desiredState) {
+        case (.checked, .checked), (.empty, .empty):
+            break
+        case (.mixed, .checked), (.empty, .checked):
+            additions.append(tag)
+        case (.checked, .empty), (.mixed, .empty):
+            removals.append(tag)
+        case (_, .mixed):
+            break
+        }
+        pendingChanges = .init(add: additions, remove: removals)
+    }
+}
+
+struct TagCatalogManagementState: Equatable {
+    enum Mode: Equatable {
+        case create
+        case rename(FileTag)
+    }
+
+    var scopeID: String
+    var mode: Mode = .create
+    var name = ""
+
+    init(scopeID: String) {
+        self.scopeID = scopeID
+    }
+
+    var mutation: FileTagCatalogMutation? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return nil }
+        switch mode {
+        case .create:
+            return .createTag(name: trimmedName, groupID: nil)
+        case .rename(let tag):
+            return .renameTag(id: tag.id, name: trimmedName)
+        }
+    }
+
+    mutating func beginCreate(in scope: FileTagScope) {
+        scopeID = scope.id
+        mode = .create
+        name = ""
+    }
+
+    mutating func beginRename(tag: FileTag) {
+        scopeID = tag.scopeID
+        mode = .rename(tag)
+        name = tag.name
+    }
+}
+
 @MainActor
 final class TagEditorContext: ObservableObject, Identifiable {
     let id = UUID()
@@ -45,14 +200,11 @@ final class TagEditorContext: ObservableObject, Identifiable {
     }
 
     var canManageCatalog: Bool {
-        let capabilities = commonEditableScope.capabilities
-        return isActive && operationState == .idle && !selectedItems.isEmpty && !isReadOnly && (
-            capabilities.canCreate
-                || capabilities.canRename
-                || capabilities.canUpdateStyle
-                || capabilities.canDelete
-                || capabilities.canOrganizeGroups
-        )
+        isActive
+            && operationState == .idle
+            && !selectedItems.isEmpty
+            && !isReadOnly
+            && TagEditorPresentation.manageableScopes(in: catalog).contains { $0.id == commonEditableScope.id }
     }
 
     var canRetryCatalog: Bool {

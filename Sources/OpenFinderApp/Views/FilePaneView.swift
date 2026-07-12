@@ -9,6 +9,7 @@ struct FilePaneView: View {
     @State private var showingRename = false
     @State private var pathDraft = ""
     @State private var pathSuggestions: [String] = []
+    @State private var tagEditorContext: TagEditorContext?
     @FocusState private var isPathFocused: Bool
 
     var body: some View {
@@ -58,6 +59,25 @@ struct FilePaneView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Enter a new name for the selected item.")
+        }
+        .sheet(item: $tagEditorContext) { context in
+            TagEditorView(
+                context: context,
+                onApply: { changes in
+                    await pane.applyTagChanges(changes)
+                    if context.errorMessage == nil {
+                        tagEditorContext = nil
+                    }
+                },
+                onRetry: { await pane.reloadTagCatalog() },
+                onManage: { mutation in
+                    await pane.mutateTagCatalog(mutation)
+                    if context.errorMessage == nil {
+                        await pane.reloadTagCatalog()
+                    }
+                },
+                onDismiss: { tagEditorContext = nil }
+            )
         }
         .onAppear { resetPathDraft() }
         .onChange(of: pane.location) { _, _ in resetPathDraft() }
@@ -150,7 +170,11 @@ struct FilePaneView: View {
         case .open:
             if let item = items.first { pane.open(item) }
         case .editTags:
-            break
+            Task {
+                if let context = await pane.prepareTagEditor() {
+                    tagEditorContext = context
+                }
+            }
         case .rename:
             guard items.count == 1, let item = items.first else { return }
             renameText = item.name

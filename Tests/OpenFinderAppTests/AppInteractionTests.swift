@@ -885,6 +885,121 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(mutationsAfterDirectCall, mutationsBeforeDirectCall)
     }
 
+    func testTagEditorOrdersScopesFiltersTagsAndGatesCreateChoices() {
+        let local = FileTagScope.local
+        let personal = FileTagScope(
+            id: "personal",
+            kind: .personal,
+            displayName: "Personal",
+            capabilities: .init(canAssociate: true, canCreate: true, canRename: true)
+        )
+        let team = FileTagScope(
+            id: "team",
+            kind: .team,
+            displayName: "Team",
+            capabilities: .init(canAssociate: true)
+        )
+        let localTag = FileTag.local(name: "Review")
+        let personalTag = FileTag(id: "2", scopeID: personal.id, name: "Roadmap")
+        let teamTag = FileTag(id: "3", scopeID: team.id, name: "Approved")
+        let catalog = FileTagCatalog(
+            scopes: [team, personal, local],
+            tags: [teamTag, personalTag, localTag]
+        )
+
+        XCTAssertEqual(
+            TagEditorPresentation.sections(in: catalog, searchText: "").map(\.scope.kind),
+            [.local, .personal, .team]
+        )
+        XCTAssertEqual(
+            TagEditorPresentation.sections(in: catalog, searchText: "road").flatMap(\.tags),
+            [personalTag]
+        )
+        XCTAssertEqual(
+            TagEditorPresentation.creationScopes(in: catalog, searchText: "New tag").map(\.kind),
+            [.local, .personal]
+        )
+        XCTAssertTrue(TagEditorPresentation.creationScopes(in: catalog, searchText: "review").isEmpty)
+        XCTAssertEqual(TagEditorPresentation.manageableScopes(in: catalog), [personal])
+    }
+
+    func testTagEditorAssignmentDeltaRemainsSeparateFromCatalogMutationDraft() {
+        let scope = FileTagScope(
+            id: "personal",
+            kind: .personal,
+            displayName: "Personal",
+            capabilities: .init(canAssociate: true, canCreate: true, canRename: true)
+        )
+        let selected = FileTag(id: "1", scopeID: scope.id, name: "Selected")
+        let absent = FileTag(id: "2", scopeID: scope.id, name: "Absent")
+        let item = FileItem(
+            id: "item",
+            name: "item.txt",
+            location: .local(path: "/tmp/item.txt"),
+            kind: .file,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: nil,
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true,
+            tags: [selected],
+            tagScopes: [scope],
+            supportsTagEditing: true
+        )
+        let context = TagEditorContext(selectedItems: [item], commonEditableScope: scope)
+        context.replaceCatalog(.init(scopes: [scope], tags: [selected, absent]))
+        var assignment = TagEditorAssignmentState()
+
+        assignment.toggle(absent, baseState: context.selectionState(for: absent))
+        var management = TagCatalogManagementState(scopeID: scope.id)
+        management.beginRename(tag: selected)
+        management.name = "Renamed"
+
+        XCTAssertEqual(assignment.pendingChanges, .init(add: [absent]))
+        XCTAssertEqual(management.mutation, .renameTag(id: selected.id, name: "Renamed"))
+        XCTAssertEqual(assignment.pendingChanges, .init(add: [absent]))
+    }
+
+    func testTagEditorAssignmentToggleCancelsBackToBaseState() {
+        let tag = FileTag.local(name: "Review")
+        var state = TagEditorAssignmentState()
+
+        state.toggle(tag, baseState: .empty)
+        XCTAssertEqual(state.effectiveSelectionState(for: tag, baseState: .empty), .checked)
+        state.toggle(tag, baseState: .empty)
+
+        XCTAssertTrue(state.pendingChanges.isEmpty)
+        XCTAssertEqual(state.effectiveSelectionState(for: tag, baseState: .empty), .empty)
+    }
+
+    func testTagEditorSelectsOnlyMatchingServerAssignedCreatedTag() {
+        let scope = FileTagScope(
+            id: "personal",
+            kind: .personal,
+            displayName: "Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let existing = FileTag(id: "4", scopeID: scope.id, name: "Existing")
+        let concurrent = FileTag(id: "5", scopeID: scope.id, name: "Concurrent")
+        let created = FileTag(id: "91", scopeID: scope.id, name: "Roadmap")
+        let catalog = FileTagCatalog(scopes: [scope], tags: [existing, concurrent, created])
+
+        XCTAssertEqual(
+            TagEditorPresentation.newlyCreatedTag(
+                in: catalog,
+                previously: [existing],
+                scopeID: scope.id,
+                name: "roadmap"
+            ),
+            created
+        )
+        XCTAssertNotEqual(created.id, FileTag.local(name: created.name).id)
+    }
+
     func testTagEditorCatalogFailureRetainsVisibleTagsAndCanRetry() async throws {
         let accountID = UUID()
         let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
