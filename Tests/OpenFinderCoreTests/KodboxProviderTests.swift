@@ -277,6 +277,189 @@ final class KodboxProviderTests: XCTestCase {
         XCTAssertTrue(recorder.values.isEmpty)
     }
 
+    func testListMapsTeamTagsAndPermissions() async throws {
+        let accountID = Self.fixtureAccountID
+        KodboxProviderURLProtocol.handler = { request in
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/list/path":
+                return Self.response(
+                    for: request,
+                    body: #"""
+                    {"code":true,"data":{"folderList":[],"fileList":[
+                      {"name":"admin.txt","path":"{group:42}/admin.txt","size":1,"modifyTime":null,"targetType":"group","targetID":"42","canWrite":true,
+                       "sourceInfo":{"isGroupRoot":true,"isGroupHasTag":true,"groupTagInfo":[{"id":9,"name":"Approved","groupInfo":{"id":2,"name":"Status"}}]}},
+                      {"name":"writer.txt","path":"{group:42}/writer.txt","size":1,"modifyTime":null,"targetType":"group","targetID":42,"canWrite":true,
+                       "sourceInfo":{"isGroupRoot":false,"isGroupHasTag":true,"groupTagInfo":[]}},
+                      {"name":"readonly.txt","path":"{group:42}/readonly.txt","size":1,"modifyTime":null,"targetType":"group","targetID":"42","canWrite":false,
+                       "sourceInfo":{"isGroupRoot":false,"isGroupHasTag":true,"groupTagInfo":[]}}
+                    ]}}
+                    """#
+                )
+            case "explorer/tagGroup/get":
+                return Self.response(for: request, body: Self.teamTagCatalogResponse)
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+
+        let directory = RemotePath(identifier: "{group:42}/", displayPath: "/Team")
+        let listing = try await provider.list(directory: directory)
+
+        let administrator = try XCTUnwrap(listing.items.first { $0.name == "admin.txt" })
+        let writer = try XCTUnwrap(listing.items.first { $0.name == "writer.txt" })
+        let readOnly = try XCTUnwrap(listing.items.first { $0.name == "readonly.txt" })
+        let administratorScope = try XCTUnwrap(administrator.tagScopes.first { $0.kind == .team })
+        let writerScope = try XCTUnwrap(writer.tagScopes.first { $0.kind == .team })
+        let readOnlyScope = try XCTUnwrap(readOnly.tagScopes.first { $0.kind == .team })
+        XCTAssertEqual(administrator.tags, [
+            .init(id: "9", scopeID: administratorScope.id, name: "Approved", groupID: "2")
+        ])
+        XCTAssertEqual(administratorScope, Self.teamScope(accountID: accountID, groupID: "42", canManage: true, canAssociate: true))
+        XCTAssertEqual(writerScope, Self.teamScope(accountID: accountID, groupID: "42", canManage: false, canAssociate: true))
+        XCTAssertEqual(readOnlyScope, Self.teamScope(accountID: accountID, groupID: "42", canManage: false, canAssociate: false))
+        XCTAssertTrue(administrator.supportsTagEditing)
+        XCTAssertTrue(writer.supportsTagEditing)
+        XCTAssertFalse(readOnly.supportsTagEditing)
+
+        let catalog = try await provider.tagCatalog(for: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)))
+        XCTAssertEqual(catalog.scopes, [administratorScope])
+    }
+
+    func testTeamTagCatalogAndAssociationRoutesRequireMatchingGroup() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/tagGroup/get":
+                return Self.response(for: request, body: Self.teamTagCatalogResponse)
+            case "explorer/tagGroup/filesAddToTag", "explorer/tagGroup/filesRemoveFromTag":
+                return Self.response(for: request, body: #"{"code":true,"data":{}}"#)
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+        let scope = Self.teamScope(accountID: accountID, groupID: "42", canManage: true, canAssociate: true)
+        let item = Self.teamFileItem(accountID: accountID, groupID: "42", scope: scope)
+        let teamTag = FileTag(id: "9", scopeID: scope.id, name: "Approved", groupID: "2")
+
+        let catalog = try await provider.tagCatalog(for: Self.teamLocation(accountID: accountID, groupID: "42"))
+        XCTAssertEqual(catalog.groups, [
+            .init(id: "2", scopeID: scope.id, name: "Status"),
+            .init(id: "3", scopeID: scope.id, name: "Priority")
+        ])
+        let concurrentTag = FileTag(id: "10", scopeID: scope.id, name: "Concurrent", groupID: "2")
+        XCTAssertEqual(catalog.tags, [teamTag, concurrentTag])
+
+        let result = try await provider.apply(.init(add: [teamTag], remove: [concurrentTag]), to: [item])
+        XCTAssertEqual(result, .init(appliedItemIDs: [item.id]))
+
+        let associationRequests = recorder.values.filter { request in
+            switch request.url?.kodboxRoute {
+            case "explorer/tagGroup/filesAddToTag", "explorer/tagGroup/filesRemoveFromTag":
+                true
+            default:
+                false
+            }
+        }
+        XCTAssertEqual(associationRequests.map { $0.url?.kodboxRoute }, [
+            "explorer/tagGroup/filesAddToTag",
+            "explorer/tagGroup/filesRemoveFromTag"
+        ])
+        XCTAssertEqual(associationRequests.map(\.bodyFormValues), [
+            ["groupID": "42", "tagID": "9", "files": "{group:42}/notes.txt"],
+            ["groupID": "42", "tagID": "10", "files": "{group:42}/notes.txt"]
+        ])
+
+        let wrongGroup = Self.teamFileItem(accountID: accountID, groupID: "7", scope: scope)
+        let mismatch = try await provider.apply(.init(add: [teamTag]), to: [wrongGroup])
+        XCTAssertEqual(mismatch.appliedItemIDs, [])
+        XCTAssertEqual(mismatch.failures.count, 1)
+        XCTAssertEqual(associationRequests.count, 2)
+    }
+
+    func testTeamTagAssociationRejectsMixedOrForeignScopesBeforeRequests() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            throw KodboxProviderFixtureError.unexpectedRequest
+        }
+        let provider = makeProvider(accountID: accountID)
+        let teamScope = Self.teamScope(accountID: accountID, groupID: "42", canManage: true, canAssociate: true)
+        let item = Self.teamFileItem(accountID: accountID, groupID: "42", scope: teamScope)
+        let teamTag = FileTag(id: "9", scopeID: teamScope.id, name: "Approved", groupID: "2")
+        let personalTag = FileTag(id: "7", scopeID: Self.personalScope(accountID: accountID).id, name: "Review")
+
+        let mixed = try await provider.apply(.init(add: [teamTag, personalTag]), to: [item])
+        XCTAssertEqual(mixed.appliedItemIDs, [])
+        XCTAssertEqual(mixed.failures.map(\.tag), [teamTag, personalTag])
+        XCTAssertTrue(recorder.values.isEmpty)
+
+        let foreignRecorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            foreignRecorder.append(request)
+            throw KodboxProviderFixtureError.unexpectedRequest
+        }
+        let foreign = FileTag(id: "9", scopeID: "kodbox:other-account:team:42", name: "Approved", groupID: "2")
+        let foreignResult = try await provider.apply(.init(add: [foreign]), to: [item])
+        XCTAssertEqual(foreignResult.appliedItemIDs, [])
+        XCTAssertEqual(foreignResult.failures.map(\.tag), [foreign])
+        XCTAssertTrue(foreignRecorder.values.isEmpty)
+    }
+
+    func testTeamTagCatalogMutationsUseMinimalDiff() async throws {
+        let accountID = Self.fixtureAccountID
+        let recorder = KodboxProviderRequestRecorder()
+        KodboxProviderURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.kodboxRoute {
+            case "user/index/loginSubmit":
+                return Self.response(for: request, body: #"{"code":true,"data":{"accessToken":"fixture-access-token"}}"#)
+            case "user/view/options":
+                return Self.response(for: request, body: Self.optionsResponse)
+            case "explorer/tagGroup/get":
+                return Self.response(for: request, body: Self.teamTagCatalogResponse)
+            case "explorer/tagGroup/set":
+                return Self.response(for: request, body: Self.teamTagCatalogResponse)
+            default:
+                throw KodboxProviderFixtureError.unexpectedRequest
+            }
+        }
+        let provider = makeProvider(accountID: accountID)
+        let scope = Self.teamScope(accountID: accountID, groupID: "42", canManage: true, canAssociate: true)
+
+        _ = try await provider.mutate(.createTag(name: "Blocked", groupID: "2"), in: scope)
+        let renamed = try await provider.mutate(.renameTag(id: "9", name: "Reviewed"), in: scope)
+        _ = try await provider.mutate(.moveTag(id: "9", groupID: "3"), in: scope)
+        let deleted = try await provider.mutate(.deleteTag(id: "9"), in: scope)
+
+        let setRequests = recorder.values.filter { $0.url?.kodboxRoute == "explorer/tagGroup/set" }
+        XCTAssertEqual(setRequests.compactMap { $0.bodyFormValues?["groupID"] }, ["42", "42", "42", "42"])
+        XCTAssertEqual(setRequests.compactMap { $0.bodyFormValues?["diff"] }.map(Self.canonicalJSON), [
+            #"{"list":{"add":[{"beforeID":"10","val":{"group":2,"name":"Blocked"}}],"edit":{},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
+            #"{"list":{"add":[],"edit":{"9":{"name":{"type":"edit","val":"Reviewed"}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
+            #"{"list":{"add":[],"edit":{"9":{"group":{"type":"edit","val":3}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
+            #"{"list":{"add":[],"edit":{},"remove":["9"],"sort":{"idArr":[],"isChange":false}}}"#
+        ])
+        XCTAssertEqual(renamed.tags, [
+            .init(id: "9", scopeID: scope.id, name: "Approved", groupID: "2"),
+            .init(id: "10", scopeID: scope.id, name: "Concurrent", groupID: "2")
+        ])
+        XCTAssertEqual(deleted.providerState?["kodbox.team.deleteRemovesAssociations"], "true")
+        XCTAssertEqual(deleted.providerState?["kodbox.team.deletedTagID"], "9")
+    }
+
     func testMutationsUseNativeRoutesWithOpaqueIdentifiersAndNeverServerRoot() async throws {
         let recorder = KodboxProviderRequestRecorder()
         KodboxProviderURLProtocol.handler = { request in
@@ -532,6 +715,21 @@ final class KodboxProviderTests: XCTestCase {
         )
     }
 
+    private static func teamScope(accountID: UUID, groupID: String, canManage: Bool, canAssociate: Bool) -> FileTagScope {
+        .init(
+            id: "kodbox:\(accountID.uuidString):team:\(groupID)",
+            kind: .team,
+            displayName: "Kodbox Team \(groupID)",
+            capabilities: .init(
+                canAssociate: canAssociate,
+                canCreate: canManage,
+                canRename: canManage,
+                canDelete: canManage,
+                canOrganizeGroups: canManage
+            )
+        )
+    }
+
     private static func personalLocation(accountID: UUID, path: String) -> Location {
         .remote(.init(accountID: accountID, connectorID: .kodbox, path: .init(identifier: path, displayPath: "/Personal")))
     }
@@ -555,8 +753,41 @@ final class KodboxProviderTests: XCTestCase {
         )
     }
 
+    private static func teamLocation(accountID: UUID, groupID: String, path: String? = nil) -> Location {
+        let identifier = path ?? "{group:\(groupID)}/"
+        return .remote(.init(accountID: accountID, connectorID: .kodbox, path: .init(identifier: identifier, displayPath: "/Team")))
+    }
+
+    private static func teamFileItem(accountID: UUID, groupID: String, scope: FileTagScope) -> FileItem {
+        let path = "{group:\(groupID)}/notes.txt"
+        return FileItem(
+            id: "remote:\(accountID.uuidString):\(path)",
+            name: "notes.txt",
+            location: teamLocation(accountID: accountID, groupID: groupID, path: path),
+            kind: .file,
+            size: 42,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true,
+            tagScopes: [scope],
+            supportsTagEditing: true
+        )
+    }
+
     private static let optionsResponse = #"{"code":true,"data":{"version":"1.68.10","user":{"myhome":"{source:5}/","desktop":"{source:6}/"}}}"#
     private static let personalTagCatalogResponse = #"{"code":true,"data":[{"id":7,"name":"Review","style":"label-blue-normal"},{"id":"8","name":"Neutral","style":"future-style"},{"id":0,"name":"Invalid","style":"label-red-normal"},{"id":"bad"}]}"#
+    private static let teamTagCatalogResponse = #"{"code":true,"data":{"group":[{"id":2,"name":"Status"},{"id":3,"name":"Priority"}],"list":[{"id":9,"name":"Approved","group":2},{"id":10,"name":"Concurrent","group":2}]}}"#
+
+    private static func canonicalJSON(_ string: String) -> String {
+        let object = try! JSONSerialization.jsonObject(with: Data(string.utf8))
+        let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
 
     private static func response(for request: URLRequest, body: String) -> (HTTPURLResponse, Data) {
         response(for: request, contentType: "application/json", data: Data(body.utf8))

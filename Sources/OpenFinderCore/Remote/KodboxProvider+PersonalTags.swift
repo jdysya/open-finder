@@ -2,6 +2,12 @@ import Foundation
 
 extension KodboxProvider: TagProvider {
     public func tagCatalog(for location: Location) async throws -> FileTagCatalog {
+        if let groupID = try teamGroupID(for: location) {
+            return try await teamTagCatalog(
+                groupID: groupID,
+                scope: cachedTeamScope(for: location, groupID: groupID)
+            )
+        }
         try requirePersonalLocation(location)
         let payload: KodboxPersonalTagCatalogPayload = try await session.perform(
             .tagGet,
@@ -14,19 +20,48 @@ extension KodboxProvider: TagProvider {
     public func apply(_ changes: FileTagChangeSet, to items: [FileItem]) async throws -> TagApplyResult {
         guard !changes.isEmpty else { return TagApplyResult() }
 
-        let operations = changes.additions.map { KodboxPersonalTagAssociation(tag: $0, endpoint: .tagFilesAdd) }
-            + changes.removals.map { KodboxPersonalTagAssociation(tag: $0, endpoint: .tagFilesRemove) }
+        let operations = changes.additions.map { KodboxTagAssociation(tag: $0, isAddition: true) }
+            + changes.removals.map { KodboxTagAssociation(tag: $0, isAddition: false) }
         var appliedItemIDs: [String] = []
         var failures: [TagApplyFailure] = []
 
         for item in items {
-            var itemSucceeded = true
+            let scopeIDs = Set(operations.map(\.tag.scopeID))
+            guard scopeIDs.count == 1 else {
+                failures += operations.map {
+                    TagApplyFailure(
+                        itemID: item.id,
+                        tag: $0.tag,
+                        message: "Tags from different Kodbox scopes cannot be applied together"
+                    )
+                }
+                continue
+            }
+
+            var preparedOperations: [(KodboxTagAssociation, KodboxTagAssociationRequest)] = []
+            var hasPreflightFailure = false
             for operation in operations {
                 do {
-                    let path = try personalAssociationPath(for: item, tag: operation.tag)
+                    preparedOperations.append((operation, try tagAssociationRequest(for: item, operation: operation)))
+                } catch {
+                    hasPreflightFailure = true
+                    failures.append(
+                        TagApplyFailure(
+                            itemID: item.id,
+                            tag: operation.tag,
+                            message: error.localizedDescription
+                        )
+                    )
+                }
+            }
+            guard !hasPreflightFailure else { continue }
+
+            var itemSucceeded = true
+            for (operation, request) in preparedOperations {
+                do {
                     let _: KodboxPersonalTagMutationPayload = try await session.perform(
-                        operation.endpoint,
-                        form: ["tagID": operation.tag.id, "files": path],
+                        request.endpoint,
+                        form: request.form,
                         response: KodboxPersonalTagMutationPayload.self
                     )
                 } catch {
@@ -49,6 +84,9 @@ extension KodboxProvider: TagProvider {
     }
 
     public func mutate(_ mutation: FileTagCatalogMutation, in scope: FileTagScope) async throws -> FileTagCatalog {
+        if scope.kind == .team {
+            return try await mutateTeamTagCatalog(mutation, in: scope)
+        }
         try requirePersonalScope(scope)
 
         let payload: KodboxPersonalTagCatalogPayload
@@ -132,6 +170,26 @@ extension KodboxProvider: TagProvider {
         }
     }
 
+    private func tagAssociationRequest(
+        for item: FileItem,
+        operation: KodboxTagAssociation
+    ) throws -> KodboxTagAssociationRequest {
+        if operation.tag.scopeID == personalTagScope.id {
+            return .init(
+                endpoint: operation.isAddition ? .tagFilesAdd : .tagFilesRemove,
+                form: [
+                    "tagID": try validPersonalTagID(operation.tag.id),
+                    "files": try personalAssociationPath(for: item, tag: operation.tag)
+                ]
+            )
+        }
+
+        return .init(
+            endpoint: operation.isAddition ? .tagGroupFilesAdd : .tagGroupFilesRemove,
+            form: try teamAssociationForm(for: item, tag: operation.tag)
+        )
+    }
+
     private func validPersonalTagID(_ id: String) throws -> String {
         guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, id != "0" else {
             throw OpenFinderError.operationFailed("Kodbox tag identifier is invalid")
@@ -148,9 +206,14 @@ extension KodboxProvider: TagProvider {
     }
 }
 
-private struct KodboxPersonalTagAssociation {
+private struct KodboxTagAssociation {
     let tag: FileTag
+    let isAddition: Bool
+}
+
+private struct KodboxTagAssociationRequest {
     let endpoint: KodboxEndpoint
+    let form: [String: String]
 }
 
 private struct KodboxPersonalTagMutationPayload: Decodable, Sendable {

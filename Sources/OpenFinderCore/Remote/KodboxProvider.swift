@@ -5,6 +5,7 @@ public actor KodboxProvider: RemoteProvider {
 
     let session: KodboxAPISession
     let accountID: UUID
+    var teamScopesByPath: [String: FileTagScope] = [:]
 
     public init(session: KodboxAPISession, accountID: UUID = UUID()) {
         self.session = session
@@ -25,11 +26,38 @@ public actor KodboxProvider: RemoteProvider {
             response: KodboxListPayload.self
         )
         let personalScope = personalTagScope
+        let folders = payload.folderList.map {
+            $0.remoteItem(
+                parentDisplayPath: directory.displayPath,
+                kind: .directory,
+                personalScope: personalScope,
+                accountID: accountID
+            )
+        }
+        let files = payload.fileList.map {
+            $0.remoteItem(
+                parentDisplayPath: directory.displayPath,
+                kind: .file,
+                personalScope: personalScope,
+                accountID: accountID
+            )
+        }
+        let items = folders + files
+        let teamScopes = items.compactMap { item in
+            item.tagScopes.first(where: { $0.kind == .team })
+        }
+        for item in items {
+            if let teamScope = item.tagScopes.first(where: { $0.kind == .team }) {
+                teamScopesByPath[item.remotePath.identifier] = teamScope
+            }
+        }
+        if let directoryScope = teamScopes.first(where: { $0.capabilities.canCreate }) ?? teamScopes.first {
+            teamScopesByPath[directory.identifier] = directoryScope
+        }
         return RemoteDirectoryListing(
             current: directory,
             parent: nil,
-            items: payload.folderList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .directory, personalScope: personalScope) }
-                + payload.fileList.map { $0.remoteItem(parentDisplayPath: directory.displayPath, kind: .file, personalScope: personalScope) },
+            items: items,
             capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
         )
     }
@@ -227,6 +255,9 @@ private struct KodboxListItem: Decodable, Sendable {
     let size: Int64?
     let modifyTime: TimeInterval?
     let sourceInfo: KodboxListSourceInfo?
+    let targetType: String?
+    let targetID: String?
+    let canWrite: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case name
@@ -234,6 +265,9 @@ private struct KodboxListItem: Decodable, Sendable {
         case size
         case modifyTime
         case sourceInfo
+        case targetType
+        case targetID
+        case canWrite
     }
 
     init(from decoder: Decoder) throws {
@@ -243,12 +277,31 @@ private struct KodboxListItem: Decodable, Sendable {
         size = try container.decodeIfPresent(Int64.self, forKey: .size)
         modifyTime = try container.decodeIfPresent(TimeInterval.self, forKey: .modifyTime)
         sourceInfo = try? container.decodeIfPresent(KodboxListSourceInfo.self, forKey: .sourceInfo)
+        targetType = try? container.decodeIfPresent(String.self, forKey: .targetType)
+        targetID = Self.identifier(from: container, key: .targetID)
+        canWrite = try? container.decodeIfPresent(Bool.self, forKey: .canWrite)
     }
 
-    func remoteItem(parentDisplayPath: String, kind: FileKind, personalScope: FileTagScope) -> RemoteItem {
+    func remoteItem(
+        parentDisplayPath: String,
+        kind: FileKind,
+        personalScope: FileTagScope,
+        accountID: UUID
+    ) -> RemoteItem {
         let displayPath = parentDisplayPath == "/"
             ? "/\(name)"
             : "\(parentDisplayPath)/\(name)"
+        let isWritable = canWrite ?? true
+        let teamScope = self.teamScope(accountID: accountID, isWritable: isWritable)
+        let tags: [FileTag]
+        let tagScopes: [FileTagScope]
+        if let teamScope {
+            tags = sourceInfo?.teamTags(in: teamScope) ?? []
+            tagScopes = [teamScope]
+        } else {
+            tags = sourceInfo?.personalTags(in: personalScope) ?? []
+            tagScopes = [personalScope]
+        }
         return RemoteItem(
             id: "kodbox:\(path)",
             name: name,
@@ -259,37 +312,94 @@ private struct KodboxListItem: Decodable, Sendable {
             etag: nil,
             mimeType: nil,
             isReadable: true,
-            isWritable: true,
-            tags: sourceInfo?.personalTags(in: personalScope) ?? [],
-            tagScopes: [personalScope],
-            supportsTagEditing: true
+            isWritable: isWritable,
+            tags: tags,
+            tagScopes: tagScopes,
+            supportsTagEditing: tagScopes.contains { $0.capabilities.canAssociate }
         )
+    }
+
+    private func teamScope(accountID: UUID, isWritable: Bool) -> FileTagScope? {
+        guard targetType == "group", let targetID, Self.isValidGroupID(targetID) else {
+            return nil
+        }
+        let canManage = sourceInfo?.isGroupRoot ?? false
+        return FileTagScope(
+            id: "kodbox:\(accountID.uuidString):team:\(targetID)",
+            kind: .team,
+            displayName: "Kodbox Team \(targetID)",
+            capabilities: .init(
+                canAssociate: isWritable,
+                canCreate: canManage,
+                canRename: canManage,
+                canDelete: canManage,
+                canOrganizeGroups: canManage
+            )
+        )
+    }
+
+    private static func identifier(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> String? {
+        if let identifier = try? container.decode(String.self, forKey: key) {
+            return identifier
+        }
+        if let identifier = try? container.decode(Int.self, forKey: key) {
+            return String(identifier)
+        }
+        return nil
+    }
+
+    private static func isValidGroupID(_ value: String) -> Bool {
+        guard let identifier = Int(value), identifier > 0 else { return false }
+        return String(identifier) == value
     }
 }
 
 private struct KodboxListSourceInfo: Decodable, Sendable {
     private let tagInfo: [KodboxListTag]
+    private let groupTagInfo: [KodboxGroupListTag]
+    private let groupTagList: [KodboxGroupListTag]
+    let isGroupRoot: Bool
+    private let isGroupHasTag: Bool
 
-    private enum CodingKeys: String, CodingKey { case tagInfo }
+    private enum CodingKeys: String, CodingKey { case tagInfo, groupTagInfo, isGroupRoot, isGroupHasTag, groupTagList }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard var entries = try? container.nestedUnkeyedContainer(forKey: .tagInfo) else {
-            tagInfo = []
-            return
-        }
-
-        var parsed: [KodboxListTag] = []
-        while !entries.isAtEnd {
-            guard let tag = try? entries.decode(KodboxListTag.self) else { break }
-            parsed.append(tag)
-        }
-        tagInfo = parsed
+        tagInfo = Self.decodeArray(from: container, key: .tagInfo, element: KodboxListTag.self)
+        groupTagInfo = Self.decodeArray(from: container, key: .groupTagInfo, element: KodboxGroupListTag.self)
+        groupTagList = Self.decodeArray(from: container, key: .groupTagList, element: KodboxGroupListTag.self)
+        isGroupRoot = (try? container.decodeIfPresent(Bool.self, forKey: .isGroupRoot)) ?? false
+        isGroupHasTag = (try? container.decodeIfPresent(Bool.self, forKey: .isGroupHasTag)) ?? false
     }
 
     func personalTags(in scope: FileTagScope) -> [FileTag] {
         var seen = Set<FileTag>()
         return tagInfo.compactMap { $0.fileTag(in: scope) }.filter { seen.insert($0).inserted }
+    }
+
+    func teamTags(in scope: FileTagScope?) -> [FileTag] {
+        guard let scope else { return [] }
+        var seen = Set<FileTag>()
+        return groupTagInfo.compactMap { $0.fileTag(in: scope) }.filter { seen.insert($0).inserted }
+    }
+
+    private static func decodeArray<Element: Decodable>(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys,
+        element: Element.Type
+    ) -> [Element] {
+        guard var entries = try? container.nestedUnkeyedContainer(forKey: key) else {
+            return []
+        }
+        var parsed: [Element] = []
+        while !entries.isAtEnd {
+            guard let entry = try? entries.decode(Element.self) else { break }
+            parsed.append(entry)
+        }
+        return parsed
     }
 }
 
@@ -323,6 +433,66 @@ private struct KodboxListTag: Decodable, Sendable {
             return nil
         }
         return FileTag(id: id, scopeID: scope.id, name: name, color: .init(kodboxStyle: style))
+    }
+}
+
+private struct KodboxGroupListTag: Decodable, Sendable {
+    private let id: String?
+    private let name: String?
+    private let groupInfo: KodboxGroupListTagGroup?
+
+    private enum CodingKeys: String, CodingKey { case id, name, groupInfo }
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            id = nil
+            name = nil
+            groupInfo = nil
+            return
+        }
+        id = Self.identifier(from: container, key: .id)
+        name = try? container.decode(String.self, forKey: .name)
+        groupInfo = try? container.decode(KodboxGroupListTagGroup.self, forKey: .groupInfo)
+    }
+
+    func fileTag(in scope: FileTagScope) -> FileTag? {
+        guard let id, id != "0", let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return FileTag(id: id, scopeID: scope.id, name: name, groupID: groupInfo?.id)
+    }
+
+    private static func identifier(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) -> String? {
+        if let id = try? container.decode(String.self, forKey: key) {
+            return id
+        }
+        if let id = try? container.decode(Int.self, forKey: key) {
+            return String(id)
+        }
+        return nil
+    }
+}
+
+private struct KodboxGroupListTagGroup: Decodable, Sendable {
+    let id: String?
+
+    private enum CodingKeys: String, CodingKey { case id }
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            id = nil
+            return
+        }
+        if let identifier = try? container.decode(String.self, forKey: .id) {
+            id = identifier
+        } else if let identifier = try? container.decode(Int.self, forKey: .id) {
+            id = String(identifier)
+        } else {
+            id = nil
+        }
     }
 }
 

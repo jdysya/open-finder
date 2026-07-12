@@ -19,6 +19,10 @@ public enum KodboxEndpoint: String, CaseIterable, Sendable {
     case tagRemove = "explorer/tag/remove"
     case tagFilesAdd = "explorer/tag/filesAddToTag"
     case tagFilesRemove = "explorer/tag/filesRemoveFromTag"
+    case tagGroupGet = "explorer/tagGroup/get"
+    case tagGroupSet = "explorer/tagGroup/set"
+    case tagGroupFilesAdd = "explorer/tagGroup/filesAddToTag"
+    case tagGroupFilesRemove = "explorer/tagGroup/filesRemoveFromTag"
 }
 
 public struct KodboxCredentials: Sendable {
