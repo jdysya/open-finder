@@ -4,6 +4,7 @@ dist/
 .swiftpm/
 .omx/
 .omo/
+.worktrees/
 .codegraph
 .debug-journal.md
 :-
