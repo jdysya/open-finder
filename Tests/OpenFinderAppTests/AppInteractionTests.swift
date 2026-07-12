@@ -1170,6 +1170,53 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertNil(pane.errorMessage)
     }
 
+    func testRemoteParentIsUnavailableWhileCurrentRemoteListingLoads() async throws {
+        let accountID = UUID()
+        let directoryA = RemotePath(identifier: "a", displayPath: "/A")
+        let directoryB = RemotePath(identifier: "b", displayPath: "/B")
+        let parentA = RemotePath(identifier: "parent-a", displayPath: "/Parent A")
+        let parentB = RemotePath(identifier: "parent-b", displayPath: "/Parent B")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true)
+        )
+        let provider = SuspendingTagRemoteProvider(
+            listings: [
+                directoryA.identifier: .init(current: directoryA, parent: parentA, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                directoryB.identifier: .init(current: directoryB, parent: parentB, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                parentA.identifier: .init(current: parentA, parent: nil, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                parentB.identifier: .init(current: parentB, parent: nil, items: [], capabilities: .init(isReadable: true, isWritable: true, supportsTags: true))
+            ],
+            catalog: .init(scopes: [scope]),
+            mutatedCatalog: .init(scopes: [scope]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directoryA)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        await provider.suspendNextList(directoryID: directoryB.identifier)
+        let locationB = Location.remote(.init(accountID: accountID, connectorID: .kodbox, path: directoryB))
+        let navigation = Task { @MainActor in
+            await pane.navigate(to: locationB)
+        }
+        await provider.waitForListSuspension()
+        pane.goUp()
+        await Task.yield()
+        XCTAssertEqual(pane.location, locationB)
+
+        await provider.resumeList()
+        await navigation.value
+        pane.goUp()
+        let parentBLocation = Location.remote(.init(accountID: accountID, connectorID: .kodbox, path: parentB))
+        try await waitUntil { pane.location == parentBLocation }
+    }
+
     private static func paneItemID(accountID: UUID, path: RemotePath) -> String {
         "remote:\(accountID.uuidString):\(path.identifier)"
     }

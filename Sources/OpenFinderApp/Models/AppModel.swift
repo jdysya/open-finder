@@ -656,6 +656,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let refreshedLocationGeneration = locationGeneration
         isLoading = true
         errorMessage = nil
+        remoteParent = nil
         defer { isLoading = false }
         do {
             let listing = try await listItems(at: refreshedLocation)
