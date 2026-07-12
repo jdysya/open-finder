@@ -5,6 +5,8 @@ MODE="${1:-run}"
 APP_NAME="OpenFinder"
 BUNDLE_ID="dev.openfinder.OpenFinder"
 MIN_SYSTEM_VERSION="14.0"
+DEFAULT_SIGNING_IDENTITY="OpenFinder Local Development"
+SIGNING_IDENTITY="${OPENFINDER_SIGNING_IDENTITY:-$DEFAULT_SIGNING_IDENTITY}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -62,6 +64,23 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+sign_app_bundle() {
+  local identities
+  identities="$(security find-identity -p codesigning -v 2>/dev/null || true)"
+
+  if grep -Fq -- "\"$SIGNING_IDENTITY\"" <<<"$identities"; then
+    echo "Signing $APP_BUNDLE with identity: $SIGNING_IDENTITY"
+    codesign --force --deep --timestamp=none --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+  else
+    echo "warning: code-signing identity '$SIGNING_IDENTITY' is unavailable; using ad-hoc signing. Keychain and TCC approvals may not persist across rebuilds." >&2
+    codesign --force --deep --timestamp=none --sign - "$APP_BUNDLE"
+  fi
+
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
+sign_app_bundle
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
