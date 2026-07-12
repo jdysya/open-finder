@@ -31,6 +31,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
                 .creationDateKey,
                 .isReadableKey,
                 .isWritableKey,
+                .tagNamesKey,
                 .typeIdentifierKey,
                 .contentTypeKey
             ]
@@ -154,7 +155,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
 
     private static let fileIOQueue = DispatchQueue(label: "dev.openfinder.local-file-provider.io", qos: .userInitiated, attributes: .concurrent)
 
-    private static func runFileIO<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+    static func runFileIO<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             fileIOQueue.async {
                 do {
@@ -166,7 +167,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
         }
     }
 
-    private func localURL(for location: Location) throws -> URL {
+    func localURL(for location: Location) throws -> URL {
         guard let url = location.localURL else { throw OpenFinderError.unsupportedLocation(location) }
         return url
     }
@@ -195,6 +196,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
             .creationDateKey,
             .isReadableKey,
             .isWritableKey,
+            .tagNamesKey,
             .typeIdentifierKey,
             .contentTypeKey
         ])
@@ -232,7 +234,10 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
             fileExtension: ext,
             isHidden: values.isHidden == true || url.lastPathComponent.hasPrefix("."),
             isReadable: values.isReadable ?? FileManager.default.isReadableFile(atPath: url.path),
-            isWritable: values.isWritable ?? FileManager.default.isWritableFile(atPath: url.path)
+            isWritable: values.isWritable ?? FileManager.default.isWritableFile(atPath: url.path),
+            tags: (values.tagNames ?? []).map(FileTag.local(name:)),
+            tagScopes: [.local],
+            supportsTagEditing: values.isWritable ?? false
         )
     }
 

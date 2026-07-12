@@ -31,6 +31,101 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertEqual(FileBrowserFilter.apply(items, text: "ALP").map(\.name), ["alpha.md"])
     }
 
+    func testListAndStatReadFinderTags() async throws {
+        let file = tempRoot.appendingPathComponent("tagged.txt")
+        let folder = tempRoot.appendingPathComponent("Tagged Folder", isDirectory: true)
+        try Data().write(to: file)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try (file as NSURL).setResourceValue(["Important", "客户"], forKey: .tagNamesKey)
+        try (folder as NSURL).setResourceValue(["Folder Tag"], forKey: .tagNamesKey)
+
+        let provider = LocalFileProvider()
+        let listed = try await provider.list(
+            .local(path: tempRoot.path),
+            options: .init(showHiddenFiles: true, sort: .name(ascending: true))
+        )
+        let listedFile = try XCTUnwrap(listed.first { $0.name == file.lastPathComponent })
+        let listedFolder = try XCTUnwrap(listed.first { $0.name == folder.lastPathComponent })
+        let stated = try await provider.stat(.local(path: file.path))
+
+        XCTAssertEqual(listedFile.tags.map(\.name), ["Important", "客户"])
+        XCTAssertEqual(listedFolder.tags.map(\.name), ["Folder Tag"])
+        XCTAssertEqual(stated.tags.map(\.name), ["Important", "客户"])
+        XCTAssertEqual(stated.tagScopes, [.local])
+        XCTAssertTrue(stated.supportsTagEditing)
+    }
+
+    func testApplyTagChangesAddsAndRemovesWithoutDroppingUnrelatedTags() async throws {
+        let file = tempRoot.appendingPathComponent("tagged.txt")
+        try Data().write(to: file)
+        try (file as NSURL).setResourceValue(["Keep", "Remove"], forKey: .tagNamesKey)
+
+        let provider = LocalFileProvider()
+        let item = try await provider.stat(.local(path: file.path))
+        let result = try await provider.apply(
+            FileTagChangeSet(
+                add: [.local(name: "Added"), .local(name: "Added")],
+                remove: [.local(name: "Remove")]
+            ),
+            to: [item]
+        )
+
+        XCTAssertEqual(result.appliedItemIDs, [item.id])
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertEqual(try tagNames(of: file), ["Keep", "Added"])
+    }
+
+    func testApplyTagChangesSupportsTaggedFoldersAndLeavesEmptyChangesUntouched() async throws {
+        let folder = tempRoot.appendingPathComponent("tagged", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try (folder as NSURL).setResourceValue(["Folder Tag"], forKey: .tagNamesKey)
+
+        let provider = LocalFileProvider()
+        let item = try await provider.stat(.local(path: folder.path))
+        let noOp = try await provider.apply(.init(), to: [item])
+
+        XCTAssertTrue(noOp.appliedItemIDs.isEmpty)
+        XCTAssertTrue(noOp.failures.isEmpty)
+        XCTAssertEqual(try tagNames(of: folder), ["Folder Tag"])
+
+        let applied = try await provider.apply(
+            .init(add: [.local(name: "Added")], remove: [.local(name: "Folder Tag")]),
+            to: [item]
+        )
+
+        XCTAssertEqual(applied.appliedItemIDs, [item.id])
+        XCTAssertEqual(try tagNames(of: folder), ["Added"])
+    }
+
+    func testApplyTagChangesReportsRemoteAndReadOnlyItemsWithoutMutatingThem() async throws {
+        let file = tempRoot.appendingPathComponent("tagged.txt")
+        try Data().write(to: file)
+        try (file as NSURL).setResourceValue(["Keep"], forKey: .tagNamesKey)
+        let provider = LocalFileProvider()
+        let remote = makeItem(
+            id: "remote:1",
+            location: .remote(
+                RemoteLocation(
+                    accountID: UUID(),
+                    connectorID: .webDAV,
+                    path: RemotePath(identifier: "/item", displayPath: "/item")
+                )
+            ),
+            isWritable: true
+        )
+        let readOnly = makeItem(
+            id: "local:readonly",
+            location: .local(path: file.path),
+            isWritable: false
+        )
+
+        let result = try await provider.apply(.init(add: [.local(name: "Added")]), to: [remote, readOnly])
+
+        XCTAssertTrue(result.appliedItemIDs.isEmpty)
+        XCTAssertEqual(result.failures.map(\.itemID), [remote.id, readOnly.id])
+        XCTAssertEqual(try tagNames(of: file), ["Keep"])
+    }
+
     func testCreatesRenamesCopiesAndMovesLocalFiles() async throws {
         let provider = LocalFileProvider()
         let root = Location.local(path: tempRoot.path)
@@ -101,6 +196,28 @@ final class LocalFileProviderTests: XCTestCase {
         } catch {
             XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "Trash failure must not fall back to permanent deletion")
         }
+    }
+
+    private func tagNames(of url: URL) throws -> [String] {
+        try URL(fileURLWithPath: url.path).resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
+    }
+
+    private func makeItem(id: String, location: Location, isWritable: Bool) -> FileItem {
+        FileItem(
+            id: id,
+            name: "item",
+            location: location,
+            kind: .file,
+            size: nil,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: nil,
+            fileExtension: nil,
+            isHidden: false,
+            isReadable: true,
+            isWritable: isWritable
+        )
     }
 
 }
