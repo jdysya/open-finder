@@ -51,7 +51,7 @@ struct TagEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("为所选项目分配标签")
                     .font(.headline)
-                Text("已选 (context.selectedItems.count) 项")
+                Text("已选 \(context.selectedItems.count) 项")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
