@@ -3,7 +3,9 @@
 dist/
 .swiftpm/
 .omx/
-.omo/
+.omo/*
+!.omo/rules/
+!.omo/rules/*.md
 .superpowers/
 .worktrees/
 .codegraph

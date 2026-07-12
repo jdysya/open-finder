@@ -2,7 +2,7 @@
 
 Date: 2026-07-12
 
-This document records the implementation branches, review discoveries, and preventive controls from the Finder-style scoped-tag feature. It is a maintenance record, not an API contract; the supported behavior is documented in [`kodbox-tag-support.md`](kodbox-tag-support.md) and the design rationale is in [`superpowers/specs/2026-07-12-file-tags-design.md`](superpowers/specs/2026-07-12-file-tags-design.md).
+This document records the implementation branches, review discoveries, and preventive controls from the Finder-style scoped-tag feature. It is a maintenance record, not an API contract; the supported behavior is documented in [`kodbox-tag-support.md`](kodbox-tag-support.md), the design rationale is in [`superpowers/specs/2026-07-12-file-tags-design.md`](superpowers/specs/2026-07-12-file-tags-design.md), and the reusable project constraints are enforced from [`.omo/rules/scoped-file-tags.md`](../.omo/rules/scoped-file-tags.md).
 
 ## Delivered branches
 
