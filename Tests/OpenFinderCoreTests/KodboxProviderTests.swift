@@ -431,6 +431,9 @@ final class KodboxProviderTests: XCTestCase {
             case "explorer/tagGroup/get":
                 return Self.response(for: request, body: Self.teamTagCatalogResponse)
             case "explorer/tagGroup/set":
+                guard let diff = request.bodyFormValues?["diff"], Self.isOfficialTeamCatalogDiff(diff) else {
+                    throw KodboxProviderFixtureError.unexpectedRequest
+                }
                 return Self.response(for: request, body: Self.teamTagCatalogResponse)
             default:
                 throw KodboxProviderFixtureError.unexpectedRequest
@@ -447,10 +450,10 @@ final class KodboxProviderTests: XCTestCase {
         let setRequests = recorder.values.filter { $0.url?.kodboxRoute == "explorer/tagGroup/set" }
         XCTAssertEqual(setRequests.compactMap { $0.bodyFormValues?["groupID"] }, ["42", "42", "42", "42"])
         XCTAssertEqual(setRequests.compactMap { $0.bodyFormValues?["diff"] }.map(Self.canonicalJSON), [
-            #"{"list":{"add":[{"beforeID":"10","val":{"group":2,"name":"Blocked"}}],"edit":{},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
-            #"{"list":{"add":[],"edit":{"9":{"name":{"type":"edit","val":"Reviewed"}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
-            #"{"list":{"add":[],"edit":{"9":{"group":{"type":"edit","val":3}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}"#,
-            #"{"list":{"add":[],"edit":{},"remove":["9"],"sort":{"idArr":[],"isChange":false}}}"#
+            #"{"list":{"type":"diffArr","val":{"add":[{"beforeID":"10","val":{"group":2,"name":"Blocked"}}],"edit":{},"remove":[],"sort":{"idArr":[],"isChange":false}}}}"#,
+            #"{"list":{"type":"diffArr","val":{"add":[],"edit":{"9":{"name":{"type":"edit","val":"Reviewed"}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}}"#,
+            #"{"list":{"type":"diffArr","val":{"add":[],"edit":{"9":{"group":{"type":"edit","val":3}}},"remove":[],"sort":{"idArr":[],"isChange":false}}}}"#,
+            #"{"list":{"type":"diffArr","val":{"add":[],"edit":{},"remove":["9"],"sort":{"idArr":[],"isChange":false}}}}"#
         ])
         XCTAssertEqual(renamed.tags, [
             .init(id: "9", scopeID: scope.id, name: "Approved", groupID: "2"),
@@ -787,6 +790,24 @@ final class KodboxProviderTests: XCTestCase {
         let object = try! JSONSerialization.jsonObject(with: Data(string.utf8))
         let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func isOfficialTeamCatalogDiff(_ string: String) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(string.utf8)),
+              let diff = object as? [String: Any]
+        else {
+            return false
+        }
+
+        return diff.allSatisfy { _, value in
+            guard let wrapper = value as? [String: Any],
+                  wrapper["type"] as? String == "diffArr",
+                  let _ = wrapper["val"] as? [String: Any]
+            else {
+                return false
+            }
+            return true
+        }
     }
 
     private static func response(for request: URLRequest, body: String) -> (HTTPURLResponse, Data) {

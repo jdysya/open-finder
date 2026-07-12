@@ -20,10 +20,10 @@ extension KodboxProvider {
             form: ["groupID": groupID],
             response: KodboxTeamTagCatalogPayload.self
         )
-        let diff = try current.minimalDiff(for: mutation)
+        let diff = try current.encodedMinimalDiff(for: mutation)
         let returned: KodboxTeamTagCatalogPayload = try await session.perform(
             .tagGroupSet,
-            form: ["groupID": groupID, "diff": try diff.encodedString()],
+            form: ["groupID": groupID, "diff": diff],
             response: KodboxTeamTagCatalogPayload.self
         )
         let providerState: [String: String]?

@@ -1,8 +1,8 @@
 import Foundation
 
 struct KodboxTeamTagCatalogPayload: Decodable, Sendable {
-    let groups: [KodboxTeamTagGroup]
-    let tags: [KodboxTeamCatalogTag]
+    private let groups: [KodboxTeamTagGroup]
+    private let tags: [KodboxTeamCatalogTag]
 
     private enum CodingKeys: String, CodingKey { case group, list }
 
@@ -18,7 +18,11 @@ struct KodboxTeamTagCatalogPayload: Decodable, Sendable {
         return FileTagCatalog(scopes: [scope], groups: groups, tags: tags, providerState: providerState)
     }
 
-    func minimalDiff(for mutation: FileTagCatalogMutation) throws -> KodboxTeamTagCatalogDiff {
+    func encodedMinimalDiff(for mutation: FileTagCatalogMutation) throws -> String {
+        try minimalDiff(for: mutation).encodedString()
+    }
+
+    private func minimalDiff(for mutation: FileTagCatalogMutation) throws -> KodboxTeamTagCatalogDiff {
         switch mutation {
         case .createTag(let name, let groupID):
             let groupID = try groupIdentifier(groupID)
@@ -81,7 +85,7 @@ struct KodboxTeamTagCatalogPayload: Decodable, Sendable {
     }
 }
 
-struct KodboxTeamTagGroup: Decodable, Sendable {
+private struct KodboxTeamTagGroup: Decodable, Sendable {
     let id: String?
     let name: String?
 
@@ -118,7 +122,7 @@ struct KodboxTeamTagGroup: Decodable, Sendable {
     }
 }
 
-struct KodboxTeamCatalogTag: Decodable, Sendable {
+private struct KodboxTeamCatalogTag: Decodable, Sendable {
     let id: String?
     let name: String?
     let groupID: String?
@@ -158,19 +162,19 @@ struct KodboxTeamCatalogTag: Decodable, Sendable {
     }
 }
 
-struct KodboxTeamTagCatalogDiff: Encodable, Sendable {
-    let list: KodboxTeamTagArrayDiff
+private struct KodboxTeamTagCatalogDiff: Encodable, Sendable {
+    let list: KodboxTeamTagArrayDiffWrapper
 
     static func addingTag(name: String, groupID: Int, after identifier: String) -> Self {
-        .init(list: .init(add: [.init(beforeID: identifier, value: .init(name: name, groupID: groupID))]))
+        .init(list: .init(value: .init(add: [.init(beforeID: identifier, value: .init(name: name, groupID: groupID))])))
     }
 
     static func editingTag(id: String, key: String, value: KodboxTeamTagEditValue) -> Self {
-        .init(list: .init(edit: [id: [key: .init(value: value)]]))
+        .init(list: .init(value: .init(edit: [id: [key: .init(value: value)]])))
     }
 
     static func removingTag(id: String) -> Self {
-        .init(list: .init(remove: [id]))
+        .init(list: .init(value: .init(remove: [id])))
     }
 
     func encodedString() throws -> String {
@@ -180,7 +184,14 @@ struct KodboxTeamTagCatalogDiff: Encodable, Sendable {
     }
 }
 
-struct KodboxTeamTagArrayDiff: Encodable, Sendable {
+private struct KodboxTeamTagArrayDiffWrapper: Encodable, Sendable {
+    let type = "diffArr"
+    let value: KodboxTeamTagArrayDiff
+
+    private enum CodingKeys: String, CodingKey { case type, value = "val" }
+}
+
+private struct KodboxTeamTagArrayDiff: Encodable, Sendable {
     let add: [KodboxTeamTagAddition]
     let remove: [String]
     let edit: [String: [String: KodboxTeamTagEdit]]
@@ -199,28 +210,28 @@ struct KodboxTeamTagArrayDiff: Encodable, Sendable {
     }
 }
 
-struct KodboxTeamTagAddition: Encodable, Sendable {
+private struct KodboxTeamTagAddition: Encodable, Sendable {
     let beforeID: String
     let value: KodboxTeamTagDraft
 
     private enum CodingKeys: String, CodingKey { case beforeID, value = "val" }
 }
 
-struct KodboxTeamTagDraft: Encodable, Sendable {
+private struct KodboxTeamTagDraft: Encodable, Sendable {
     let name: String
     let groupID: Int
 
     private enum CodingKeys: String, CodingKey { case name, groupID = "group" }
 }
 
-struct KodboxTeamTagEdit: Encodable, Sendable {
+private struct KodboxTeamTagEdit: Encodable, Sendable {
     let type = "edit"
     let value: KodboxTeamTagEditValue
 
     private enum CodingKeys: String, CodingKey { case type, value = "val" }
 }
 
-enum KodboxTeamTagEditValue: Encodable, Sendable {
+private enum KodboxTeamTagEditValue: Encodable, Sendable {
     case string(String)
     case integer(Int)
 
@@ -235,7 +246,7 @@ enum KodboxTeamTagEditValue: Encodable, Sendable {
     }
 }
 
-struct KodboxTeamTagSort: Encodable, Sendable {
+private struct KodboxTeamTagSort: Encodable, Sendable {
     let isChange: Bool
     let idArr: [String]
 
