@@ -2,12 +2,6 @@ import Combine
 import Foundation
 import OpenFinderCore
 
-enum TagSelectionState: Equatable {
-    case empty
-    case mixed
-    case checked
-}
-
 enum TagEditorOperationState: Equatable {
     case idle
     case loadingCatalog

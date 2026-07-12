@@ -881,7 +881,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func prepareTagEditor() async -> TagEditorContext? {
         let selected = selectedItems
-        guard let scope = commonEditableScope(for: selected) else {
+        guard let scope = FileTableTagActionAvailability.commonEditableScope(for: selected) else {
             return nil
         }
 
@@ -1133,26 +1133,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             return false
         }
         return currentSession.generation == session.generation && currentSession.context === session.context
-    }
-
-    private func commonEditableScope(for items: [FileItem]) -> FileTagScope? {
-        guard let first = items.first,
-              first.isWritable,
-              first.supportsTagEditing
-        else {
-            return nil
-        }
-
-        let editableScopes = first.tagScopes.filter(\.capabilities.canAssociate)
-        return editableScopes.first { candidate in
-            items.allSatisfy { item in
-                item.isWritable
-                    && item.supportsTagEditing
-                    && item.tagScopes.contains { scope in
-                        scope.id == candidate.id && scope.capabilities.canAssociate
-                    }
-            }
-        }
     }
 
     private func tagApplyErrorMessage(for failures: [TagApplyFailure]) -> String {

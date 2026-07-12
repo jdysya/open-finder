@@ -76,6 +76,27 @@ enum FileTablePointerSelection {
     }
 }
 
+enum FileTableTagActionAvailability {
+    static func commonEditableScope(for items: [FileItem]) -> FileTagScope? {
+        guard let first = items.first,
+              first.isWritable,
+              first.supportsTagEditing
+        else {
+            return nil
+        }
+
+        return first.tagScopes.first { candidate in
+            candidate.capabilities.canAssociate && items.allSatisfy { item in
+                item.isWritable
+                    && item.supportsTagEditing
+                    && item.tagScopes.contains { scope in
+                        scope.id == candidate.id && scope.capabilities.canAssociate
+                    }
+            }
+        }
+    }
+}
+
 struct FileTableSelectionResult: Equatable {
     let selectedRows: IndexSet
     let anchorRow: Int?

@@ -149,6 +149,8 @@ struct FilePaneView: View {
         switch action {
         case .open:
             if let item = items.first { pane.open(item) }
+        case .editTags:
+            break
         case .rename:
             guard items.count == 1, let item = items.first else { return }
             renameText = item.name

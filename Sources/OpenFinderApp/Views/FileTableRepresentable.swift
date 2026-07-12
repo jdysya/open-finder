@@ -4,6 +4,7 @@ import SwiftUI
 
 enum FileTableAction {
     case open
+    case editTags
     case rename
     case trash
     case revealInFinder
@@ -68,6 +69,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
 
         addColumn(identifier: "name", title: "Name", width: 280, to: table)
+        addColumn(identifier: "tags", title: "标签", width: 180, to: table)
         addColumn(identifier: "kind", title: "Kind", width: 90, to: table)
         addColumn(identifier: "size", title: "Size", width: 90, to: table)
         addColumn(identifier: "modified", title: "Modified", width: 170, to: table)
@@ -98,6 +100,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         column.title = title
         column.width = width
         column.minWidth = min(width, 60)
+        column.resizingMask = [.autoresizingMask, .userResizingMask]
         table.addTableColumn(column)
     }
 
@@ -136,6 +139,13 @@ struct FileTableRepresentable: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard row < parent.items.count, let tableColumn else { return nil }
             let item = parent.items[row]
+            if tableColumn.identifier.rawValue == "tags" {
+                let cell = tableView.makeView(withIdentifier: tableColumn.identifier, owner: self) as? FileTagCellView
+                    ?? FileTagCellView()
+                cell.identifier = tableColumn.identifier
+                cell.configure(tags: item.tags, scopes: item.tagScopes, availableWidth: tableColumn.width)
+                return cell
+            }
             let cell = tableView.makeView(withIdentifier: tableColumn.identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
             cell.identifier = tableColumn.identifier
             let textField = cell.textField ?? NSTextField(labelWithString: "")
@@ -228,6 +238,9 @@ struct FileTableRepresentable: NSViewRepresentable {
             let menu = NSMenu()
             addItem("Open", action: #selector(open(_:)), to: menu)
             addItem("Quick Look", action: #selector(quickLook(_:)), to: menu)
+            if FileTableTagActionAvailability.commonEditableScope(for: selected) != nil {
+                addItem("标签…", action: #selector(editTags(_:)), to: menu)
+            }
             let pluginActions = parent.pluginActionsForSelection(selected)
             if !pluginActions.isEmpty {
                 menu.addItem(.separator())
@@ -379,6 +392,7 @@ struct FileTableRepresentable: NSViewRepresentable {
         }
 
         @objc private func open(_ sender: Any) { perform(.open) }
+        @objc private func editTags(_ sender: Any) { perform(.editTags) }
         @objc private func rename(_ sender: Any) { perform(.rename) }
         @objc private func trash(_ sender: Any) { perform(.trash) }
         @objc private func reveal(_ sender: Any) { perform(.revealInFinder) }
