@@ -291,7 +291,7 @@ private struct KodboxListItem: Decodable, Sendable {
         let displayPath = parentDisplayPath == "/"
             ? "/\(name)"
             : "\(parentDisplayPath)/\(name)"
-        let isWritable = canWrite ?? true
+        let isWritable = canWrite ?? false
         let teamScope = self.teamScope(accountID: accountID, isWritable: isWritable)
         let tags: [FileTag]
         let tagScopes: [FileTagScope]
@@ -323,7 +323,7 @@ private struct KodboxListItem: Decodable, Sendable {
         guard targetType == "group", let targetID, Self.isValidGroupID(targetID) else {
             return nil
         }
-        let canManage = sourceInfo?.isGroupRoot ?? false
+        let canManage = isWritable && (sourceInfo?.isGroupRoot ?? false)
         return FileTagScope(
             id: "kodbox:\(accountID.uuidString):team:\(targetID)",
             kind: .team,

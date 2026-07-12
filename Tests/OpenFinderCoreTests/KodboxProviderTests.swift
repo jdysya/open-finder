@@ -295,7 +295,11 @@ final class KodboxProviderTests: XCTestCase {
                       {"name":"writer.txt","path":"{group:42}/writer.txt","size":1,"modifyTime":null,"targetType":"group","targetID":42,"canWrite":true,
                        "sourceInfo":{"isGroupRoot":false,"isGroupHasTag":true,"groupTagInfo":[]}},
                       {"name":"readonly.txt","path":"{group:42}/readonly.txt","size":1,"modifyTime":null,"targetType":"group","targetID":"42","canWrite":false,
-                       "sourceInfo":{"isGroupRoot":false,"isGroupHasTag":true,"groupTagInfo":[]}}
+                       "sourceInfo":{"isGroupRoot":false,"isGroupHasTag":true,"groupTagInfo":[]}},
+                      {"name":"missing-permission.txt","path":"{group:42}/missing-permission.txt","size":1,"modifyTime":null,"targetType":"group","targetID":"42",
+                       "sourceInfo":{"isGroupRoot":true,"isGroupHasTag":true,"groupTagInfo":[]}},
+                      {"name":"malformed-permission.txt","path":"{group:42}/malformed-permission.txt","size":1,"modifyTime":null,"targetType":"group","targetID":"42","canWrite":"yes",
+                       "sourceInfo":{"isGroupRoot":true,"isGroupHasTag":true,"groupTagInfo":[]}}
                     ]}}
                     """#
                 )
@@ -313,6 +317,8 @@ final class KodboxProviderTests: XCTestCase {
         let administrator = try XCTUnwrap(listing.items.first { $0.name == "admin.txt" })
         let writer = try XCTUnwrap(listing.items.first { $0.name == "writer.txt" })
         let readOnly = try XCTUnwrap(listing.items.first { $0.name == "readonly.txt" })
+        let missingPermission = try XCTUnwrap(listing.items.first { $0.name == "missing-permission.txt" })
+        let malformedPermission = try XCTUnwrap(listing.items.first { $0.name == "malformed-permission.txt" })
         let administratorScope = try XCTUnwrap(administrator.tagScopes.first { $0.kind == .team })
         let writerScope = try XCTUnwrap(writer.tagScopes.first { $0.kind == .team })
         let readOnlyScope = try XCTUnwrap(readOnly.tagScopes.first { $0.kind == .team })
@@ -325,6 +331,12 @@ final class KodboxProviderTests: XCTestCase {
         XCTAssertTrue(administrator.supportsTagEditing)
         XCTAssertTrue(writer.supportsTagEditing)
         XCTAssertFalse(readOnly.supportsTagEditing)
+        XCTAssertFalse(missingPermission.isWritable)
+        XCTAssertFalse(missingPermission.supportsTagEditing)
+        XCTAssertEqual(missingPermission.tagScopes.first?.capabilities, FileTagScopeCapabilities.none)
+        XCTAssertFalse(malformedPermission.isWritable)
+        XCTAssertFalse(malformedPermission.supportsTagEditing)
+        XCTAssertEqual(malformedPermission.tagScopes.first?.capabilities, FileTagScopeCapabilities.none)
 
         let catalog = try await provider.tagCatalog(for: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)))
         XCTAssertEqual(catalog.scopes, [administratorScope])
