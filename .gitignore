@@ -4,6 +4,7 @@ dist/
 .swiftpm/
 .omx/
 .omo/
+.superpowers/
 .worktrees/
 .codegraph
 .debug-journal.md
