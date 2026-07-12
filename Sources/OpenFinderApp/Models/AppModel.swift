@@ -553,6 +553,11 @@ struct PendingTransferOverwrite: Identifiable {
     }
 }
 
+private struct TagEditorSession {
+    let context: TagEditorContext
+    let provider: any TagProvider
+}
+
 @MainActor
 final class BrowserPaneModel: ObservableObject, Identifiable {
     let id: AppModel.PaneID
@@ -574,6 +579,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var directorySizeTasks: [String: Task<Void, Never>] = [:]
     private var remoteParent: RemotePath?
     private let remoteMaterializationDirectory: URL
+    private var tagEditorSession: TagEditorSession?
 
     init(
         id: AppModel.PaneID,
@@ -637,6 +643,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func navigate(to newLocation: Location, recordHistory: Bool = true) async {
         location = newLocation
         selection = []
+        tagEditorSession = nil
         if recordHistory {
             if historyIndex + 1 < history.count { history.removeSubrange((historyIndex + 1)..<history.count) }
             history.append(newLocation)
@@ -824,6 +831,84 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
     }
 
+    func prepareTagEditor() async -> TagEditorContext? {
+        let selected = selectedItems
+        guard let scope = commonEditableScope(for: selected),
+              let tagProvider = try? await tagProvider(for: location)
+        else {
+            return nil
+        }
+
+        let context = TagEditorContext(selectedItems: selected, commonEditableScope: scope)
+        tagEditorSession = .init(context: context, provider: tagProvider)
+        await reloadTagCatalog()
+        return context
+    }
+
+    func reloadTagCatalog() async {
+        guard let session = tagEditorSession else { return }
+
+        session.context.begin(.loadingCatalog)
+        do {
+            session.context.replaceCatalog(try await session.provider.tagCatalog(for: location))
+        } catch {
+            session.context.catalogUnavailable(message: error.localizedDescription)
+        }
+    }
+
+    func applyTagChanges(_ changes: FileTagChangeSet) async {
+        guard let session = tagEditorSession,
+              !session.context.isReadOnly,
+              !changes.isEmpty
+        else {
+            return
+        }
+
+        session.context.begin(.applyingChanges)
+        let result: TagApplyResult?
+        let operationError: String?
+        do {
+            let applied = try await session.provider.apply(changes, to: session.context.selectedItems)
+            result = applied
+            operationError = applied.failures.isEmpty ? nil : tagApplyErrorMessage(for: applied.failures)
+        } catch {
+            result = nil
+            operationError = error.localizedDescription
+        }
+
+        await refresh()
+        session.context.refreshSelectedItems(from: items)
+        session.context.completeApply(result, errorMessage: operationError)
+        if let operationError {
+            errorMessage = operationError
+        }
+    }
+
+    func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async {
+        guard let session = tagEditorSession,
+              !session.context.isReadOnly
+        else {
+            return
+        }
+
+        session.context.begin(.mutatingCatalog)
+        let operationError: String?
+        do {
+            let catalog = try await session.provider.mutate(mutation, in: session.context.commonEditableScope)
+            session.context.replaceCatalog(catalog)
+            operationError = nil
+        } catch {
+            operationError = error.localizedDescription
+        }
+
+        await refresh()
+        session.context.refreshSelectedItems(from: items)
+        session.context.completeCatalogMutation(errorMessage: operationError)
+        if let operationError {
+            errorMessage = operationError
+        }
+    }
+
 
     private func listItems(at location: Location) async throws -> [FileItem] {
         switch location {
@@ -851,8 +936,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     mimeType: remoteItem.mimeType,
                     fileExtension: URL(fileURLWithPath: remoteItem.name).pathExtension.isEmpty ? nil : URL(fileURLWithPath: remoteItem.name).pathExtension.lowercased(),
                     isHidden: remoteItem.name.hasPrefix("."),
-                    isReadable: true,
-                    isWritable: true
+                    isReadable: remoteItem.isReadable,
+                    isWritable: remoteItem.isWritable,
+                    tags: remoteItem.tags,
+                    tagScopes: remoteItem.tagScopes,
+                    supportsTagEditing: remoteItem.supportsTagEditing
                 )
             }
             return sortItems(fileItems)
@@ -918,6 +1006,46 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     private func remoteProvider(for remoteLocation: RemoteLocation) async throws -> any RemoteProvider {
         try await remoteProviderResolver(remoteLocation)
+    }
+
+    private func tagProvider(for location: Location) async throws -> (any TagProvider)? {
+        switch location {
+        case .local:
+            return provider
+        case .webDAV, .remote:
+            let remoteLocation = try remoteLocation(for: location)
+            let remote = try await remoteProvider(for: remoteLocation)
+            return remote as? any TagProvider
+        case .rclone:
+            return nil
+        }
+    }
+
+    private func commonEditableScope(for items: [FileItem]) -> FileTagScope? {
+        guard let first = items.first,
+              first.isWritable,
+              first.supportsTagEditing
+        else {
+            return nil
+        }
+
+        let editableScopes = first.tagScopes.filter(\.capabilities.canAssociate)
+        return editableScopes.first { candidate in
+            items.allSatisfy { item in
+                item.isWritable
+                    && item.supportsTagEditing
+                    && item.tagScopes.contains { scope in
+                        scope.id == candidate.id && scope.capabilities.canAssociate
+                    }
+            }
+        }
+    }
+
+    private func tagApplyErrorMessage(for failures: [TagApplyFailure]) -> String {
+        failures.map { failure in
+            "\(failure.itemID): \(failure.message)"
+        }
+        .joined(separator: "\n")
     }
 
     private func materializeRemoteFile(_ item: FileItem) async throws -> URL {

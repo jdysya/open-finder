@@ -690,6 +690,321 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(moves, [OpaqueMove(itemIdentifier: itemPath.identifier, destinationIdentifier: destination.identifier, name: "renamed.txt")])
     }
 
+    func testRemoteListingPropagatesTagsAndActualReadWriteFlags() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let tag = FileTag(id: "7", scopeID: scope.id, name: "Review", color: .blue)
+        let remoteItem = RemoteItem(
+            id: "note",
+            name: "note.md",
+            path: .init(identifier: "{source:5}/note", displayPath: "/Personal/note.md"),
+            kind: .file,
+            size: 42,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: "text/markdown",
+            isReadable: false,
+            isWritable: false,
+            tags: [tag],
+            tagScopes: [scope],
+            supportsTagEditing: false
+        )
+        let provider = TagRecordingRemoteProvider(
+            listings: [.init(
+                current: directory,
+                parent: nil,
+                items: [remoteItem],
+                capabilities: .init(isReadable: false, isWritable: false, supportsTags: true)
+            )],
+            catalog: .init(scopes: [scope], tags: [tag]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+
+        let item = try XCTUnwrap(pane.items.first)
+        XCTAssertEqual(item.tags, [tag])
+        XCTAssertEqual(item.tagScopes, [scope])
+        XCTAssertFalse(item.supportsTagEditing)
+        XCTAssertFalse(item.isReadable)
+        XCTAssertFalse(item.isWritable)
+    }
+
+    func testApplyingTagChangesRefreshesAndPreservesExistingSelection() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let existingTag = FileTag(id: "7", scopeID: scope.id, name: "Review", color: .blue)
+        let addedTag = FileTag(id: "8", scopeID: scope.id, name: "Next", color: .green)
+        let survivingPath = RemotePath(identifier: "{source:5}/surviving", displayPath: "/Personal/surviving")
+        let stalePath = RemotePath(identifier: "{source:5}/stale", displayPath: "/Personal/stale")
+        let initialItems = [
+            Self.taggedRemoteItem(id: "surviving", name: "surviving.md", path: survivingPath, scope: scope, tags: [existingTag]),
+            Self.taggedRemoteItem(id: "stale", name: "stale.md", path: stalePath, scope: scope, tags: [])
+        ]
+        let refreshedItems = [
+            Self.taggedRemoteItem(id: "surviving", name: "surviving.md", path: survivingPath, scope: scope, tags: [existingTag, addedTag])
+        ]
+        let survivingID = Self.paneItemID(accountID: accountID, path: survivingPath)
+        let staleID = Self.paneItemID(accountID: accountID, path: stalePath)
+        let provider = TagRecordingRemoteProvider(
+            listings: [
+                .init(current: directory, parent: nil, items: initialItems, capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)),
+                .init(current: directory, parent: nil, items: refreshedItems, capabilities: .init(isReadable: true, isWritable: true, supportsTags: true))
+            ],
+            catalog: .init(scopes: [scope], tags: [existingTag, addedTag]),
+            applyResult: .init(
+                appliedItemIDs: [survivingID],
+                failures: [.init(itemID: staleID, tag: addedTag, message: "permission denied")]
+            )
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [survivingID, staleID]
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        XCTAssertEqual(context.selectionState(for: existingTag), .mixed)
+
+        await pane.applyTagChanges(.init(add: [addedTag]))
+
+        XCTAssertEqual(pane.selection, [survivingID])
+        XCTAssertEqual(pane.items.first?.tags, [existingTag, addedTag])
+        let appliedChanges = await provider.appliedChanges()
+        XCTAssertEqual(appliedChanges, [.init(add: [addedTag])])
+        XCTAssertTrue(pane.errorMessage?.contains("permission denied") == true)
+        XCTAssertEqual(context.applyResult?.appliedItemIDs, [survivingID])
+        XCTAssertEqual(context.applyResult?.failures.map(\.message), ["permission denied"])
+    }
+
+    func testUnsupportedWebDAVSelectionDoesNotOpenEditor() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "/webdav", displayPath: "/webdav")
+        let item = RemoteItem(
+            id: "document",
+            name: "document.txt",
+            path: .init(identifier: "/webdav/document.txt", displayPath: "/webdav/document.txt"),
+            kind: .file,
+            size: 1,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: "text/plain",
+            isReadable: true,
+            isWritable: true
+        )
+        let provider = RecordingRemoteProvider(listings: [
+            directory.identifier: .init(
+                current: directory,
+                parent: nil,
+                items: [item],
+                capabilities: .init(isReadable: true, isWritable: true)
+            )
+        ])
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .webDAV, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [Self.paneItemID(accountID: accountID, path: item.remotePath)]
+
+        let context = await pane.prepareTagEditor()
+        let listedIdentifiers = await provider.listedIdentifiers()
+        XCTAssertNil(context)
+        XCTAssertEqual(listedIdentifiers, [directory.identifier])
+    }
+
+    func testTagEditorUsesCommonScopeAndGatesTeamCatalogManagement() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{group:42}/", displayPath: "/Team")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):team:42",
+            kind: .team,
+            displayName: "Kodbox Team 42",
+            capabilities: .init(canAssociate: true)
+        )
+        let mixedTag = FileTag(id: "9", scopeID: scope.id, name: "Approved")
+        let firstPath = RemotePath(identifier: "{group:42}/first", displayPath: "/Team/first")
+        let secondPath = RemotePath(identifier: "{group:42}/second", displayPath: "/Team/second")
+        let provider = TagRecordingRemoteProvider(
+            listings: [.init(
+                current: directory,
+                parent: nil,
+                items: [
+                    Self.taggedRemoteItem(id: "first", name: "first", path: firstPath, scope: scope, tags: [mixedTag]),
+                    Self.taggedRemoteItem(id: "second", name: "second", path: secondPath, scope: scope, tags: [])
+                ],
+                capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+            )],
+            catalog: .init(scopes: [scope], tags: [mixedTag]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [
+            Self.paneItemID(accountID: accountID, path: firstPath),
+            Self.paneItemID(accountID: accountID, path: secondPath)
+        ]
+
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        XCTAssertEqual(context.commonEditableScope, scope)
+        XCTAssertEqual(context.selectionState(for: mixedTag), .mixed)
+        XCTAssertTrue(context.canAssociateTags)
+        XCTAssertFalse(context.canManageCatalog)
+    }
+
+    func testTagEditorCatalogFailureRetainsVisibleTagsAndCanRetry() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let visibleTag = FileTag(id: "7", scopeID: scope.id, name: "Visible", color: .yellow)
+        let remotePath = RemotePath(identifier: "{source:5}/note", displayPath: "/Personal/note")
+        let provider = TagRecordingRemoteProvider(
+            listings: [.init(
+                current: directory,
+                parent: nil,
+                items: [Self.taggedRemoteItem(id: "note", name: "note", path: remotePath, scope: scope, tags: [visibleTag])],
+                capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+            )],
+            catalog: .init(scopes: [scope], tags: [visibleTag]),
+            applyResult: .init(),
+            catalogErrorMessage: "catalog offline"
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [Self.paneItemID(accountID: accountID, path: remotePath)]
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+        XCTAssertTrue(context.isReadOnly)
+        XCTAssertTrue(context.canRetryCatalog)
+        XCTAssertEqual(context.selectionState(for: visibleTag), .checked)
+        XCTAssertTrue(context.errorMessage?.contains("catalog offline") == true)
+
+        await provider.restoreCatalog()
+        await pane.reloadTagCatalog()
+
+        XCTAssertFalse(context.isReadOnly)
+        XCTAssertFalse(context.canRetryCatalog)
+        XCTAssertEqual(context.catalog.tags, [visibleTag])
+    }
+
+    func testMutatingTagCatalogRefreshesAndPreservesSelection() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let oldTag = FileTag(id: "7", scopeID: scope.id, name: "Old")
+        let createdTag = FileTag(id: "8", scopeID: scope.id, name: "Created")
+        let path = RemotePath(identifier: "{source:5}/note", displayPath: "/Personal/note")
+        let selectedID = Self.paneItemID(accountID: accountID, path: path)
+        let initialListing = RemoteDirectoryListing(
+            current: directory,
+            parent: nil,
+            items: [Self.taggedRemoteItem(id: "note", name: "note", path: path, scope: scope, tags: [oldTag])],
+            capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+        )
+        let refreshedListing = RemoteDirectoryListing(
+            current: directory,
+            parent: nil,
+            items: [Self.taggedRemoteItem(id: "note", name: "note", path: path, scope: scope, tags: [oldTag, createdTag])],
+            capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+        )
+        let mutation = FileTagCatalogMutation.createTag(name: "Created", groupID: nil)
+        let provider = TagRecordingRemoteProvider(
+            listings: [initialListing, refreshedListing],
+            catalog: .init(scopes: [scope], tags: [oldTag]),
+            mutatedCatalog: .init(scopes: [scope], tags: [oldTag, createdTag]),
+            applyResult: .init()
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [selectedID]
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+
+        await pane.mutateTagCatalog(mutation)
+
+        XCTAssertEqual(pane.selection, [selectedID])
+        XCTAssertEqual(pane.items.first?.tags, [oldTag, createdTag])
+        XCTAssertEqual(context.catalog.tags, [oldTag, createdTag])
+        let recordedMutations = await provider.recordedMutations()
+        XCTAssertEqual(recordedMutations, [mutation])
+    }
+
+    private static func paneItemID(accountID: UUID, path: RemotePath) -> String {
+        "remote:\(accountID.uuidString):\(path.identifier)"
+    }
+
+    private static func taggedRemoteItem(
+        id: String,
+        name: String,
+        path: RemotePath,
+        scope: FileTagScope,
+        tags: [FileTag]
+    ) -> RemoteItem {
+        RemoteItem(
+            id: id,
+            name: name,
+            path: path,
+            kind: .file,
+            size: nil,
+            modificationDate: nil,
+            etag: nil,
+            mimeType: nil,
+            isReadable: true,
+            isWritable: true,
+            tags: tags,
+            tagScopes: [scope],
+            supportsTagEditing: true
+        )
+    }
+
     private struct PendingOverwriteFixture {
         let root: URL
         let source: URL
@@ -730,6 +1045,76 @@ final class AppInteractionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Condition was not satisfied before timeout")
+    }
+}
+
+private actor TagRecordingRemoteProvider: RemoteProvider, TagProvider {
+    private let listings: [RemoteDirectoryListing]
+    private let catalog: FileTagCatalog
+    private let mutatedCatalog: FileTagCatalog?
+    private let applyResult: TagApplyResult
+    private var catalogErrorMessage: String?
+    private var listingIndex = 0
+    private var recordedChanges: [FileTagChangeSet] = []
+    private var mutations: [FileTagCatalogMutation] = []
+
+    init(
+        listings: [RemoteDirectoryListing],
+        catalog: FileTagCatalog,
+        mutatedCatalog: FileTagCatalog? = nil,
+        applyResult: TagApplyResult,
+        catalogErrorMessage: String? = nil
+    ) {
+        self.listings = listings
+        self.catalog = catalog
+        self.mutatedCatalog = mutatedCatalog
+        self.applyResult = applyResult
+        self.catalogErrorMessage = catalogErrorMessage
+    }
+
+    func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
+        guard listings.indices.contains(listingIndex), listings[listingIndex].current == directory else {
+            throw OpenFinderError.itemNotFound(directory.identifier)
+        }
+        return listings[listingIndex]
+    }
+
+    func createDirectory(in parent: RemotePath, named name: String) async throws {}
+    func delete(item: RemotePath) async throws {}
+    func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID { UUID() }
+    func download(item: RemotePath, to localURL: URL) async throws -> TaskID { UUID() }
+
+    func tagCatalog(for location: Location) async throws -> FileTagCatalog {
+        if let catalogErrorMessage {
+            throw OpenFinderError.operationFailed(catalogErrorMessage)
+        }
+        return catalog
+    }
+
+    func apply(_ changes: FileTagChangeSet, to items: [FileItem]) async throws -> TagApplyResult {
+        recordedChanges.append(changes)
+        listingIndex = min(listingIndex + 1, listings.count - 1)
+        return applyResult
+    }
+
+    func mutate(_ mutation: FileTagCatalogMutation, in scope: FileTagScope) async throws -> FileTagCatalog {
+        mutations.append(mutation)
+        listingIndex = min(listingIndex + 1, listings.count - 1)
+        return mutatedCatalog ?? catalog
+    }
+
+    func appliedChanges() -> [FileTagChangeSet] {
+        recordedChanges
+    }
+
+    func restoreCatalog() {
+        catalogErrorMessage = nil
+    }
+
+    func recordedMutations() -> [FileTagCatalogMutation] {
+        mutations
     }
 }
 
