@@ -6,11 +6,12 @@ OpenFinder is a native macOS SwiftUI/AppKit prototype for the product described 
 
 - SwiftPM macOS app (`OpenFinder`) and testable core library (`OpenFinderCore`).
 - SwiftUI main window, commands, settings, dual-pane layout, task queue panel.
-- AppKit `NSTableView` bridge for file listing, multi-selection, double-click navigation, and desktop context menus.
-- Local file provider: list/stat, hidden filtering, sorting, create file/folder, rename, trash/delete fallback, copy, move.
+- AppKit `NSTableView` bridge for file listing, multi-selection, double-click navigation, desktop context menus, and a resizable Tags column with a scoped multi-item tag editor.
+- Local file provider: list/stat, hidden filtering, sorting, create file/folder, rename, trash/delete fallback, copy, move, and Finder-compatible tag-name read/write through Apple's public file-resource APIs.
 - Plugin system: manifest decoding, action matching by selection/extension/UTType/MIME, right-click plugin actions, streaming NDJSON output events, shell/python/node process runner, example plugins.
 - Task queue: queued/running/succeeded/failed/cancelled state, live progress/log polling, cancel/retry/log actions, history, clipboard result support.
 - WebDAV remote browser: settings account form, Keychain-backed password storage, active-pane navigation, remote list/mkdir/delete/rename, upload/download/copy/move through the task queue, HTTPS credential guard, no silent overwrite, and multistatus failure validation.
+- Kodbox browser and tags: personal and team-public tag display, personal catalog management, permission-gated team tag management, and scoped file/folder association. See [`docs/kodbox-tag-support.md`](docs/kodbox-tag-support.md) for the API and safety boundaries. Generic WebDAV remains intentionally tag-unsupported.
 - Security/persistence seams: bookmark records, in-memory and macOS Keychain stores, JSON config store.
 
 ## Build and test
