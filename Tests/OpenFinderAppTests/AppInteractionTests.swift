@@ -977,6 +977,138 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(recordedMutations, [mutation])
     }
 
+    func testStaleTagEditorPreparationAfterNavigationDoesNotOpenEditor() async throws {
+        let fixture = Self.suspendingTagFixture()
+        await fixture.pane.refresh()
+        fixture.pane.selection = [fixture.firstItemID]
+        await fixture.provider.suspendNextCatalog()
+
+        let preparation = Task { @MainActor in
+            await fixture.pane.prepareTagEditor()
+        }
+        await fixture.provider.waitForCatalogSuspension()
+
+        await fixture.pane.navigate(to: fixture.secondLocation)
+        let listingsBeforeResume = await fixture.provider.listedIdentifiers()
+        await fixture.provider.resumeCatalog()
+        let staleContext = await preparation.value
+
+        XCTAssertNil(staleContext)
+        XCTAssertEqual(fixture.pane.location, fixture.secondLocation)
+        XCTAssertEqual(fixture.pane.items.map(\.name), ["second.md"])
+        let listingsAfterResume = await fixture.provider.listedIdentifiers()
+        XCTAssertEqual(listingsAfterResume, listingsBeforeResume)
+    }
+
+    func testStaleTagApplicationAfterNavigationDoesNotRefreshOrReportOldFailure() async throws {
+        let fixture = Self.suspendingTagFixture()
+        await fixture.pane.refresh()
+        fixture.pane.selection = [fixture.firstItemID]
+        let preparedOldContext = await fixture.pane.prepareTagEditor()
+        let oldContext = try XCTUnwrap(preparedOldContext)
+        await fixture.provider.suspendNextApply()
+
+        let application = Task { @MainActor in
+            await fixture.pane.applyTagChanges(.init(add: [fixture.createdTag]))
+        }
+        await fixture.provider.waitForApplySuspension()
+
+        await fixture.pane.navigate(to: fixture.secondLocation)
+        fixture.pane.selection = [fixture.secondItemID]
+        let preparedNewContext = await fixture.pane.prepareTagEditor()
+        let newContext = try XCTUnwrap(preparedNewContext)
+        let listingsBeforeResume = await fixture.provider.listedIdentifiers()
+        await fixture.provider.resumeApply()
+        await application.value
+
+        let listingsAfterResume = await fixture.provider.listedIdentifiers()
+        XCTAssertEqual(listingsAfterResume, listingsBeforeResume)
+        XCTAssertNil(fixture.pane.errorMessage)
+        XCTAssertFalse(oldContext.isActive)
+        XCTAssertNil(oldContext.applyResult)
+        XCTAssertNil(newContext.applyResult)
+        XCTAssertEqual(fixture.pane.location, fixture.secondLocation)
+    }
+
+    func testStaleTagMutationAfterNavigationDoesNotRefreshOrReplaceOldCatalog() async throws {
+        let fixture = Self.suspendingTagFixture()
+        await fixture.pane.refresh()
+        fixture.pane.selection = [fixture.firstItemID]
+        let preparedOldContext = await fixture.pane.prepareTagEditor()
+        let oldContext = try XCTUnwrap(preparedOldContext)
+        await fixture.provider.suspendNextMutation()
+
+        let mutation = FileTagCatalogMutation.createTag(name: fixture.createdTag.name, groupID: nil)
+        let catalogMutation = Task { @MainActor in
+            await fixture.pane.mutateTagCatalog(mutation)
+        }
+        await fixture.provider.waitForMutationSuspension()
+
+        await fixture.pane.navigate(to: fixture.secondLocation)
+        fixture.pane.selection = [fixture.secondItemID]
+        let preparedNewContext = await fixture.pane.prepareTagEditor()
+        let newContext = try XCTUnwrap(preparedNewContext)
+        let listingsBeforeResume = await fixture.provider.listedIdentifiers()
+        await fixture.provider.resumeMutation()
+        await catalogMutation.value
+
+        let listingsAfterResume = await fixture.provider.listedIdentifiers()
+        XCTAssertEqual(listingsAfterResume, listingsBeforeResume)
+        XCTAssertFalse(oldContext.isActive)
+        XCTAssertEqual(oldContext.catalog.tags, [fixture.existingTag])
+        XCTAssertEqual(newContext.catalog.tags, [fixture.existingTag])
+        XCTAssertNil(fixture.pane.errorMessage)
+        XCTAssertEqual(fixture.pane.location, fixture.secondLocation)
+    }
+
+    func testTagEditorDisablesControlsWhenRefreshRemovesEverySelectedItem() async throws {
+        let accountID = UUID()
+        let directory = RemotePath(identifier: "{source:5}/", displayPath: "/Personal")
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let tag = FileTag(id: "7", scopeID: scope.id, name: "Review")
+        let path = RemotePath(identifier: "{source:5}/note", displayPath: "/Personal/note")
+        let itemID = Self.paneItemID(accountID: accountID, path: path)
+        let provider = TagRecordingRemoteProvider(
+            listings: [
+                .init(
+                    current: directory,
+                    parent: nil,
+                    items: [Self.taggedRemoteItem(id: "note", name: "note", path: path, scope: scope, tags: [tag])],
+                    capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+                ),
+                .init(
+                    current: directory,
+                    parent: nil,
+                    items: [],
+                    capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+                )
+            ],
+            catalog: .init(scopes: [scope], tags: [tag]),
+            applyResult: .init(appliedItemIDs: [itemID])
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: directory)),
+            remoteProviderResolver: { _ in provider }
+        )
+
+        await pane.refresh()
+        pane.selection = [itemID]
+        let preparedContext = await pane.prepareTagEditor()
+        let context = try XCTUnwrap(preparedContext)
+
+        await pane.applyTagChanges(.init(add: [tag]))
+
+        XCTAssertTrue(context.selectedItems.isEmpty)
+        XCTAssertFalse(context.canAssociateTags)
+        XCTAssertFalse(context.canManageCatalog)
+    }
+
     private static func paneItemID(accountID: UUID, path: RemotePath) -> String {
         "remote:\(accountID.uuidString):\(path.identifier)"
     }
@@ -1002,6 +1134,67 @@ final class AppInteractionTests: XCTestCase {
             tags: tags,
             tagScopes: [scope],
             supportsTagEditing: true
+        )
+    }
+
+    private struct SuspendingTagFixture {
+        let pane: BrowserPaneModel
+        let provider: SuspendingTagRemoteProvider
+        let firstItemID: String
+        let secondItemID: String
+        let secondLocation: Location
+        let existingTag: FileTag
+        let createdTag: FileTag
+    }
+
+    private static func suspendingTagFixture() -> SuspendingTagFixture {
+        let accountID = UUID()
+        let scope = FileTagScope(
+            id: "kodbox:\(accountID.uuidString):personal",
+            kind: .personal,
+            displayName: "Kodbox Personal",
+            capabilities: .init(canAssociate: true, canCreate: true)
+        )
+        let existingTag = FileTag(id: "7", scopeID: scope.id, name: "Existing")
+        let createdTag = FileTag(id: "8", scopeID: scope.id, name: "Created")
+        let firstDirectory = RemotePath(identifier: "{source:5}/first", displayPath: "/Personal/first")
+        let secondDirectory = RemotePath(identifier: "{source:5}/second", displayPath: "/Personal/second")
+        let firstPath = RemotePath(identifier: "{source:5}/first/first.md", displayPath: "/Personal/first/first.md")
+        let secondPath = RemotePath(identifier: "{source:5}/second/second.md", displayPath: "/Personal/second/second.md")
+        let provider = SuspendingTagRemoteProvider(
+            listings: [
+                firstDirectory.identifier: .init(
+                    current: firstDirectory,
+                    parent: nil,
+                    items: [taggedRemoteItem(id: "first", name: "first.md", path: firstPath, scope: scope, tags: [existingTag])],
+                    capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+                ),
+                secondDirectory.identifier: .init(
+                    current: secondDirectory,
+                    parent: firstDirectory,
+                    items: [taggedRemoteItem(id: "second", name: "second.md", path: secondPath, scope: scope, tags: [existingTag])],
+                    capabilities: .init(isReadable: true, isWritable: true, supportsTags: true)
+                )
+            ],
+            catalog: .init(scopes: [scope], tags: [existingTag]),
+            mutatedCatalog: .init(scopes: [scope], tags: [existingTag, createdTag]),
+            applyResult: .init(
+                failures: [.init(itemID: paneItemID(accountID: accountID, path: firstPath), tag: createdTag, message: "old operation failed")]
+            )
+        )
+        let pane = BrowserPaneModel(
+            id: .left,
+            location: .remote(.init(accountID: accountID, connectorID: .kodbox, path: firstDirectory)),
+            remoteProviderResolver: { _ in provider }
+        )
+        return .init(
+            pane: pane,
+            provider: provider,
+            firstItemID: paneItemID(accountID: accountID, path: firstPath),
+            secondItemID: paneItemID(accountID: accountID, path: secondPath),
+            secondLocation: .remote(.init(accountID: accountID, connectorID: .kodbox, path: secondDirectory)),
+            existingTag: existingTag,
+            createdTag: createdTag
         )
     }
 
@@ -1115,6 +1308,138 @@ private actor TagRecordingRemoteProvider: RemoteProvider, TagProvider {
 
     func recordedMutations() -> [FileTagCatalogMutation] {
         mutations
+    }
+}
+
+private actor SuspendingTagRemoteProvider: RemoteProvider, TagProvider {
+    private let listings: [String: RemoteDirectoryListing]
+    private let catalog: FileTagCatalog
+    private let mutatedCatalog: FileTagCatalog
+    private let applyResult: TagApplyResult
+    private var listedPaths: [String] = []
+    private var suspendsCatalog = false
+    private var suspendsApply = false
+    private var suspendsMutation = false
+    private var catalogContinuation: CheckedContinuation<FileTagCatalog, Never>?
+    private var applyContinuation: CheckedContinuation<TagApplyResult, Never>?
+    private var mutationContinuation: CheckedContinuation<FileTagCatalog, Never>?
+    private var catalogSuspendedWaiter: CheckedContinuation<Void, Never>?
+    private var applySuspendedWaiter: CheckedContinuation<Void, Never>?
+    private var mutationSuspendedWaiter: CheckedContinuation<Void, Never>?
+
+    init(
+        listings: [String: RemoteDirectoryListing],
+        catalog: FileTagCatalog,
+        mutatedCatalog: FileTagCatalog,
+        applyResult: TagApplyResult
+    ) {
+        self.listings = listings
+        self.catalog = catalog
+        self.mutatedCatalog = mutatedCatalog
+        self.applyResult = applyResult
+    }
+
+    func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
+        listedPaths.append(directory.identifier)
+        guard let listing = listings[directory.identifier] else {
+            throw OpenFinderError.itemNotFound(directory.identifier)
+        }
+        return listing
+    }
+
+    func createDirectory(in parent: RemotePath, named name: String) async throws {}
+    func delete(item: RemotePath) async throws {}
+    func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID { UUID() }
+    func download(item: RemotePath, to localURL: URL) async throws -> TaskID { UUID() }
+
+    func tagCatalog(for location: Location) async throws -> FileTagCatalog {
+        guard suspendsCatalog else { return catalog }
+        suspendsCatalog = false
+        return await withCheckedContinuation { continuation in
+            catalogContinuation = continuation
+            let waiter = catalogSuspendedWaiter
+            catalogSuspendedWaiter = nil
+            waiter?.resume()
+        }
+    }
+
+    func apply(_ changes: FileTagChangeSet, to items: [FileItem]) async throws -> TagApplyResult {
+        guard suspendsApply else { return applyResult }
+        suspendsApply = false
+        return await withCheckedContinuation { continuation in
+            applyContinuation = continuation
+            let waiter = applySuspendedWaiter
+            applySuspendedWaiter = nil
+            waiter?.resume()
+        }
+    }
+
+    func mutate(_ mutation: FileTagCatalogMutation, in scope: FileTagScope) async throws -> FileTagCatalog {
+        guard suspendsMutation else { return mutatedCatalog }
+        suspendsMutation = false
+        return await withCheckedContinuation { continuation in
+            mutationContinuation = continuation
+            let waiter = mutationSuspendedWaiter
+            mutationSuspendedWaiter = nil
+            waiter?.resume()
+        }
+    }
+
+    func suspendNextCatalog() {
+        suspendsCatalog = true
+    }
+
+    func suspendNextApply() {
+        suspendsApply = true
+    }
+
+    func suspendNextMutation() {
+        suspendsMutation = true
+    }
+
+    func waitForCatalogSuspension() async {
+        guard catalogContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            catalogSuspendedWaiter = continuation
+        }
+    }
+
+    func waitForApplySuspension() async {
+        guard applyContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            applySuspendedWaiter = continuation
+        }
+    }
+
+    func waitForMutationSuspension() async {
+        guard mutationContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            mutationSuspendedWaiter = continuation
+        }
+    }
+
+    func resumeCatalog() {
+        let continuation = catalogContinuation
+        catalogContinuation = nil
+        continuation?.resume(returning: catalog)
+    }
+
+    func resumeApply() {
+        let continuation = applyContinuation
+        applyContinuation = nil
+        continuation?.resume(returning: applyResult)
+    }
+
+    func resumeMutation() {
+        let continuation = mutationContinuation
+        mutationContinuation = nil
+        continuation?.resume(returning: mutatedCatalog)
+    }
+
+    func listedIdentifiers() -> [String] {
+        listedPaths
     }
 }
 

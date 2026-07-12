@@ -27,6 +27,7 @@ final class TagEditorContext: ObservableObject, Identifiable {
     @Published private(set) var operationState: TagEditorOperationState = .idle
     @Published private(set) var errorMessage: String?
     @Published private(set) var isReadOnly = false
+    @Published private(set) var isActive = true
     @Published private(set) var applyResult: TagApplyResult?
 
     init(selectedItems: [FileItem], commonEditableScope: FileTagScope) {
@@ -42,12 +43,12 @@ final class TagEditorContext: ObservableObject, Identifiable {
     }
 
     var canAssociateTags: Bool {
-        commonEditableScope.capabilities.canAssociate && !isReadOnly
+        isActive && !selectedItems.isEmpty && commonEditableScope.capabilities.canAssociate && !isReadOnly
     }
 
     var canManageCatalog: Bool {
         let capabilities = commonEditableScope.capabilities
-        return !isReadOnly && (
+        return isActive && !selectedItems.isEmpty && !isReadOnly && (
             capabilities.canCreate
                 || capabilities.canRename
                 || capabilities.canUpdateStyle
@@ -57,7 +58,7 @@ final class TagEditorContext: ObservableObject, Identifiable {
     }
 
     var canRetryCatalog: Bool {
-        isReadOnly && errorMessage != nil
+        isActive && isReadOnly && errorMessage != nil
     }
 
     func selectionState(for tag: FileTag) -> TagSelectionState {
@@ -93,6 +94,13 @@ final class TagEditorContext: ObservableObject, Identifiable {
     func completeCatalogMutation(errorMessage: String?) {
         operationState = .idle
         self.errorMessage = errorMessage
+    }
+
+    func deactivate() {
+        isActive = false
+        isReadOnly = true
+        operationState = .idle
+        errorMessage = nil
     }
 
     func refreshSelectedItems(from items: [FileItem]) {

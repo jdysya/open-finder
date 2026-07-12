@@ -554,6 +554,8 @@ struct PendingTransferOverwrite: Identifiable {
 }
 
 private struct TagEditorSession {
+    let generation: UInt64
+    let location: Location
     let context: TagEditorContext
     let provider: any TagProvider
 }
@@ -561,9 +563,20 @@ private struct TagEditorSession {
 @MainActor
 final class BrowserPaneModel: ObservableObject, Identifiable {
     let id: AppModel.PaneID
-    @Published var location: Location
+    @Published var location: Location {
+        didSet {
+            guard location != oldValue else { return }
+            locationGeneration &+= 1
+            invalidateTagEditorSession()
+        }
+    }
     @Published var items: [FileItem] = []
-    @Published var selection: Set<String> = []
+    @Published var selection: Set<String> = [] {
+        didSet {
+            guard selection != oldValue, !isRestoringTagEditorSelection else { return }
+            invalidateTagEditorSession()
+        }
+    }
     @Published var filterText: String = ""
     @Published var showHiddenFiles: Bool = false
     @Published var isLoading: Bool = false
@@ -580,6 +593,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var remoteParent: RemotePath?
     private let remoteMaterializationDirectory: URL
     private var tagEditorSession: TagEditorSession?
+    private var tagEditorGeneration: UInt64 = 0
+    private var locationGeneration: UInt64 = 0
+    private var isRestoringTagEditorSelection = false
 
     init(
         id: AppModel.PaneID,
@@ -627,15 +643,42 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     var canGoForward: Bool { historyIndex + 1 < history.count }
 
     func refresh() async {
+        await refresh(preservingTagEditorSession: nil)
+    }
+
+    private func refresh(preservingTagEditorSession session: TagEditorSession?) async {
+        let refreshedLocation = location
+        let refreshedLocationGeneration = locationGeneration
         isLoading = true
         errorMessage = nil
         remoteParent = nil
         defer { isLoading = false }
         do {
-            items = try await listItems(at: location)
-            selection.formIntersection(Set(items.map(\.id)))
+            let listedItems = try await listItems(at: refreshedLocation)
+            guard location == refreshedLocation,
+                  locationGeneration == refreshedLocationGeneration
+            else {
+                return
+            }
+            if let session, !isCurrentTagEditorSession(session) {
+                return
+            }
+            items = listedItems
+            if session != nil {
+                isRestoringTagEditorSelection = true
+                selection.formIntersection(Set(items.map(\.id)))
+                isRestoringTagEditorSelection = false
+            } else {
+                selection.formIntersection(Set(items.map(\.id)))
+            }
             refreshDirectorySizeCalculations(for: items)
         } catch {
+            guard location == refreshedLocation,
+                  locationGeneration == refreshedLocationGeneration,
+                  session.map(isCurrentTagEditorSession) ?? true
+            else {
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -643,7 +686,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func navigate(to newLocation: Location, recordHistory: Bool = true) async {
         location = newLocation
         selection = []
-        tagEditorSession = nil
         if recordHistory {
             if historyIndex + 1 < history.count { history.removeSubrange((historyIndex + 1)..<history.count) }
             history.append(newLocation)
@@ -833,31 +875,51 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func prepareTagEditor() async -> TagEditorContext? {
         let selected = selectedItems
-        guard let scope = commonEditableScope(for: selected),
-              let tagProvider = try? await tagProvider(for: location)
+        guard let scope = commonEditableScope(for: selected) else {
+            return nil
+        }
+
+        let requestLocation = location
+        let generation = beginTagEditorRequest()
+        guard let tagProvider = try? await tagProvider(for: requestLocation),
+              isCurrentTagEditorRequest(generation, location: requestLocation)
         else {
             return nil
         }
 
         let context = TagEditorContext(selectedItems: selected, commonEditableScope: scope)
-        tagEditorSession = .init(context: context, provider: tagProvider)
-        await reloadTagCatalog()
-        return context
+        let session = TagEditorSession(
+            generation: generation,
+            location: requestLocation,
+            context: context,
+            provider: tagProvider
+        )
+        tagEditorSession = session
+        await reloadTagCatalog(for: session)
+        return isCurrentTagEditorSession(session) ? context : nil
     }
 
     func reloadTagCatalog() async {
         guard let session = tagEditorSession else { return }
+        await reloadTagCatalog(for: session)
+    }
 
+    private func reloadTagCatalog(for session: TagEditorSession) async {
+        guard isCurrentTagEditorSession(session) else { return }
         session.context.begin(.loadingCatalog)
         do {
-            session.context.replaceCatalog(try await session.provider.tagCatalog(for: location))
+            let catalog = try await session.provider.tagCatalog(for: session.location)
+            guard isCurrentTagEditorSession(session) else { return }
+            session.context.replaceCatalog(catalog)
         } catch {
+            guard isCurrentTagEditorSession(session) else { return }
             session.context.catalogUnavailable(message: error.localizedDescription)
         }
     }
 
     func applyTagChanges(_ changes: FileTagChangeSet) async {
         guard let session = tagEditorSession,
+              isCurrentTagEditorSession(session),
               !session.context.isReadOnly,
               !changes.isEmpty
         else {
@@ -876,7 +938,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             operationError = error.localizedDescription
         }
 
-        await refresh()
+        guard isCurrentTagEditorSession(session) else { return }
+        await refresh(preservingTagEditorSession: session)
+        guard isCurrentTagEditorSession(session) else { return }
         session.context.refreshSelectedItems(from: items)
         session.context.completeApply(result, errorMessage: operationError)
         if let operationError {
@@ -886,22 +950,29 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func mutateTagCatalog(_ mutation: FileTagCatalogMutation) async {
         guard let session = tagEditorSession,
+              isCurrentTagEditorSession(session),
               !session.context.isReadOnly
         else {
             return
         }
 
         session.context.begin(.mutatingCatalog)
+        let catalog: FileTagCatalog?
         let operationError: String?
         do {
-            let catalog = try await session.provider.mutate(mutation, in: session.context.commonEditableScope)
-            session.context.replaceCatalog(catalog)
+            catalog = try await session.provider.mutate(mutation, in: session.context.commonEditableScope)
             operationError = nil
         } catch {
+            catalog = nil
             operationError = error.localizedDescription
         }
 
-        await refresh()
+        guard isCurrentTagEditorSession(session) else { return }
+        if let catalog {
+            session.context.replaceCatalog(catalog)
+        }
+        await refresh(preservingTagEditorSession: session)
+        guard isCurrentTagEditorSession(session) else { return }
         session.context.refreshSelectedItems(from: items)
         session.context.completeCatalogMutation(errorMessage: operationError)
         if let operationError {
@@ -1019,6 +1090,31 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         case .rclone:
             return nil
         }
+    }
+
+    private func beginTagEditorRequest() -> UInt64 {
+        invalidateTagEditorSession()
+        return tagEditorGeneration
+    }
+
+    private func invalidateTagEditorSession() {
+        tagEditorGeneration &+= 1
+        tagEditorSession?.context.deactivate()
+        tagEditorSession = nil
+    }
+
+    private func isCurrentTagEditorRequest(_ generation: UInt64, location: Location) -> Bool {
+        tagEditorGeneration == generation && self.location == location
+    }
+
+    private func isCurrentTagEditorSession(_ session: TagEditorSession) -> Bool {
+        guard tagEditorGeneration == session.generation,
+              location == session.location,
+              let currentSession = tagEditorSession
+        else {
+            return false
+        }
+        return currentSession.generation == session.generation && currentSession.context === session.context
     }
 
     private func commonEditableScope(for items: [FileItem]) -> FileTagScope? {
