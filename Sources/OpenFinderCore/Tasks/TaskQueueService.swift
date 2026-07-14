@@ -6,12 +6,14 @@ public struct TaskRequest: @unchecked Sendable {
     public let kind: TaskKind
     public let title: String
     public let inputSummary: String
+    public let resourceKey: String?
     public let operation: TaskOperation
 
-    public init(kind: TaskKind, title: String, inputSummary: String = "", operation: @escaping TaskOperation) {
+    public init(kind: TaskKind, title: String, inputSummary: String = "", resourceKey: String? = nil, operation: @escaping TaskOperation) {
         self.kind = kind
         self.title = title
         self.inputSummary = inputSummary
+        self.resourceKey = resourceKey
         self.operation = operation
     }
 }
@@ -45,6 +47,7 @@ public actor TaskQueueService {
     private var requests: [UUID: TaskRequest] = [:]
     private var logStorage: [UUID: [TaskLogLine]] = [:]
     private var cancellationRequests: Set<UUID> = []
+    private var runningResourceKeys: Set<String> = []
     private let maxConcurrentTasks: Int
 
     public init(maxConcurrentTasks: Int = 2) {
@@ -126,9 +129,16 @@ public actor TaskQueueService {
     }
 
     private func startNextIfPossible() {
-        while running.count < maxConcurrentTasks, !queue.isEmpty {
-            let id = queue.removeFirst()
+        while running.count < maxConcurrentTasks {
+            guard let index = queue.firstIndex(where: { id in
+                guard let key = requests[id]?.resourceKey else { return true }
+                return !runningResourceKeys.contains(key)
+            }) else { return }
+            let id = queue.remove(at: index)
             guard let request = requests[id] else { continue }
+            if let resourceKey = request.resourceKey {
+                runningResourceKeys.insert(resourceKey)
+            }
             records[id]?.status = .running
             records[id]?.startedAt = Date()
             let handle = Task.detached(priority: .userInitiated) { [weak self] in
@@ -152,6 +162,9 @@ public actor TaskQueueService {
             finish(id, status: .cancelled, result: nil, error: nil)
         } catch {
             finish(id, status: cancellationRequests.contains(id) ? .cancelled : .failed, result: nil, error: error)
+        }
+        if let resourceKey = request.resourceKey {
+            runningResourceKeys.remove(resourceKey)
         }
         running[id] = nil
         cancellationRequests.remove(id)

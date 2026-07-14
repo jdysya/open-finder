@@ -5,13 +5,14 @@ public enum TaskKind: Codable, Hashable, Sendable {
     case localCopy
     case localMove
     case localDelete
+    case videoAnalysis
     case webDAVUpload
     case webDAVDownload
     case webDAVOperation
     case rcloneOperation
 
     private enum CodingKeys: String, CodingKey { case type, pluginID, actionID }
-    private enum Kind: String, Codable { case plugin, localCopy, localMove, localDelete, webDAVUpload, webDAVDownload, webDAVOperation, rcloneOperation }
+    private enum Kind: String, Codable { case plugin, localCopy, localMove, localDelete, videoAnalysis, webDAVUpload, webDAVDownload, webDAVOperation, rcloneOperation }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -21,6 +22,7 @@ public enum TaskKind: Codable, Hashable, Sendable {
         case .localCopy: self = .localCopy
         case .localMove: self = .localMove
         case .localDelete: self = .localDelete
+        case .videoAnalysis: self = .videoAnalysis
         case .webDAVUpload: self = .webDAVUpload
         case .webDAVDownload: self = .webDAVDownload
         case .webDAVOperation: self = .webDAVOperation
@@ -38,6 +40,7 @@ public enum TaskKind: Codable, Hashable, Sendable {
         case .localCopy: try container.encode(Kind.localCopy, forKey: .type)
         case .localMove: try container.encode(Kind.localMove, forKey: .type)
         case .localDelete: try container.encode(Kind.localDelete, forKey: .type)
+        case .videoAnalysis: try container.encode(Kind.videoAnalysis, forKey: .type)
         case .webDAVUpload: try container.encode(Kind.webDAVUpload, forKey: .type)
         case .webDAVDownload: try container.encode(Kind.webDAVDownload, forKey: .type)
         case .webDAVOperation: try container.encode(Kind.webDAVOperation, forKey: .type)

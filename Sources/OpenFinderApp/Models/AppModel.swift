@@ -5,6 +5,10 @@ import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
+    private static let videoAnalyzerPluginID = "dev.openfinder.plugins.video-analyzer"
+    private static let videoAnalyzerActionID = "analyze-video"
+    private static let videoAnalyzerResourceKey = "video-analysis"
+    private static let videoAnalyzerVersion = "0.1.0"
     enum PaneID: String {
         case left
         case right
@@ -19,6 +23,7 @@ final class AppModel: ObservableObject {
     @Published var remoteAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
     @Published var pendingTransferOverwrite: PendingTransferOverwrite?
+    @Published var presentedVideoAnalysis: VideoAnalysisResult?
     @Published var configuration = AppConfiguration() {
         didSet { saveConfiguration() }
     }
@@ -31,6 +36,7 @@ final class AppModel: ObservableObject {
     private let remoteConnectorRegistry: RemoteConnectorRegistry
     private let remoteProviderRegistry: RemoteProviderRegistry
     private let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
+    private let videoAnalysisStore: VideoAnalysisResultStore
     private var taskPollingTask: Task<Void, Never>?
     private var didLoadInitialState = false
 
@@ -65,6 +71,7 @@ final class AppModel: ObservableObject {
             )
         }
         self.remoteProviderResolver = remoteProviderResolver
+        self.videoAnalysisStore = VideoAnalysisResultStore(directory: Self.applicationSupportDirectory().appendingPathComponent("video-analysis", isDirectory: true))
         self.taskQueue = TaskQueueService(maxConcurrentTasks: 2)
         self.leftPane = BrowserPaneModel(
             id: .left,
@@ -148,7 +155,13 @@ final class AppModel: ObservableObject {
             )
             do {
                 let runner = ProcessPluginRunner(runtimePaths: .init(python3Path: configuration.python3Path, nodePath: configuration.nodePath))
-                let queuedID = try await taskQueue.enqueue(.init(kind: .plugin(pluginID: plugin.id, actionID: action.id), title: "\(plugin.manifest.name): \(action.title)") { context in
+                let isVideoAnalysis = plugin.id == Self.videoAnalyzerPluginID && action.id == Self.videoAnalyzerActionID
+                let analysisBox = VideoAnalysisResultBox()
+                let queuedID = try await taskQueue.enqueue(.init(
+                    kind: isVideoAnalysis ? .videoAnalysis : .plugin(pluginID: plugin.id, actionID: action.id),
+                    title: "\(plugin.manifest.name): \(action.title)",
+                    resourceKey: isVideoAnalysis ? Self.videoAnalyzerResourceKey : nil
+                ) { context in
                     await context.appendLog("Starting plugin \(plugin.manifest.name) / \(action.title)")
                     let result = try await runner.run(.init(
                         manifest: plugin.manifest,
@@ -176,6 +189,9 @@ final class AppModel: ObservableObject {
                     if let failure = result.events.last(where: { $0.isFailureResult }) {
                         throw OpenFinderError.operationFailed(failure.resultMessage ?? "Plugin reported failure")
                     }
+                    if isVideoAnalysis {
+                        try await analysisBox.store(VideoAnalysisPluginResultDecoder.decode(from: result.events, expectedTaskID: taskID))
+                    }
                     return .success(summary: result.events.compactMap { event in
                         if case .result(_, let message, _, _) = event { return message }
                         return nil
@@ -183,10 +199,82 @@ final class AppModel: ObservableObject {
                 })
                 statusMessage = "Queued plugin task \(queuedID.uuidString.prefix(8))"
                 await observeTask(queuedID)
+                if let analysis = await analysisBox.value {
+                    await cacheVideoAnalysis(analysis, analyzerVersion: Self.videoAnalyzerVersion)
+                    presentedVideoAnalysis = analysis
+                }
             } catch {
                 statusMessage = error.localizedDescription
             }
         }
+    }
+
+    func dismissVideoAnalysis() {
+        presentedVideoAnalysis = nil
+    }
+
+    func applySuggestedVideoTags(_ result: VideoAnalysisResult) async -> String {
+        let provider = LocalFileProvider()
+        var applied = 0
+        var failures: [String] = []
+        for video in result.videos {
+            do {
+                let item = try await provider.stat(.local(path: video.path))
+                let fingerprint = try videoFingerprint(for: item, analyzerVersion: Self.videoAnalyzerVersion)
+                let stored = try await videoAnalysisStore.load(for: fingerprint)
+                let reconciliation = ManagedAnalysisTagLedger.reconcile(
+                    current: item.tags,
+                    suggested: video.suggestedTags,
+                    previouslyManaged: stored?.managedTagNames ?? []
+                )
+                let changes = FileTagChangeSet(
+                    add: reconciliation.additions.map(FileTag.local(name:)),
+                    remove: reconciliation.removals.map(FileTag.local(name:))
+                )
+                let outcome = try await provider.apply(changes, to: [item])
+                if let failure = outcome.failures.first {
+                    failures.append("\(video.name): \(failure.message)")
+                    continue
+                }
+                try await videoAnalysisStore.save(.init(
+                    fingerprint: fingerprint,
+                    result: result,
+                    analyzedAt: Date(),
+                    managedTagNames: reconciliation.nextManaged
+                ))
+                applied += 1
+            } catch {
+                failures.append("\(video.name): \(error.localizedDescription)")
+            }
+        }
+        await leftPane.refresh()
+        await rightPane.refresh()
+        if failures.isEmpty { return "Applied suggested tags to \(applied) video(s)." }
+        return "Applied tags to \(applied) video(s). \(failures.joined(separator: " "))"
+    }
+
+    private func cacheVideoAnalysis(_ result: VideoAnalysisResult, analyzerVersion: String) async {
+        let provider = LocalFileProvider()
+        for video in result.videos {
+            guard let item = try? await provider.stat(.local(path: video.path)),
+                  let fingerprint = try? videoFingerprint(for: item, analyzerVersion: analyzerVersion) else { continue }
+            let previous = try? await videoAnalysisStore.load(for: fingerprint)
+            try? await videoAnalysisStore.save(.init(
+                fingerprint: fingerprint,
+                result: result,
+                analyzedAt: Date(),
+                managedTagNames: previous?.managedTagNames ?? []
+            ))
+        }
+    }
+
+    private func videoFingerprint(for item: FileItem, analyzerVersion: String) throws -> VideoFileFingerprint {
+        guard let path = item.location.localURL?.standardizedFileURL.path,
+              let size = item.size,
+              let modificationDate = item.modificationDate else {
+            throw OpenFinderError.operationFailed("Cannot fingerprint \(item.name) for video analysis")
+        }
+        return .init(canonicalPath: path, size: size, modificationDate: modificationDate, analyzerVersion: analyzerVersion)
     }
 
     func dropLocalFileURLs(_ urls: [URL], into pane: BrowserPaneModel) {

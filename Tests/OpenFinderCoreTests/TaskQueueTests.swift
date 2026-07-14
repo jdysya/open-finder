@@ -60,6 +60,79 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(record.status, .cancelled)
     }
 
+    func testResourceKeySerializesAnalysisWithoutBlockingUnrelatedTask() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 2)
+        let gate = AnalysisResourceGate()
+        let firstID = try await queue.enqueue(.init(
+            kind: .videoAnalysis,
+            title: "Analysis 1",
+            resourceKey: "video-analysis"
+        ) { _ in
+            await gate.enterAndWait()
+            return .success(summary: "first", clipboard: nil)
+        })
+        await gate.waitForEntrants(1)
+
+        let secondID = try await queue.enqueue(.init(
+            kind: .videoAnalysis,
+            title: "Analysis 2",
+            resourceKey: "video-analysis"
+        ) { _ in
+            await gate.enterAndWait()
+            return .success(summary: "second", clipboard: nil)
+        })
+        let fileID = try await queue.enqueue(.init(kind: .localCopy, title: "File task") { _ in
+            return .success(summary: "file", clipboard: nil)
+        })
+
+        let fileRecord = try await queue.waitForTerminalStatus(fileID, timeout: 2.0)
+        XCTAssertEqual(fileRecord.status, .succeeded)
+        let entrantsBeforeRelease = await gate.entrantCount
+        XCTAssertEqual(entrantsBeforeRelease, 1)
+
+        await gate.releaseNext()
+        _ = try await queue.waitForTerminalStatus(firstID, timeout: 2.0)
+        await gate.waitForEntrants(2)
+        let maximumConcurrent = await gate.maximumConcurrent
+        XCTAssertEqual(maximumConcurrent, 1)
+        await gate.releaseNext()
+        let secondRecord = try await queue.waitForTerminalStatus(secondID, timeout: 2.0)
+        XCTAssertEqual(secondRecord.status, .succeeded)
+    }
+
+    func testCancellingResourceTaskAllowsNextMatchingTaskToStart() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 2)
+        let gate = AnalysisResourceGate()
+        let firstID = try await queue.enqueue(.init(
+            kind: .videoAnalysis,
+            title: "Analysis 1",
+            resourceKey: "video-analysis"
+        ) { _ in
+            await gate.enterAndWait()
+            return .success(summary: "first", clipboard: nil)
+        })
+        await gate.waitForEntrants(1)
+        let secondID = try await queue.enqueue(.init(
+            kind: .videoAnalysis,
+            title: "Analysis 2",
+            resourceKey: "video-analysis"
+        ) { _ in
+            await gate.enterAndWait()
+            return .success(summary: "second", clipboard: nil)
+        })
+
+        await queue.cancel(firstID)
+        await gate.releaseNext()
+        let firstRecord = try await queue.waitForTerminalStatus(firstID, timeout: 2.0)
+        let secondAfterCancellation = await queue.record(for: secondID)
+
+        XCTAssertEqual(firstRecord.status, .cancelled)
+        XCTAssertEqual(secondAfterCancellation?.status, .running)
+        await gate.releaseNext()
+        let secondRecord = try await queue.waitForTerminalStatus(secondID, timeout: 2.0)
+        XCTAssertEqual(secondRecord.status, .succeeded)
+    }
+
     @MainActor
     func testTaskQueueOperationCreatedOnMainActorRunsAwayFromMainThread() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 1)
@@ -82,5 +155,41 @@ private actor AttemptCounter {
     func increment() -> Int {
         count += 1
         return count
+    }
+}
+
+private actor AnalysisResourceGate {
+    private var activeCount = 0
+    private var entered = 0
+    private var maximum = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var entrantWaiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var entrantCount: Int { entered }
+    var maximumConcurrent: Int { maximum }
+
+    func enterAndWait() async {
+        activeCount += 1
+        entered += 1
+        maximum = max(maximum, activeCount)
+        let ready = entrantWaiters.filter { entered >= $0.target }
+        entrantWaiters.removeAll { entered >= $0.target }
+        ready.forEach { $0.continuation.resume() }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+        activeCount -= 1
+    }
+
+    func waitForEntrants(_ target: Int) async {
+        guard entered < target else { return }
+        await withCheckedContinuation { continuation in
+            entrantWaiters.append((target, continuation))
+        }
+    }
+
+    func releaseNext() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
     }
 }

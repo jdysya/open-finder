@@ -54,6 +54,18 @@ struct ContentView: View {
                 secondaryButton: .cancel(Text("取消")) { app.cancelPendingTransferOverwrite() }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { app.presentedVideoAnalysis != nil },
+            set: { if !$0 { app.dismissVideoAnalysis() } }
+        )) {
+            if let result = app.presentedVideoAnalysis {
+                VideoAnalysisResultView(
+                    result: result,
+                    onApplyTags: { await app.applySuggestedVideoTags($0) },
+                    onDismiss: { app.dismissVideoAnalysis() }
+                )
+            }
+        }
         .task { await app.loadInitialState() }
     }
 }
