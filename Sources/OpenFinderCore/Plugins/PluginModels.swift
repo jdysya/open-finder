@@ -49,28 +49,42 @@ extension PluginRuntime: Codable {
     }
 }
 
-public struct PluginManifest: Codable, Identifiable, Hashable, Sendable {
+public enum PluginExecution: Hashable, Sendable {
+    case process(runtime: PluginRuntime, entry: String)
+    case http(protocolVersion: Int, endpointConfigurationKey: String, tokenSecretKey: String)
+}
+
+public struct PluginManifest: Identifiable, Hashable, Sendable {
     public let schemaVersion: Int
     public let id: String
     public let name: String
     public let version: String
     public let description: String?
     public let author: String?
-    public let runtime: PluginRuntime
-    public let entry: String
+    public let execution: PluginExecution
     public let actions: [PluginActionManifest]
     public let permissions: PluginPermissions
     public let configuration: [PluginConfigField]
 
-    public init(schemaVersion: Int, id: String, name: String, version: String, description: String?, author: String?, runtime: PluginRuntime, entry: String, actions: [PluginActionManifest], permissions: PluginPermissions, configuration: [PluginConfigField]) {
+    public init(
+        schemaVersion: Int,
+        id: String,
+        name: String,
+        version: String,
+        description: String?,
+        author: String?,
+        execution: PluginExecution,
+        actions: [PluginActionManifest],
+        permissions: PluginPermissions,
+        configuration: [PluginConfigField]
+    ) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.name = name
         self.version = version
         self.description = description
         self.author = author
-        self.runtime = runtime
-        self.entry = entry
+        self.execution = execution
         self.actions = actions
         self.permissions = permissions
         self.configuration = configuration

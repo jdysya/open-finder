@@ -44,6 +44,35 @@ final class PluginSystemTests: XCTestCase {
         XCTAssertFalse(PluginMatcher.action(action, matches: [png, png, png]))
     }
 
+    func testSchemaOneManifestDecodesStringAndObjectRuntimesWithEntries() throws {
+        let objectManifest = try JSONDecoder.openFinder.decode(
+            PluginManifest.self,
+            from: Data(Self.manifestJSON.utf8)
+        )
+        let stringJSON = Self.manifestJSON
+            .replacingOccurrences(
+                of: #""runtime": { "type": "python3", "minimumVersion": "3.9" }"#,
+                with: #""runtime": "shell""#
+            )
+            .replacingOccurrences(of: #""entry": "upload.py""#, with: #""entry": "run.sh""#)
+        let stringManifest = try JSONDecoder.openFinder.decode(
+            PluginManifest.self,
+            from: Data(stringJSON.utf8)
+        )
+
+        XCTAssertEqual(objectManifest.runtime, .python3(minimumVersion: "3.9"))
+        XCTAssertEqual(objectManifest.entry, "upload.py")
+        XCTAssertEqual(stringManifest.runtime, .shell)
+        XCTAssertEqual(stringManifest.entry, "run.sh")
+        XCTAssertEqual(objectManifest.execution, .process(runtime: .python3(minimumVersion: "3.9"), entry: "upload.py"))
+        XCTAssertEqual(stringManifest.execution, .process(runtime: .shell, entry: "run.sh"))
+        let encoded = try JSONEncoder.openFinder.encode(objectManifest)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNotNil(object["runtime"])
+        XCTAssertEqual(object["entry"] as? String, "upload.py")
+        XCTAssertNil(object["execution"])
+    }
+
     func testParsesNDJSONOutputEvents() throws {
         let output = """
         {"type":"log","level":"info","message":"Uploading"}

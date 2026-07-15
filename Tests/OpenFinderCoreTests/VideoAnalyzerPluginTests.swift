@@ -3,6 +3,110 @@ import XCTest
 @testable import OpenFinderCore
 
 final class VideoAnalyzerPluginTests: XCTestCase {
+    func testHTTPManifestDecodesAndRoundTripsExecutionDescriptor() throws {
+        let manifest = try JSONDecoder.openFinder.decode(
+            PluginManifest.self,
+            from: Data(Self.httpManifestJSON.utf8)
+        )
+
+        XCTAssertEqual(manifest.execution, .http(
+            protocolVersion: 1,
+            endpointConfigurationKey: "serverURL",
+            tokenSecretKey: "serverToken"
+        ))
+
+        let encoded = try JSONEncoder.openFinder.encode(manifest)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["runtime"])
+        XCTAssertNil(object["entry"])
+        XCTAssertEqual(try JSONDecoder.openFinder.decode(PluginManifest.self, from: encoded), manifest)
+    }
+
+    func testRejectsInvalidHTTPManifestMatrix() throws {
+        let invalidManifests = [
+            (
+                "mixed legacy and execution fields",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"execution\": {",
+                    with: "\"runtime\": \"shell\",\n  \"entry\": \"run.sh\",\n  \"execution\": {"
+                )
+            ),
+            (
+                "unsupported manifest schema",
+                Self.httpManifestJSON.replacingOccurrences(of: "\"schemaVersion\": 2", with: "\"schemaVersion\": 3")
+            ),
+            (
+                "unsupported HTTP protocol",
+                Self.httpManifestJSON.replacingOccurrences(of: "\"protocolVersion\": 1", with: "\"protocolVersion\": 2")
+            ),
+            (
+                "empty endpoint configuration key",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"endpointConfigurationKey\": \"serverURL\"",
+                    with: "\"endpointConfigurationKey\": \"\""
+                )
+            ),
+            (
+                "empty token secret key",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"tokenSecretKey\": \"serverToken\"",
+                    with: "\"tokenSecretKey\": \"\""
+                )
+            ),
+            (
+                "missing endpoint configuration field",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"key\": \"serverURL\"",
+                    with: "\"key\": \"differentURL\""
+                )
+            ),
+            (
+                "missing token permission",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"keychainSecrets\": [\"serverToken\"]",
+                    with: "\"keychainSecrets\": []"
+                )
+            )
+        ]
+
+        for (name, json) in invalidManifests {
+            XCTAssertNotEqual(json, Self.httpManifestJSON, name)
+            XCTAssertThrowsError(
+                try JSONDecoder.openFinder.decode(PluginManifest.self, from: Data(json.utf8)),
+                name
+            ) { error in
+                guard let openFinderError = error as? OpenFinderError,
+                      case .invalidPluginManifest = openFinderError else {
+                    return XCTFail("Expected invalidPluginManifest for \(name), got \(error)")
+                }
+            }
+        }
+    }
+
+    func testRegistryReportsInvalidHTTPManifest() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenFinderInvalidHTTPManifest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pluginDirectory = root.appendingPathComponent("invalid.plugin", isDirectory: true)
+        try FileManager.default.createDirectory(at: pluginDirectory, withIntermediateDirectories: true)
+        let invalidManifest = Self.httpManifestJSON.replacingOccurrences(
+            of: "\"keychainSecrets\": [\"serverToken\"]",
+            with: "\"keychainSecrets\": []"
+        )
+        try invalidManifest.write(
+            to: pluginDirectory.appendingPathComponent("manifest.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        XCTAssertThrowsError(try PluginRegistry().scan(directory: root)) { error in
+            guard let openFinderError = error as? OpenFinderError,
+                  case .invalidPluginManifest = openFinderError else {
+                return XCTFail("Expected invalidPluginManifest, got \(error)")
+            }
+        }
+    }
+
     func testManifestMatchesVideoFilesAndRejectsTextFiles() throws {
         let manifestURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("ExamplePlugins/video-analyzer.plugin/manifest.json")
@@ -32,6 +136,35 @@ final class VideoAnalyzerPluginTests: XCTestCase {
             isWritable: true
         )
     }
+
+    private static let httpManifestJSON = """
+    {
+      "schemaVersion": 2,
+      "id": "dev.openfinder.plugins.video-analyzer.http",
+      "name": "Video Analyzer HTTP",
+      "version": "1.0.0",
+      "execution": {
+        "type": "http",
+        "protocolVersion": 1,
+        "endpointConfigurationKey": "serverURL",
+        "tokenSecretKey": "serverToken"
+      },
+      "actions": [],
+      "permissions": {
+        "readFiles": "selected",
+        "writeFiles": "taskOutput",
+        "network": { "required": true, "hosts": ["127.0.0.1", "::1"] },
+        "clipboardWrite": false,
+        "clipboardRead": false,
+        "keychainSecrets": ["serverToken"],
+        "remoteAccounts": false,
+        "runExternalCommands": false
+      },
+      "configuration": [
+        { "key": "serverURL", "type": "url", "title": "Server URL", "required": true }
+      ]
+    }
+    """
 }
 
 private extension Collection {
