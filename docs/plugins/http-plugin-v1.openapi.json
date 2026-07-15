@@ -1,0 +1,1890 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "OpenFinder Local HTTP Plugin Protocol",
+    "version": "1.0.0",
+    "description": "Canonical loopback-only HTTP/JSON and Server-Sent Events contract for OpenFinder plugins. The protocol version is 1."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}/openfinder/plugin/v1",
+      "description": "IPv4 loopback",
+      "variables": {
+        "port": {
+          "default": "8765",
+          "description": "Local plugin service port"
+        }
+      }
+    },
+    {
+      "url": "http://[::1]:{port}/openfinder/plugin/v1",
+      "description": "IPv6 loopback",
+      "variables": {
+        "port": {
+          "default": "8765",
+          "description": "Local plugin service port"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Check protocol service availability",
+        "description": "Unauthenticated calls return public availability fields. A valid bearer token may add plugin, runtime, and environment-check details.",
+        "security": [
+          {},
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/HealthOK"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Read authenticated plugin capabilities",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CapabilitiesOK"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "post": {
+        "operationId": "createJob",
+        "summary": "Create or idempotently retrieve a plugin job",
+        "description": "The PluginInput taskID is the sole idempotency key. A semantically identical replay returns the existing job; conflicting input for that taskID is rejected.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginInput"
+              },
+              "examples": {
+                "create": {
+                  "$ref": "#/components/examples/CreateJobRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JobSnapshotExisting"
+          },
+          "202": {
+            "$ref": "#/components/responses/JobSnapshotNew"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/TaskConflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/jobs/{taskID}": {
+      "get": {
+        "operationId": "getJob",
+        "summary": "Poll a job snapshot",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TaskID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JobSnapshotOK"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidTaskID"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "cancelJob",
+        "summary": "Request idempotent cooperative cancellation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TaskID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CancellationObserved"
+          },
+          "202": {
+            "$ref": "#/components/responses/CancellationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidTaskID"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/jobs/{taskID}/events": {
+      "get": {
+        "operationId": "streamJobEvents",
+        "summary": "Replay and follow a job's Server-Sent Events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TaskID"
+          },
+          {
+            "$ref": "#/components/parameters/LastEventID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/EventStreamOK"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidLastEventID"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/EventHistoryExpired"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/jobs/{taskID}/result": {
+      "get": {
+        "operationId": "getJobResult",
+        "summary": "Read the single terminal result event",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TaskID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ResultOK"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidTaskID"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/JobNotTerminal"
+          },
+          "426": {
+            "$ref": "#/components/responses/UnsupportedProtocol"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Local plugin token. It is transport state and never appears in PluginInput or logs."
+      }
+    },
+    "headers": {
+      "ProtocolVersion": {
+        "description": "Negotiated OpenFinder plugin protocol version.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "const": "1"
+        },
+        "example": "1"
+      },
+      "CacheControl": {
+        "description": "Protocol responses are never cacheable.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "const": "no-store"
+        },
+        "example": "no-store"
+      }
+    },
+    "parameters": {
+      "ProtocolHeader": {
+        "name": "OpenFinder-Plugin-Protocol",
+        "in": "header",
+        "required": true,
+        "description": "Requested protocol version. Only version 1 is supported.",
+        "schema": {
+          "type": "string",
+          "const": "1"
+        },
+        "example": "1"
+      },
+      "TaskID": {
+        "name": "taskID",
+        "in": "path",
+        "required": true,
+        "description": "OpenFinder task UUID and job idempotency key.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "LastEventID": {
+        "name": "Last-Event-ID",
+        "in": "header",
+        "required": false,
+        "description": "Greatest event ID already processed. Zero is valid before the first event.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "example": 2
+      }
+    },
+    "responses": {
+      "HealthOK": {
+        "description": "Reachable protocol service.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HealthResponse"
+            },
+            "examples": {
+              "detailed": {
+                "$ref": "#/components/examples/HealthDetailed"
+              }
+            }
+          }
+        }
+      },
+      "CapabilitiesOK": {
+        "description": "Authenticated capabilities.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CapabilitiesResponse"
+            },
+            "examples": {
+              "capabilities": {
+                "$ref": "#/components/examples/Capabilities"
+              }
+            }
+          }
+        }
+      },
+      "JobSnapshotNew": {
+        "description": "New job accepted.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JobSnapshot"
+            },
+            "examples": {
+              "accepted": {
+                "$ref": "#/components/examples/CreateJobAccepted"
+              }
+            }
+          }
+        }
+      },
+      "JobSnapshotExisting": {
+        "description": "Semantically identical idempotent replay; existing job returned without re-enqueueing.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JobSnapshot"
+            },
+            "examples": {
+              "existing": {
+                "$ref": "#/components/examples/CreateJobAccepted"
+              }
+            }
+          }
+        }
+      },
+      "JobSnapshotOK": {
+        "description": "Current job snapshot for polling.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JobSnapshot"
+            },
+            "examples": {
+              "snapshot": {
+                "$ref": "#/components/examples/RunningJobSnapshot"
+              }
+            }
+          }
+        }
+      },
+      "CancellationAccepted": {
+        "description": "Cancellation accepted; an active job is cancelling or a queued job has cancelled.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JobSnapshot"
+            },
+            "examples": {
+              "cancelling": {
+                "$ref": "#/components/examples/CancellingJobSnapshot"
+              }
+            }
+          }
+        }
+      },
+      "CancellationObserved": {
+        "description": "Idempotent repeated cancellation or a job already in a terminal state.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JobSnapshot"
+            }
+          }
+        }
+      },
+      "EventStreamOK": {
+        "description": "Retained events after the cursor, followed by live events.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "text/event-stream": {
+            "schema": {
+              "type": "string",
+              "description": "UTF-8 SSE frames. Each event data value validates as SSEEvent."
+            },
+            "examples": {
+              "replay": {
+                "$ref": "#/components/examples/SSEReplay"
+              }
+            }
+          }
+        }
+      },
+      "ResultOK": {
+        "description": "The job's one terminal result event.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResultEvent"
+            },
+            "examples": {
+              "result": {
+                "$ref": "#/components/examples/ResultEvent"
+              }
+            }
+          }
+        }
+      },
+      "InvalidRequest": {
+        "description": "Malformed JSON or a PluginInput that does not validate.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "invalid_request",
+              "message": "PluginInput.taskID is required.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "InvalidTaskID": {
+        "description": "The path taskID is not a UUID.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "invalid_task_id",
+              "message": "taskID must be a UUID.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "InvalidLastEventID": {
+        "description": "Last-Event-ID is malformed, negative, or ahead of the job's greatest event ID.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "invalid_last_event_id",
+              "message": "Last-Event-ID is ahead of the job event sequence.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Bearer token is absent or invalid.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "unauthorized",
+              "message": "A valid local plugin token is required.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "TaskConflict": {
+        "description": "The taskID exists with semantically different PluginInput.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "task_conflict",
+              "message": "taskID already belongs to different input.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "RequestTooLarge": {
+        "description": "The request body exceeds the advertised limit.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "request_too_large",
+              "message": "The request body exceeds the configured limit.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "POST /jobs requires application/json.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "unsupported_media_type",
+              "message": "Content-Type must be application/json.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "UnsupportedProtocol": {
+        "description": "The requested plugin protocol version is unsupported.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "unsupported_protocol",
+              "message": "Only OpenFinder plugin protocol 1 is supported.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "QueueFull": {
+        "description": "The bounded job queue has no capacity.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "queue_full",
+              "message": "The local plugin queue is full.",
+              "retryable": true
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "The plugin cannot accept work because a required local dependency is unavailable.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "service_unavailable",
+              "message": "A required analyzer dependency is unavailable.",
+              "retryable": true
+            }
+          }
+        }
+      },
+      "JobNotFound": {
+        "description": "The job is unknown, expired, or invalidated by restart.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "job_not_found",
+              "message": "The job is not available.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "EventHistoryExpired": {
+        "description": "Replay cannot continue without skipping discarded events.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "event_history_expired",
+              "message": "Requested event history is no longer retained.",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "JobNotTerminal": {
+        "description": "The result is unavailable until the job reaches one terminal state.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "job_not_terminal",
+              "message": "The job has not reached a terminal state.",
+              "retryable": true
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected server failure before a response or stream is committed.",
+        "headers": {
+          "OpenFinder-Plugin-Protocol": {
+            "$ref": "#/components/headers/ProtocolVersion"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "schemaVersion": 1,
+              "code": "internal_error",
+              "message": "The local plugin could not complete the request.",
+              "retryable": true
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "code",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "protocolVersion",
+          "status"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "protocolVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable"
+            ]
+          },
+          "pluginID": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pluginVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeInfo"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentCheck"
+            }
+          }
+        }
+      },
+      "RuntimeInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "EnvironmentCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "message"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "warn",
+              "fail"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "remediation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CapabilitiesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "protocolVersion",
+          "pluginID",
+          "pluginVersion",
+          "actions",
+          "features",
+          "limits"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "protocolVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "pluginID": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pluginVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ActionCapability"
+            }
+          },
+          "features": {
+            "$ref": "#/components/schemas/CapabilityFeatures"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/CapabilityLimits"
+          }
+        }
+      },
+      "ActionCapability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CapabilityFeatures": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sse",
+          "polling",
+          "cancellation",
+          "fileArtifacts"
+        ],
+        "properties": {
+          "sse": {
+            "type": "boolean"
+          },
+          "polling": {
+            "type": "boolean"
+          },
+          "cancellation": {
+            "type": "boolean"
+          },
+          "fileArtifacts": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CapabilityLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "terminalRetentionSeconds",
+          "maxEventsPerJob",
+          "maxRequestBytes",
+          "maxQueuedJobs"
+        ],
+        "properties": {
+          "terminalRetentionSeconds": {
+            "type": "integer",
+            "const": 1800
+          },
+          "maxEventsPerJob": {
+            "type": "integer",
+            "const": 10000
+          },
+          "maxRequestBytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxQueuedJobs": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "PluginInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "taskID",
+          "actionID",
+          "app",
+          "context",
+          "files",
+          "config",
+          "secrets",
+          "tempDirectory",
+          "outputDirectory"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "taskID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actionID": {
+            "type": "string",
+            "minLength": 1
+          },
+          "app": {
+            "$ref": "#/components/schemas/PluginAppInfo"
+          },
+          "context": {
+            "$ref": "#/components/schemas/PluginContext"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginInputFile"
+            }
+          },
+          "config": {
+            "type": "object",
+            "propertyNames": {
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "secrets": {
+            "type": "object",
+            "propertyNames": {
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PluginSecretReference"
+            }
+          },
+          "tempDirectory": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^/"
+          },
+          "outputDirectory": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^/"
+          }
+        }
+      },
+      "PluginAppInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "PluginContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "activePane",
+          "currentLocation"
+        ],
+        "properties": {
+          "activePane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "currentLocation": {
+            "$ref": "#/components/schemas/Location"
+          }
+        }
+      },
+      "Location": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LocalLocation"
+          },
+          {
+            "$ref": "#/components/schemas/WebDAVLocation"
+          },
+          {
+            "$ref": "#/components/schemas/RcloneLocation"
+          },
+          {
+            "$ref": "#/components/schemas/GenericRemoteLocation"
+          }
+        ]
+      },
+      "LocalLocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "path"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "local"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "WebDAVLocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "accountID",
+          "path"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "webDAV"
+          },
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "RcloneLocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "remoteID",
+          "path"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "rclone"
+          },
+          "remoteID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "GenericRemoteLocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "remote"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "remote"
+          },
+          "remote": {
+            "$ref": "#/components/schemas/RemoteLocation"
+          }
+        }
+      },
+      "RemoteLocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accountID",
+          "connectorID",
+          "path"
+        ],
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "connectorID": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "$ref": "#/components/schemas/RemotePath"
+          }
+        }
+      },
+      "RemotePath": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "identifier",
+          "displayPath"
+        ],
+        "properties": {
+          "identifier": {
+            "type": "string",
+            "minLength": 1
+          },
+          "displayPath": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "PluginInputFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "name",
+          "isDirectory"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "extension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uti": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mimeType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "isDirectory": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PluginSecretReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "env"
+        ],
+        "properties": {
+          "env": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "JobState": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "preparing",
+          "running",
+          "finalizing",
+          "succeeded",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ]
+      },
+      "JobSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "taskID",
+          "state",
+          "createdAt",
+          "updatedAt",
+          "startedAt",
+          "finishedAt",
+          "lastEventID",
+          "resultAvailable"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "taskID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastEventID": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resultAvailable": {
+            "type": "boolean"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/ProgressEvent"
+          }
+        }
+      },
+      "SSEEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LogEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ProgressEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ResultEvent"
+          }
+        ]
+      },
+      "LogEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "eventID",
+          "taskID",
+          "type",
+          "level",
+          "message"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "eventID": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "taskID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string",
+            "const": "log"
+          },
+          "level": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ProgressEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "eventID",
+          "taskID",
+          "type",
+          "fraction"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "eventID": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "taskID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string",
+            "const": "progress"
+          },
+          "fraction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "message": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unit": {
+            "type": "string"
+          }
+        }
+      },
+      "ResultEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "eventID",
+          "taskID",
+          "type",
+          "status",
+          "artifacts"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "eventID": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "taskID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string",
+            "const": "result"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "cancelled"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "clipboard": {
+            "type": "string"
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Artifact"
+            }
+          }
+        }
+      },
+      "Artifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "relativePath",
+          "mediaType",
+          "byteCount",
+          "sha256"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "relativePath": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$"
+          },
+          "mediaType": {
+            "type": "string",
+            "minLength": 3,
+            "pattern": "^[^/\\s]+/[^\\s]+$"
+          },
+          "byteCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "examples": {
+      "HealthDetailed": {
+        "summary": "Authenticated ready health response",
+        "value": {
+          "schemaVersion": 1,
+          "protocolVersion": 1,
+          "status": "ready",
+          "pluginID": "dev.openfinder.plugins.video-analyzer",
+          "pluginVersion": "0.1.0",
+          "runtime": {
+            "name": "python",
+            "version": "3.11.15"
+          },
+          "checks": [
+            {
+              "id": "output-directory",
+              "status": "pass",
+              "message": "Task output is writable."
+            },
+            {
+              "id": "model-cache",
+              "status": "warn",
+              "message": "JoyTag will warm on first use.",
+              "remediation": "Run one local analysis while connected to the model source."
+            }
+          ]
+        }
+      },
+      "Capabilities": {
+        "summary": "Video Analyzer v1 capabilities",
+        "value": {
+          "schemaVersion": 1,
+          "protocolVersion": 1,
+          "pluginID": "dev.openfinder.plugins.video-analyzer",
+          "pluginVersion": "0.1.0",
+          "actions": [
+            {
+              "id": "analyze-video"
+            }
+          ],
+          "features": {
+            "sse": true,
+            "polling": true,
+            "cancellation": true,
+            "fileArtifacts": true
+          },
+          "limits": {
+            "terminalRetentionSeconds": 1800,
+            "maxEventsPerJob": 10000,
+            "maxRequestBytes": 1048576,
+            "maxQueuedJobs": 100
+          }
+        }
+      },
+      "CreateJobRequest": {
+        "summary": "Golden PluginInput request",
+        "value": {
+          "schemaVersion": 1,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "actionID": "analyze-video",
+          "app": {
+            "name": "OpenFinder",
+            "version": "1.0.0"
+          },
+          "context": {
+            "activePane": "left",
+            "currentLocation": {
+              "type": "local",
+              "path": "/Users/example/Videos"
+            }
+          },
+          "files": [
+            {
+              "path": "/Users/example/Videos/demo.mp4",
+              "name": "demo.mp4",
+              "extension": "mp4",
+              "uti": "public.mpeg-4",
+              "mimeType": "video/mp4",
+              "size": 4096,
+              "isDirectory": false
+            }
+          ],
+          "config": {
+            "useJoyTag": "true"
+          },
+          "secrets": {},
+          "tempDirectory": "/private/tmp/openfinder/11111111-1111-1111-1111-111111111111/tmp",
+          "outputDirectory": "/private/tmp/openfinder/11111111-1111-1111-1111-111111111111/output"
+        }
+      },
+      "CreateJobAccepted": {
+        "summary": "New queued job",
+        "value": {
+          "schemaVersion": 1,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "state": "queued",
+          "createdAt": "2026-07-15T12:00:00Z",
+          "updatedAt": "2026-07-15T12:00:00Z",
+          "startedAt": null,
+          "finishedAt": null,
+          "lastEventID": 0,
+          "resultAvailable": false
+        }
+      },
+      "RunningJobSnapshot": {
+        "summary": "Polling snapshot with latest detailed progress",
+        "value": {
+          "schemaVersion": 1,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "state": "running",
+          "createdAt": "2026-07-15T12:00:00Z",
+          "updatedAt": "2026-07-15T12:00:04Z",
+          "startedAt": "2026-07-15T12:00:01Z",
+          "finishedAt": null,
+          "lastEventID": 3,
+          "resultAvailable": false,
+          "progress": {
+            "schemaVersion": 1,
+            "eventID": 3,
+            "taskID": "11111111-1111-1111-1111-111111111111",
+            "type": "progress",
+            "fraction": 0.375,
+            "message": "3/8 frames",
+            "phase": "Keyframe extraction",
+            "completed": 3,
+            "total": 8,
+            "unit": "frames"
+          }
+        }
+      },
+      "CancellingJobSnapshot": {
+        "summary": "Cooperative cancellation in progress",
+        "value": {
+          "schemaVersion": 1,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "state": "cancelling",
+          "createdAt": "2026-07-15T12:00:00Z",
+          "updatedAt": "2026-07-15T12:00:05Z",
+          "startedAt": "2026-07-15T12:00:01Z",
+          "finishedAt": null,
+          "lastEventID": 4,
+          "resultAvailable": false
+        }
+      },
+      "ProgressEvent": {
+        "summary": "Golden flat detailed progress event",
+        "value": {
+          "schemaVersion": 1,
+          "eventID": 3,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "type": "progress",
+          "fraction": 0.375,
+          "message": "3/8 frames",
+          "phase": "Keyframe extraction",
+          "completed": 3,
+          "total": 8,
+          "unit": "frames"
+        }
+      },
+      "ResultEvent": {
+        "summary": "Golden file-backed success result",
+        "value": {
+          "schemaVersion": 1,
+          "eventID": 7,
+          "taskID": "11111111-1111-1111-1111-111111111111",
+          "type": "result",
+          "status": "success",
+          "message": "Analyzed 1 video.",
+          "artifacts": [
+            {
+              "type": "videoAnalysisResult",
+              "relativePath": "result.json",
+              "mediaType": "application/json",
+              "byteCount": 2048,
+              "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            }
+          ]
+        }
+      },
+      "ErrorEnvelope": {
+        "summary": "Golden structured error",
+        "value": {
+          "schemaVersion": 1,
+          "code": "event_history_expired",
+          "message": "Requested event history is no longer retained.",
+          "retryable": false
+        }
+      },
+      "SSEReplay": {
+        "summary": "Replay after Last-Event-ID 2",
+        "value": "id: 3\nevent: progress\ndata: {\"schemaVersion\":1,\"eventID\":3,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"progress\",\"fraction\":0.375,\"message\":\"3/8 frames\",\"phase\":\"Keyframe extraction\",\"completed\":3,\"total\":8,\"unit\":\"frames\"}\n\n: keep-alive\n\nid: 7\nevent: result\ndata: {\"schemaVersion\":1,\"eventID\":7,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"result\",\"status\":\"success\",\"message\":\"Analyzed 1 video.\",\"artifacts\":[{\"type\":\"videoAnalysisResult\",\"relativePath\":\"result.json\",\"mediaType\":\"application/json\",\"byteCount\":2048,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}\n\n"
+      }
+    }
+  }
+}
