@@ -84,11 +84,26 @@ final class PluginSystemTests: XCTestCase {
 
         XCTAssertEqual(events.count, 3)
         XCTAssertEqual(events[0], .log(level: "info", message: "Uploading"))
-        XCTAssertEqual(events[1], .progress(fraction: 0.5, message: "Halfway"))
+        XCTAssertEqual(events[1], .progress(.init(fraction: 0.5, message: "Halfway")))
         XCTAssertEqual(events[2].clipboardText, "![demo](https://example.test/demo.png)")
         XCTAssertFalse(events[2].isFailureResult)
         let failure = try PluginOutputParser.parseLine("{\"type\":\"result\",\"status\":\"failure\",\"message\":\"bad\"}")
         XCTAssertTrue(failure.isFailureResult)
+    }
+
+    func testParsesStructuredPluginProgressDetails() throws {
+        let line = #"{"type":"progress","fraction":0.625,"message":"18/42 frames","phase":"JoyTag analysis","completed":18,"total":42,"unit":"frames"}"#
+
+        let event = try PluginOutputParser.parseLine(line)
+
+        XCTAssertEqual(event, .progress(.init(
+            fraction: 0.625,
+            message: "18/42 frames",
+            phase: "JoyTag analysis",
+            completed: 18,
+            total: 42,
+            unit: "frames"
+        )))
     }
 
     func testResolvesPluginConfigurationFromSavedValuesAndDefaults() {

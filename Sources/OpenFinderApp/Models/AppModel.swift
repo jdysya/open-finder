@@ -175,8 +175,15 @@ final class AppModel: ObservableObject {
                                 switch event {
                                 case .log(let level, let message):
                                     await context.appendLog(message, level: level)
-                                case .progress(let fraction, let message):
-                                    await context.updateProgress(fraction, message)
+                                case .progress(let progress):
+                                    await context.updateProgress(.init(
+                                        fraction: progress.fraction,
+                                        phase: progress.phase,
+                                        detail: progress.message,
+                                        completed: progress.completed,
+                                        total: progress.total,
+                                        unit: progress.unit
+                                    ))
                                 case .result(_, let message, _, _):
                                     if let message { await context.appendLog(message) }
                                 }

@@ -2,7 +2,7 @@ import Foundation
 
 public enum PluginOutputEvent: Equatable, Sendable {
     case log(level: String, message: String)
-    case progress(fraction: Double, message: String?)
+    case progress(PluginProgress)
     case result(status: String, message: String?, clipboard: String?, artifacts: [PluginArtifact])
 
     public var clipboardText: String? {
@@ -20,6 +20,31 @@ public enum PluginOutputEvent: Equatable, Sendable {
     public var isFailureResult: Bool {
         guard let status = resultStatus?.lowercased() else { return false }
         return ["failure", "failed", "error"].contains(status)
+    }
+}
+
+public struct PluginProgress: Equatable, Sendable {
+    public let fraction: Double
+    public let message: String?
+    public let phase: String?
+    public let completed: Int?
+    public let total: Int?
+    public let unit: String?
+
+    public init(
+        fraction: Double,
+        message: String? = nil,
+        phase: String? = nil,
+        completed: Int? = nil,
+        total: Int? = nil,
+        unit: String? = nil
+    ) {
+        self.fraction = fraction
+        self.message = message
+        self.phase = phase
+        self.completed = completed
+        self.total = total
+        self.unit = unit
     }
 }
 
@@ -42,6 +67,10 @@ public enum PluginOutputParser {
         let status: String?
         let clipboard: String?
         let artifacts: [PluginArtifact]?
+        let phase: String?
+        let completed: Int?
+        let total: Int?
+        let unit: String?
     }
 
     public static func parseNDJSON(_ output: String) throws -> [PluginOutputEvent] {
@@ -58,7 +87,14 @@ public enum PluginOutputParser {
         case "log":
             return .log(level: event.level ?? "info", message: event.message ?? "")
         case "progress":
-            return .progress(fraction: event.fraction ?? 0, message: event.message)
+            return .progress(.init(
+                fraction: event.fraction ?? 0,
+                message: event.message,
+                phase: event.phase,
+                completed: event.completed,
+                total: event.total,
+                unit: event.unit
+            ))
         case "result":
             return .result(status: event.status ?? "success", message: event.message, clipboard: event.clipboard, artifacts: event.artifacts ?? [])
         default:

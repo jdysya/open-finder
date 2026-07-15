@@ -35,6 +35,10 @@ public actor TaskExecutionContext {
         await queue.updateProgress(taskID, progress, message: message)
     }
 
+    public func updateProgress(_ snapshot: TaskProgressSnapshot) async {
+        await queue.updateProgress(taskID, snapshot)
+    }
+
     public func appendLog(_ message: String, level: String = "info") async {
         await queue.appendLog(taskID, message, level: level)
     }
@@ -113,6 +117,17 @@ public actor TaskQueueService {
     public func updateProgress(_ id: UUID, _ progress: Double?, message: String? = nil) {
         records[id]?.progress = progress
         if let message { appendLog(id, message) }
+    }
+
+    public func updateProgress(_ id: UUID, _ snapshot: TaskProgressSnapshot) {
+        let previousPhase = records[id]?.progressDetail?.phase
+        records[id]?.progress = snapshot.fraction
+        records[id]?.progressDetail = snapshot
+        if let phase = snapshot.phase, phase != previousPhase {
+            appendLog(id, [phase, snapshot.detail].compactMap { $0 }.joined(separator: ": "))
+        } else if snapshot.phase == nil, let detail = snapshot.detail, !detail.isEmpty {
+            appendLog(id, detail)
+        }
     }
 
     public func isCancellationRequested(_ id: UUID) -> Bool {

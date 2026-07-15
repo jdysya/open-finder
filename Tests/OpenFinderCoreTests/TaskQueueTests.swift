@@ -23,6 +23,61 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(historyIDs, [id])
     }
 
+    func testStructuredProgressPreservesPhaseAndUnitCounts() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let id = try await queue.enqueue(.init(kind: .videoAnalysis, title: "Analyze") { context in
+            await context.updateProgress(.init(
+                fraction: 0.625,
+                phase: "JoyTag analysis",
+                detail: "Analyzing keyframes",
+                completed: 18,
+                total: 42,
+                unit: "frames"
+            ))
+            return .success(summary: "done", clipboard: nil)
+        })
+
+        _ = try await queue.waitForTerminalStatus(id, timeout: 2.0)
+        let record = await queue.record(for: id)
+
+        XCTAssertEqual(record?.progress, 1.0)
+        XCTAssertEqual(record?.progressDetail?.phase, "JoyTag analysis")
+        XCTAssertEqual(record?.progressDetail?.completed, 18)
+        XCTAssertEqual(record?.progressDetail?.total, 42)
+        XCTAssertEqual(record?.progressDetail?.unit, "frames")
+    }
+
+    func testLegacyProgressMessageIsLoggedThroughStructuredSnapshotPath() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let id = try await queue.enqueue(.init(
+            kind: .plugin(pluginID: "legacy", actionID: "analyze"),
+            title: "Legacy progress"
+        ) { context in
+            await context.updateProgress(.init(fraction: 0.25, detail: ""))
+            await context.updateProgress(.init(fraction: 0.5, detail: "Halfway"))
+            return .success(summary: "done", clipboard: nil)
+        })
+
+        _ = try await queue.waitForTerminalStatus(id, timeout: 2.0)
+        let messages = await queue.logs(for: id).map(\.message)
+        XCTAssertEqual(messages, ["Halfway"])
+    }
+
+    func testStructuredProgressLogsOnlyWhenPhaseChanges() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let id = try await queue.enqueue(.init(kind: .videoAnalysis, title: "Analyze") { context in
+            await context.updateProgress(.init(fraction: 0.1, phase: "Extract", detail: "Starting"))
+            await context.updateProgress(.init(fraction: 0.2, phase: "Extract", detail: "Frame 2"))
+            await context.updateProgress(.init(fraction: 0.3, phase: "Tag", detail: "Starting"))
+            return .success(summary: "done", clipboard: nil)
+        })
+
+        _ = try await queue.waitForTerminalStatus(id, timeout: 2.0)
+        let messages = await queue.logs(for: id).map(\.message)
+
+        XCTAssertEqual(messages, ["Extract: Starting", "Tag: Starting"])
+    }
+
     func testRetriesFailedTaskWithSameRequest() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 1)
         let attempts = AttemptCounter()

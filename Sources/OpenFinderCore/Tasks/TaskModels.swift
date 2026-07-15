@@ -71,6 +71,7 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
     public var title: String
     public var status: TaskStatus
     public var progress: Double?
+    public var progressDetail: TaskProgressSnapshot?
     public var createdAt: Date
     public var startedAt: Date?
     public var finishedAt: Date?
@@ -87,6 +88,7 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
         title: String,
         status: TaskStatus = .queued,
         progress: Double? = nil,
+        progressDetail: TaskProgressSnapshot? = nil,
         createdAt: Date = Date(),
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
@@ -102,6 +104,7 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
         self.title = title
         self.status = status
         self.progress = progress
+        self.progressDetail = progressDetail
         self.createdAt = createdAt
         self.startedAt = startedAt
         self.finishedAt = finishedAt
@@ -111,6 +114,31 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
         self.logFilePath = logFilePath
         self.retryCount = retryCount
         self.clipboardText = clipboardText
+    }
+}
+
+public struct TaskProgressSnapshot: Codable, Hashable, Sendable {
+    public let fraction: Double
+    public let phase: String?
+    public let detail: String?
+    public let completed: Int?
+    public let total: Int?
+    public let unit: String?
+
+    public init(
+        fraction: Double,
+        phase: String? = nil,
+        detail: String? = nil,
+        completed: Int? = nil,
+        total: Int? = nil,
+        unit: String? = nil
+    ) {
+        self.fraction = fraction
+        self.phase = phase
+        self.detail = detail
+        self.completed = completed
+        self.total = total
+        self.unit = unit
     }
 }
 
