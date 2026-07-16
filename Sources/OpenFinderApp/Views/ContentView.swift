@@ -16,7 +16,7 @@ struct ContentView: View {
                 onRetry: { app.retryTask($0) },
                 onCopyLogs: { app.copyLogs(for: $0) }
             )
-            .frame(minHeight: 120, idealHeight: 150, maxHeight: 220)
+            .frame(height: app.taskRecords.isEmpty ? 120 : 240)
         }
         .toolbar {
             ToolbarItemGroup {
@@ -61,7 +61,9 @@ struct ContentView: View {
             if let result = app.presentedVideoAnalysis {
                 VideoAnalysisResultView(
                     result: result,
-                    onApplyTags: { await app.applySuggestedVideoTags($0) },
+                    onApplyTags: { selections in
+                        await app.applySelectedVideoTags(selections, from: result)
+                    },
                     onDismiss: { app.dismissVideoAnalysis() }
                 )
             }

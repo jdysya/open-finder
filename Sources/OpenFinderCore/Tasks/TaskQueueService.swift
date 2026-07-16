@@ -27,6 +27,8 @@ public actor TaskExecutionContext {
         self.queue = queue
     }
 
+    public nonisolated var id: UUID { taskID }
+
     public var isCancelled: Bool {
         get async { await queue.isCancellationRequested(taskID) }
     }

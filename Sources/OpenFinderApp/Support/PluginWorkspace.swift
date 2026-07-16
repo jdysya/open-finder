@@ -3,7 +3,7 @@ import OpenFinderCore
 
 enum PluginWorkspaceCleanupPolicy: Equatable {
     case preserve
-    case removeTaskRootAfterSuccessfulPersistence
+    case removeTaskRootAfterExecution
 }
 
 struct PluginWorkspace: Equatable {
@@ -38,7 +38,33 @@ struct PluginWorkspace: Equatable {
             taskRoot: taskRoot,
             tempDirectory: taskRoot.appendingPathComponent("temp", isDirectory: true),
             outputDirectory: taskRoot.appendingPathComponent("output", isDirectory: true),
-            cleanupPolicy: .removeTaskRootAfterSuccessfulPersistence
+            cleanupPolicy: .removeTaskRootAfterExecution
+        )
+    }
+
+    func removeTaskRootIfNeeded() throws {
+        guard cleanupPolicy == .removeTaskRootAfterExecution,
+              FileManager.default.fileExists(atPath: taskRoot.path) else { return }
+        try FileManager.default.removeItem(at: taskRoot)
+    }
+}
+
+struct PluginWorkspaceMaintenance: Sendable {
+    static let cleanupWarning = "HTTP plugin workspace cleanup failed; stale temporary data may remain."
+
+    let cleanup: @Sendable (PluginWorkspace) throws -> Void
+    let reportFailure: @Sendable (TaskExecutionContext) async -> Void
+
+    static func live(
+        cleanup: @escaping @Sendable (PluginWorkspace) throws -> Void = { workspace in
+            try workspace.removeTaskRootIfNeeded()
+        }
+    ) -> PluginWorkspaceMaintenance {
+        .init(
+            cleanup: cleanup,
+            reportFailure: { context in
+                await context.appendLog(cleanupWarning, level: "warning")
+            }
         )
     }
 }

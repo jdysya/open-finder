@@ -33,6 +33,6 @@ final class PluginWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.tempDirectory.deletingLastPathComponent(), workspace.taskRoot)
         XCTAssertEqual(workspace.outputDirectory.deletingLastPathComponent(), workspace.taskRoot)
         XCTAssertTrue(workspace.taskRoot.path.contains(taskID.uuidString))
-        XCTAssertEqual(workspace.cleanupPolicy, .removeTaskRootAfterSuccessfulPersistence)
+        XCTAssertEqual(workspace.cleanupPolicy, .removeTaskRootAfterExecution)
     }
 }

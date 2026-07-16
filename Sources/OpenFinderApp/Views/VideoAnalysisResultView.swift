@@ -3,54 +3,141 @@ import SwiftUI
 
 struct VideoAnalysisResultView: View {
     let result: VideoAnalysisResult
-    let onApplyTags: (VideoAnalysisResult) async -> String
+    let onApplyTags: ([VideoAnalysisTagSelection]) async -> String
     let onDismiss: () -> Void
+
+    @State private var selectedVideoPath: String?
+    @State private var filtersByVideo: [String: Set<String>] = [:]
+    @State private var finderTagsByVideo: [String: Set<String>] = [:]
+    @State private var previewFrameIndex: Int?
     @State private var isApplying = false
     @State private var message: String?
 
+    init(
+        result: VideoAnalysisResult,
+        onApplyTags: @escaping ([VideoAnalysisTagSelection]) async -> String,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.result = result
+        self.onApplyTags = onApplyTags
+        self.onDismiss = onDismiss
+        _selectedVideoPath = State(initialValue: result.videos.first?.path)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Video Analysis")
-                .font(.title2)
-            List(result.videos, id: \.path) { video in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(video.name)
-                        .font(.headline)
-                    Text("\(video.summary.totalFrames) frames, \(video.summary.faceVisible) with faces, \(video.summary.explicit) explicit")
-                        .foregroundStyle(.secondary)
-                    if !video.suggestedTags.isEmpty {
-                        Text(video.suggestedTags.map(\.name).joined(separator: ", "))
+        NavigationSplitView {
+            List(selection: $selectedVideoPath) {
+                ForEach(result.videos, id: \.path) { video in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(video.name)
+                            .lineLimit(2)
+                        Text("\(video.frames.count) 个关键帧")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    if let reportPath = video.reportPath {
-                        Text(reportPath)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+                    .tag(video.path)
+                    .accessibilityElement(children: .combine)
                 }
-                .accessibilityElement(children: .combine)
             }
+            .navigationTitle("视频")
+            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
+        } detail: {
+            if let video = selectedVideo {
+                VStack(spacing: 0) {
+                    VideoAnalysisWorkspaceView(
+                        video: video,
+                        filters: filtersBinding(for: video.path),
+                        finderTags: finderTagsBinding(for: video.path),
+                        previewFrameIndex: $previewFrameIndex
+                    )
+                    Divider()
+                    footer
+                }
+                .navigationTitle(video.name)
+            } else {
+                ContentUnavailableView("没有分析结果", systemImage: "film")
+            }
+        }
+        .frame(minWidth: 960, idealWidth: 1120, minHeight: 640, idealHeight: 760)
+        .onChange(of: selectedVideoPath) { _, _ in
+            previewFrameIndex = nil
+            message = nil
+        }
+        .sheet(isPresented: Binding(
+            get: { previewFrameIndex != nil },
+            set: { if !$0 { previewFrameIndex = nil } }
+        )) {
+            if let video = selectedVideo,
+               let frame = filteredFrames(for: video).first(where: { $0.index == previewFrameIndex }) {
+                KeyframePreviewView(
+                    frame: frame,
+                    frames: filteredFrames(for: video),
+                    previewFrameIndex: $previewFrameIndex
+                )
+            }
+        }
+    }
+
+    private var selectedVideo: AnalyzedVideo? {
+        result.videos.first { $0.path == selectedVideoPath } ?? result.videos.first
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
             if let message {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            HStack {
-                Spacer()
-                Button("Close", action: onDismiss)
-                Button("Apply Suggested Tags") {
-                    Task {
-                        isApplying = true
-                        message = await onApplyTags(result)
-                        isApplying = false
-                    }
+            Spacer()
+            Text("已选择 \(finderTagCount) 个 Finder 标签")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("关闭", action: onDismiss)
+                .keyboardShortcut(.cancelAction)
+            Button("应用 Finder 标签选择") {
+                Task {
+                    isApplying = true
+                    message = await onApplyTags(tagSelections)
+                    isApplying = false
                 }
-                .disabled(isApplying || result.videos.isEmpty)
             }
+            .keyboardShortcut(.defaultAction)
+            .disabled(isApplying || finderTagCount == 0)
         }
-        .padding(20)
-        .frame(minWidth: 520, minHeight: 360)
+        .padding(12)
+        .background(.bar)
+    }
+
+    private var finderTagCount: Int {
+        finderTagsByVideo.values.reduce(0) { $0 + $1.count }
+    }
+
+    private var tagSelections: [VideoAnalysisTagSelection] {
+        result.videos.map {
+            .init(videoPath: $0.path, selectedNames: finderTagsByVideo[$0.path, default: []])
+        }
+    }
+
+    private func filtersBinding(for path: String) -> Binding<Set<String>> {
+        Binding(
+            get: { filtersByVideo[path, default: []] },
+            set: { filtersByVideo[path] = $0 }
+        )
+    }
+
+    private func finderTagsBinding(for path: String) -> Binding<Set<String>> {
+        Binding(
+            get: { finderTagsByVideo[path, default: []] },
+            set: { finderTagsByVideo[path] = $0 }
+        )
+    }
+
+    private func filteredFrames(for video: AnalyzedVideo) -> [VideoFrameAnalysis] {
+        VideoAnalysisPresentation.frames(
+            in: video,
+            matching: filtersByVideo[video.path, default: []]
+        )
     }
 }
