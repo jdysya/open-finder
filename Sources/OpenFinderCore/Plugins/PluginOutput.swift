@@ -48,16 +48,6 @@ public struct PluginProgress: Equatable, Sendable {
     }
 }
 
-public struct PluginArtifact: Codable, Hashable, Sendable {
-    public let type: String
-    public let content: String
-
-    public init(type: String, content: String) {
-        self.type = type
-        self.content = content
-    }
-}
-
 public enum PluginOutputParser {
     private struct RawEvent: Decodable {
         let type: String

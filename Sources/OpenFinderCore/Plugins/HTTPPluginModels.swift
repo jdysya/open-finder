@@ -143,8 +143,13 @@ enum HTTPPluginRedactor {
             return .result(
                 status: message(status, token: token), message: value.map { message($0, token: token) },
                 clipboard: clipboard.map { message($0, token: token) },
-                artifacts: artifacts.map {
-                    .init(type: message($0.type, token: token), content: message($0.content, token: token))
+                artifacts: artifacts.map { artifact in
+                    switch artifact.payload {
+                    case .inline(let content):
+                        .init(type: artifact.type, content: message(content, token: token))
+                    case .file(let file):
+                        .init(type: artifact.type, file: file)
+                    }
                 }
             )
         }

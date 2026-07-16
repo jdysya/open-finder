@@ -2,24 +2,6 @@ import AppKit
 import Foundation
 import OpenFinderCore
 
-struct PluginWorkspace: Equatable {
-    let tempDirectory: URL
-    let outputDirectory: URL
-
-    static func make(taskID: UUID, currentLocation: Location) -> PluginWorkspace {
-        let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("OpenFinderTasks", isDirectory: true)
-            .appendingPathComponent(taskID.uuidString, isDirectory: true)
-        let outputDirectory: URL
-        if let localURL = currentLocation.localURL {
-            outputDirectory = localURL
-        } else {
-            outputDirectory = tempDirectory.appendingPathComponent("output", isDirectory: true)
-        }
-        return PluginWorkspace(tempDirectory: tempDirectory, outputDirectory: outputDirectory)
-    }
-}
-
 enum FileTableKeyboardCommand: Equatable {
     case open
     case rename

@@ -179,7 +179,14 @@ extension HTTPPluginEvent {
                     status: fields.status,
                     message: fields.message,
                     clipboard: fields.clipboard,
-                    artifacts: fields.artifacts.map { .init(type: $0.type, content: $0.relativePath) }
+                    artifacts: fields.artifacts.map {
+                        .init(type: $0.type, file: .init(
+                            relativePath: $0.relativePath,
+                            mediaType: $0.mediaType,
+                            byteCount: $0.byteCount,
+                            sha256: $0.sha256
+                        ))
+                    }
                 ),
                 artifacts: fields.artifacts
             )

@@ -56,53 +56,6 @@ public enum VideoAnalysisProtocolError: Error, Equatable, LocalizedError {
     }
 }
 
-public enum VideoAnalysisPluginResultError: Error, Equatable, LocalizedError {
-    case missingResultArtifact
-    case malformedResultArtifact
-    case taskIDMismatch
-    case unsupportedSchemaVersion(Int)
-
-    public var errorDescription: String? {
-        switch self {
-        case .missingResultArtifact: "Video analyzer did not return exactly one result artifact."
-        case .malformedResultArtifact: "Video analyzer returned an unreadable result artifact."
-        case .taskIDMismatch: "Video analyzer result belongs to a different task."
-        case .unsupportedSchemaVersion(let version): "Unsupported video analysis schema version: \(version)"
-        }
-    }
-}
-
-public enum VideoAnalysisPluginResultDecoder {
-    public static func decode(
-        from events: [PluginOutputEvent],
-        expectedTaskID: UUID
-    ) throws -> VideoAnalysisResult {
-        let artifacts = events.flatMap { event -> [PluginArtifact] in
-            guard case .result(_, _, _, let artifacts) = event else { return [] }
-            return artifacts.filter { $0.type == "videoAnalysisResult" }
-        }
-        guard artifacts.count == 1, let artifact = artifacts.first else {
-            throw VideoAnalysisPluginResultError.missingResultArtifact
-        }
-        guard let data = artifact.content.data(using: .utf8) else {
-            throw VideoAnalysisPluginResultError.malformedResultArtifact
-        }
-        let result: VideoAnalysisResult
-        do {
-            result = try JSONDecoder.openFinder.decode(VideoAnalysisResult.self, from: data)
-        } catch {
-            throw VideoAnalysisPluginResultError.malformedResultArtifact
-        }
-        guard result.schemaVersion == 1 else {
-            throw VideoAnalysisPluginResultError.unsupportedSchemaVersion(result.schemaVersion)
-        }
-        guard result.taskID == expectedTaskID else {
-            throw VideoAnalysisPluginResultError.taskIDMismatch
-        }
-        return result
-    }
-}
-
 public enum VideoAnalysisWorkerEventParser {
     private struct RawEvent: Decodable {
         let schemaVersion: Int

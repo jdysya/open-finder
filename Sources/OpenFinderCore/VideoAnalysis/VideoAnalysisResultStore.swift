@@ -48,7 +48,7 @@ public actor VideoAnalysisResultStore {
         static let empty = StoreFile(schemaVersion: 1, records: [:])
     }
 
-    private let directory: URL
+    let directory: URL
     private let indexURL: URL
 
     public init(directory: URL) {
