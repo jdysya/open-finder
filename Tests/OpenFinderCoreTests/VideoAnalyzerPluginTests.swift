@@ -3,6 +3,37 @@ import XCTest
 @testable import OpenFinderCore
 
 final class VideoAnalyzerPluginTests: XCTestCase {
+    func testSourceManifestUsesLocalHTTPExecution() throws {
+        // Given
+        let manifestURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("ExamplePlugins/video-analyzer.plugin/manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+
+        // When
+        let manifest = try JSONDecoder.openFinder.decode(PluginManifest.self, from: data)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        // Then
+        XCTAssertEqual(manifest.schemaVersion, 2)
+        XCTAssertEqual(manifest.id, "dev.openfinder.plugins.video-analyzer")
+        XCTAssertEqual(manifest.version, "0.1.0")
+        XCTAssertEqual(manifest.actions.map(\.id), ["analyze-video"])
+        XCTAssertEqual(manifest.execution, .http(
+            protocolVersion: 1,
+            endpointConfigurationKey: "serverURL",
+            tokenSecretKey: "serverToken"
+        ))
+        XCTAssertEqual(manifest.configuration.map(\.key), ["serverURL", "useJoyTag"])
+        XCTAssertEqual(manifest.configuration.first { $0.key == "serverURL" }?.defaultValue, "http://127.0.0.1:8765")
+        XCTAssertEqual(manifest.configuration.first { $0.key == "useJoyTag" }?.defaultValue, "true")
+        XCTAssertTrue(manifest.permissions.network.required)
+        XCTAssertEqual(Set(manifest.permissions.network.hosts), ["127.0.0.1", "::1"])
+        XCTAssertEqual(manifest.permissions.keychainSecrets, ["serverToken"])
+        XCTAssertFalse(manifest.permissions.runExternalCommands)
+        XCTAssertNil(object["runtime"])
+        XCTAssertNil(object["entry"])
+    }
+
     func testHTTPManifestDecodesAndRoundTripsExecutionDescriptor() throws {
         let manifest = try JSONDecoder.openFinder.decode(
             PluginManifest.self,

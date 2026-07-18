@@ -18,6 +18,19 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_SOURCE="$ROOT_DIR/Resources/OpenFinder.icns"
 APP_ICON_NAME="OpenFinder.icns"
+VIDEO_ANALYZER_PLUGIN="$APP_RESOURCES/BuiltinPlugins/video-analyzer.plugin"
+VIDEO_ANALYZER_MANIFEST="$VIDEO_ANALYZER_PLUGIN/manifest.json"
+
+assert_manifest_value() {
+  local key="$1"
+  local expected="$2"
+  local actual
+  actual="$(/usr/bin/plutil -extract "$key" raw -o - "$VIDEO_ANALYZER_MANIFEST")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "error: packaged Video Analyzer manifest $key is '$actual'; expected '$expected'" >&2
+    exit 1
+  fi
+}
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -31,7 +44,48 @@ chmod +x "$APP_BINARY"
 
 if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
   mkdir -p "$APP_RESOURCES/BuiltinPlugins"
-  cp -R "$ROOT_DIR/ExamplePlugins/"* "$APP_RESOURCES/BuiltinPlugins/"
+  rsync -a \
+    --exclude '.venv/' \
+    --exclude '.pytest_cache/' \
+    --exclude '.ruff_cache/' \
+    --exclude '__pycache__/' \
+    --exclude '*.pyc' \
+    "$ROOT_DIR/ExamplePlugins/" "$APP_RESOURCES/BuiltinPlugins/"
+
+  if [[ ! -f "$VIDEO_ANALYZER_MANIFEST" ]]; then
+    echo "error: packaged Video Analyzer manifest is missing" >&2
+    exit 1
+  fi
+  assert_manifest_value schemaVersion 2
+  assert_manifest_value execution.type http
+  assert_manifest_value execution.protocolVersion 1
+  assert_manifest_value execution.endpointConfigurationKey serverURL
+  assert_manifest_value execution.tokenSecretKey serverToken
+  assert_manifest_value configuration.0.key serverURL
+  assert_manifest_value configuration.0.default http://127.0.0.1:8765
+  assert_manifest_value configuration.1.key useJoyTag
+  assert_manifest_value configuration.1.default true
+  assert_manifest_value permissions.network.required true
+  assert_manifest_value permissions.network.hosts.0 127.0.0.1
+  assert_manifest_value permissions.network.hosts.1 ::1
+  assert_manifest_value permissions.keychainSecrets.0 serverToken
+  assert_manifest_value permissions.runExternalCommands false
+  if /usr/bin/plutil -extract runtime raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
+     /usr/bin/plutil -extract entry raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
+     /usr/bin/plutil -extract configuration.2 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
+     /usr/bin/plutil -extract permissions.network.hosts.2 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
+     /usr/bin/plutil -extract permissions.keychainSecrets.1 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1; then
+    echo "error: packaged Video Analyzer manifest retains a process field or an extra configuration/permission" >&2
+    exit 1
+  fi
+  if grep -Eiq '(^|[^[:alnum:]_])uv([^[:alnum:]_]|$)' "$VIDEO_ANALYZER_MANIFEST"; then
+    echo "error: packaged Video Analyzer execution references uv" >&2
+    exit 1
+  fi
+  if find "$VIDEO_ANALYZER_PLUGIN" -name '.venv' -print -quit | grep -q .; then
+    echo "error: packaged Video Analyzer plugin contains .venv" >&2
+    exit 1
+  fi
 fi
 
 if [ -f "$APP_ICON_SOURCE" ]; then

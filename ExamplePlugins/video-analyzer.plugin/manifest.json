@@ -1,12 +1,16 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "dev.openfinder.plugins.video-analyzer",
   "name": "Video Analyzer",
   "version": "0.1.0",
-  "description": "Analyzes selected local videos with the configured local video-analyzer checkout.",
+  "description": "Analyzes selected local videos through an independently managed local Video Analyzer server.",
   "author": "OpenFinder",
-  "runtime": { "type": "python3", "minimumVersion": "3.9" },
-  "entry": "run.py",
+  "execution": {
+    "type": "http",
+    "protocolVersion": 1,
+    "endpointConfigurationKey": "serverURL",
+    "tokenSecretKey": "serverToken"
+  },
   "actions": [
     {
       "id": "analyze-video",
@@ -27,26 +31,21 @@
     "writeFiles": "taskOutput",
     "network": {
       "required": true,
-      "hosts": ["huggingface.co", "cdn-lfs.huggingface.co"]
+      "hosts": ["127.0.0.1", "::1"]
     },
     "clipboardWrite": false,
     "clipboardRead": false,
-    "keychainSecrets": [],
+    "keychainSecrets": ["serverToken"],
     "remoteAccounts": false,
-    "runExternalCommands": true
+    "runExternalCommands": false
   },
   "configuration": [
     {
-      "key": "analyzerRoot",
-      "type": "path",
-      "title": "Video Analyzer checkout",
+      "key": "serverURL",
+      "type": "url",
+      "title": "Video Analyzer server URL",
+      "default": "http://127.0.0.1:8765",
       "required": true
-    },
-    {
-      "key": "analyzerPython",
-      "type": "path",
-      "title": "Analyzer Python executable",
-      "required": false
     },
     {
       "key": "useJoyTag",
