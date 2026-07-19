@@ -46,6 +46,9 @@ func pluginPermissionRows(_ permissions: PluginPermissions) -> [String] {
     if !permissions.keychainSecrets.isEmpty {
         rows.append("Keychain secrets: \(permissions.keychainSecrets.joined(separator: ", "))")
     }
+    if !permissions.localSecrets.isEmpty {
+        rows.append("Secured local config secrets: \(permissions.localSecrets.joined(separator: ", "))")
+    }
     if permissions.remoteAccounts { rows.append("Can access configured remote accounts") }
     return rows
 }

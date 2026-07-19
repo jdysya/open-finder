@@ -11,6 +11,11 @@ public struct HTTPPluginRunner: PluginRunner {
                   credentialResolver: { try credentialStore.secret(for: $0) })
     }
 
+    public init(credentialResolver: PluginCredentialResolver) {
+        self.init(transport: URLSessionHTTPPluginTransport(),
+                  credentialResolver: { try credentialResolver.secret(for: $0) })
+    }
+
     init(
         transport: any HTTPPluginTransportProtocol,
         credentialResolver: @escaping @Sendable (String) throws -> String?,
@@ -21,6 +26,20 @@ public struct HTTPPluginRunner: PluginRunner {
         self.credentialResolver = credentialResolver
         self.sleep = sleep
         self.cancellations = cancellations
+    }
+
+    init(
+        transport: any HTTPPluginTransportProtocol,
+        credentialResolver: PluginCredentialResolver,
+        sleep: @escaping HTTPPluginSleep = HTTPPluginSleeps.live,
+        cancellations: HTTPPluginCancellationRegistry = HTTPPluginCancellationRegistry()
+    ) {
+        self.init(
+            transport: transport,
+            credentialResolver: { try credentialResolver.secret(for: $0) },
+            sleep: sleep,
+            cancellations: cancellations
+        )
     }
 
     public func run(_ request: PluginRunRequest) async throws -> PluginRunResult {

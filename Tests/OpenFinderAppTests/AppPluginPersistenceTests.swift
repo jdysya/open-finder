@@ -48,7 +48,8 @@ final class AppPluginPersistenceTests: XCTestCase {
         )
         let plugin = LoadedPlugin(manifest: manifest, directory: root)
         app.setPluginConfigValue("http://127.0.0.1:8765", pluginID: plugin.id, key: "serverURL")
-        app.setPluginSecret("fixture-token", pluginID: plugin.id, key: "serverToken")
+        let secretSaved = await app.setPluginSecret("fixture-token", pluginID: plugin.id, key: "serverToken")
+        XCTAssertTrue(secretSaved)
 
         app.runPlugin(plugin, action: action, items: [item], pane: app.leftPane)
         try await AppPluginFixture.waitUntil { app.presentedVideoAnalysis != nil }

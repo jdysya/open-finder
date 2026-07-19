@@ -27,7 +27,7 @@ public enum PluginConfigurationResolver {
         }
 
         var secrets: [String: PluginSecretReference] = [:]
-        for key in manifest.permissions.keychainSecrets {
+        for key in manifest.permissions.secretKeys {
             if let reference = secretReferences[key], !reference.isEmpty {
                 secrets[key] = PluginSecretReference(env: reference)
             }

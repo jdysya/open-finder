@@ -2,6 +2,29 @@ import AppKit
 import Foundation
 import OpenFinderCore
 
+actor ConfigurationPersistenceGate {
+    private var isAcquired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isAcquired {
+            isAcquired = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isAcquired = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 extension AppModel {
     func loadInitialState() async {
         guard !didLoadInitialState else { return }
@@ -12,6 +35,7 @@ extension AppModel {
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
+        await migrateLegacyLocalPluginSecrets(in: loadedPlugins)
         remoteAccounts = remoteDirectory.all()
         await refreshTasks()
     }
@@ -31,9 +55,15 @@ extension AppModel {
     func saveConfiguration() {
         let configuration = configuration
         let store = configurationStore
-        Task {
+        let previous = configurationSaveTask
+        configurationSaveTask = Task {
+            await previous?.value
             try? await store.save(configuration)
         }
+    }
+
+    func flushConfigurationSaves() async {
+        await configurationSaveTask?.value
     }
 
     static func applicationSupportDirectory() -> URL {

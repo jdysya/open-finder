@@ -85,7 +85,7 @@ struct PluginSettingsView: View {
     }
 
     private func pluginConfigurationSummary(_ plugin: LoadedPlugin) -> String {
-        let count = plugin.manifest.configuration.count + plugin.manifest.permissions.keychainSecrets.count
+        let count = plugin.manifest.configuration.count + plugin.manifest.permissions.secretKeys.count
         return count == 0 ? "No configuration" : "\(count) configurable item\(count == 1 ? "" : "s")"
     }
 

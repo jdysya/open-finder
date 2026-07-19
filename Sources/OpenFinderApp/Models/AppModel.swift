@@ -27,7 +27,12 @@ final class AppModel: ObservableObject {
     @Published var pluginConnectionStatuses: [String: PluginConnectionStatus] = [:]
     @Published var configuration = AppConfiguration() {
         didSet {
-            saveConfiguration()
+            localPluginCredentialStore.replace(pluginSecrets: configuration.localPluginSecrets)
+            if configurationPersistenceIsDeferred {
+                configurationSaveWasDeferred = true
+            } else {
+                saveConfiguration()
+            }
             let python3Path = configuration.python3Path
             let nodePath = configuration.nodePath
             if let configurableProcessRunner {
@@ -39,7 +44,8 @@ final class AppModel: ObservableObject {
     let taskQueue: TaskQueueService
     let remoteDirectory: RemoteAccountDirectory
     let keychainStore: KeychainStore
-    let configurationStore: JSONConfigStore
+    let localPluginCredentialStore: LocalPluginCredentialStore
+    let configurationStore: any AppConfigurationStore
     let pluginRegistry = PluginRegistry()
     let remoteConnectorRegistry: RemoteConnectorRegistry
     let remoteProviderRegistry: RemoteProviderRegistry
@@ -50,12 +56,17 @@ final class AppModel: ObservableObject {
     let pluginWorkspaceMaintenance: PluginWorkspaceMaintenance
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     var taskPollingTask: Task<Void, Never>?
+    var configurationSaveTask: Task<Void, Never>?
+    let configurationPersistenceGate = ConfigurationPersistenceGate()
+    var configurationPersistenceIsDeferred = false
+    var configurationSaveWasDeferred = false
     var didLoadInitialState = false
 
     init(
         remoteDirectory: RemoteAccountDirectory? = nil,
-        configurationStore: JSONConfigStore? = nil,
+        configurationStore: (any AppConfigurationStore)? = nil,
         keychainStore: KeychainStore? = nil,
+        localPluginCredentialStore: LocalPluginCredentialStore? = nil,
         remoteConnectorRegistry: RemoteConnectorRegistry = .builtIn,
         remoteProviderRegistry: RemoteProviderRegistry? = nil,
         taskQueue: TaskQueueService? = nil,
@@ -74,8 +85,10 @@ final class AppModel: ObservableObject {
             url: supportDirectory.appendingPathComponent("config.json")
         )
         let keychainStore = keychainStore ?? MacKeychainStore()
+        let localPluginCredentialStore = localPluginCredentialStore ?? LocalPluginCredentialStore()
         self.remoteDirectory = remoteDirectory
         self.keychainStore = keychainStore
+        self.localPluginCredentialStore = localPluginCredentialStore
         self.configurationStore = configurationStore
         self.remoteConnectorRegistry = remoteConnectorRegistry
         let configuredProviderRegistry = remoteProviderRegistry ?? RemoteProviderRegistry(
@@ -98,6 +111,10 @@ final class AppModel: ObservableObject {
             directory: supportDirectory.appendingPathComponent("video-analysis", isDirectory: true)
         )
         self.taskQueue = taskQueue ?? TaskQueueService(maxConcurrentTasks: 2)
+        let pluginCredentialResolver = PluginCredentialResolver(
+            keychainStore: keychainStore,
+            localStore: localPluginCredentialStore
+        )
         if let pluginRunnerRouter {
             self.pluginRunnerRouter = pluginRunnerRouter
             configurableProcessRunner = nil
@@ -105,12 +122,12 @@ final class AppModel: ObservableObject {
             let processRunner = ConfigurableProcessPluginRunner()
             self.pluginRunnerRouter = PluginRunnerRouter(
                 processRunner: processRunner,
-                httpRunner: HTTPPluginRunner(credentialStore: keychainStore)
+                httpRunner: HTTPPluginRunner(credentialResolver: pluginCredentialResolver)
             )
             configurableProcessRunner = processRunner
         }
         self.pluginConnectionChecker = pluginConnectionChecker
-            ?? HTTPPluginConnectionProbe(credentialStore: keychainStore)
+            ?? HTTPPluginConnectionProbe(credentialResolver: pluginCredentialResolver)
         self.pluginWorkspaceMaintenance = pluginWorkspaceMaintenance
         leftPane = BrowserPaneModel(
             id: .left,

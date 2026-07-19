@@ -153,6 +153,13 @@ extension PluginManifest: Codable {
     }
 
     public func validate() throws {
+        guard Set(permissions.keychainSecrets).count == permissions.keychainSecrets.count,
+              Set(permissions.localSecrets).count == permissions.localSecrets.count else {
+            throw OpenFinderError.invalidPluginManifest("Secret permission keys must be unique")
+        }
+        guard Set(permissions.keychainSecrets).isDisjoint(with: permissions.localSecrets) else {
+            throw OpenFinderError.invalidPluginManifest("Secret permission storage must be unambiguous")
+        }
         switch (schemaVersion, execution) {
         case (1, .process):
             return
@@ -173,8 +180,8 @@ extension PluginManifest: Codable {
             guard configuration.contains(where: { $0.key == endpointConfigurationKey }) else {
                 throw OpenFinderError.invalidPluginManifest("Missing HTTP endpoint configuration field \(endpointConfigurationKey)")
             }
-            guard permissions.keychainSecrets.contains(tokenSecretKey) else {
-                throw OpenFinderError.invalidPluginManifest("Missing HTTP token keychain permission \(tokenSecretKey)")
+            guard permissions.storage(for: tokenSecretKey) != nil else {
+                throw OpenFinderError.invalidPluginManifest("Missing HTTP token secret permission \(tokenSecretKey)")
             }
         default:
             throw OpenFinderError.invalidPluginManifest("Unsupported manifest schema version \(schemaVersion)")

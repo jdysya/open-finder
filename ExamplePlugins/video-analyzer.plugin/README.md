@@ -2,7 +2,11 @@
 
 This built-in plugin sends selected local videos to an independently running Video Analyzer HTTP
 service. The plugin is loopback-only: the default endpoint is `http://127.0.0.1:8765`, and the
-matching bearer token is stored by OpenFinder in Keychain as `serverToken`.
+matching bearer token is a dedicated local secret.
+
+OpenFinder stores `serverToken` in its secured local Application Support `config.json`, not in macOS Keychain.
+The file is atomically maintained with mode `0600`.
+The token remains outside generic plugin configuration and HTTP request JSON.
 
 OpenFinder never installs or starts Video Analyzer, never runs `uv`, and does not need `uv` on its
 `PATH`. The Video Analyzer repository owns its Python environment, dependencies, models, process,
@@ -38,14 +42,21 @@ printf 'Token copied to the clipboard for OpenFinder serverToken.\n'
 ```
 
 Do not use `uv run` for this normal service startup. Keep the token private; never paste it into a
-bug report, README, command log, or OpenFinder's non-secret configuration. Stop the service with
-Control-C.
+bug report, README, command log, or OpenFinder's non-secret configuration. Because OpenFinder's
+Application Support `config.json` contains the token in a dedicated sensitive map, do not share
+that file. Stop the service with Control-C.
+
+When upgrading from an older build, OpenFinder migrates a legacy Video Analyzer Keychain value only
+when no local value exists and the secured config write succeeds.
+OpenFinder keeps the old Keychain item after a successful local migration.
+If the local write fails, the bounded legacy fallback stays available and the Keychain item is never
+deleted.
 
 ### 3. Configure and test OpenFinder
 
 1. Open **OpenFinder Settings → Plugins → Video Analyzer**.
 2. Set `serverURL` to `http://127.0.0.1:8765`.
-3. Paste the exact generated token into the Keychain-backed `serverToken` field and save it.
+3. Paste the exact generated token into the secured-local-config `serverToken` field and save it.
 4. Choose whether to enable `useJoyTag`.
 5. Click **Test Connection**. Start analysis only when the status is **Ready**.
 
@@ -83,12 +94,15 @@ Authenticated **Test Connection** displays the server's overall status (`ready`,
 OpenFinder represents connection problems with `PluginConnectionIssue` and request failures with
 `HTTPPluginError`. Use this map rather than treating every failure as an environment reinstall:
 
+- A public minimal `/health` is followed by authenticated `/capabilities`; HTTP 401/403 maps to `PluginConnectionIssue.authenticationFailed`.
+- HTTP 426 `unsupported_protocol` maps to `PluginConnectionIssue.serverUnavailable`, with the status and code retained in guidance.
+
 | Symptom | Actual status, code, or message class | Action |
 | --- | --- | --- |
 | Server is stopped or the URL/port is wrong | `PluginConnectionIssue.serverUnavailable`; during a job, `HTTPPluginError.transport` | Start the documented absolute `.venv/bin/python` command and retry **Test Connection**. |
 | Server starts without the environment token | Process exits with status 2 and `VIDEO_ANALYZER_OPENFINDER_TOKEN is required.` | Export a generated token68 before starting it. Do not use `--insecure-loopback` for normal use. |
-| OpenFinder has no token | `PluginConnectionIssue.missingToken` | Save the generated token in Keychain `serverToken`. |
-| Tokens do not match | Authenticated routes return HTTP 401 `unauthorized`. With the current server, `/health` instead returns its public minimal body for a wrong token, so **Test Connection** can surface `PluginConnectionIssue.incompatiblePlugin`; `authenticationFailed` is used when a health endpoint replies 401/403. | Replace `serverToken` with the exact value in the server process environment. |
+| OpenFinder has no token | `PluginConnectionIssue.missingToken` | Save the generated token in the secured local config `serverToken` field. |
+| Tokens do not match | `/health` returns its public minimal body, then **Test Connection** checks authenticated `/capabilities`; its HTTP 401 `unauthorized` maps to `PluginConnectionIssue.authenticationFailed`. | Replace `serverToken` with the exact value in the server process environment. |
 | Required dependency is missing | `required-dependencies=fail`, health `unavailable`; submissions are HTTP 503 `service_unavailable` | Stop the service, run `uv sync --frozen` in the analyzer repository, then restart with its absolute `.venv/bin/python`. |
 | Optional model dependency is missing | `optional-dependencies=warn`, health `degraded`; OpenFinder reports `PluginConnectionIssue.environmentUnavailable` | Run `uv sync --frozen`, restart, and repeat **Test Connection**. OpenFinder deliberately does not submit while degraded. |
 | JoyTag cache is cold | `model-cache=warn`; the overall health may still be `ready` | Allow the first JoyTag analysis to download and warm the model. Disable `useJoyTag` if JoyTag output is not required. |

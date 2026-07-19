@@ -28,7 +28,8 @@ final class VideoAnalyzerPluginTests: XCTestCase {
         XCTAssertEqual(manifest.configuration.first { $0.key == "useJoyTag" }?.defaultValue, "true")
         XCTAssertTrue(manifest.permissions.network.required)
         XCTAssertEqual(Set(manifest.permissions.network.hosts), ["127.0.0.1", "::1"])
-        XCTAssertEqual(manifest.permissions.keychainSecrets, ["serverToken"])
+        XCTAssertEqual(manifest.permissions.localSecrets, ["serverToken"])
+        XCTAssertEqual(manifest.permissions.keychainSecrets, [])
         XCTAssertFalse(manifest.permissions.runExternalCommands)
         XCTAssertNil(object["runtime"])
         XCTAssertNil(object["entry"])
@@ -51,6 +52,17 @@ final class VideoAnalyzerPluginTests: XCTestCase {
         XCTAssertNil(object["runtime"])
         XCTAssertNil(object["entry"])
         XCTAssertEqual(try JSONDecoder.openFinder.decode(PluginManifest.self, from: encoded), manifest)
+    }
+
+    func testLegacyHTTPManifestMayStillDeclareItsTokenInKeychain() throws {
+        let legacyJSON = Self.httpManifestJSON
+            .replacingOccurrences(of: "\"localSecrets\": [\"serverToken\"]", with: "\"localSecrets\": []")
+            .replacingOccurrences(of: "\"keychainSecrets\": []", with: "\"keychainSecrets\": [\"serverToken\"]")
+
+        let manifest = try JSONDecoder.openFinder.decode(PluginManifest.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(manifest.permissions.localSecrets, [])
+        XCTAssertEqual(manifest.permissions.keychainSecrets, ["serverToken"])
     }
 
     func testRejectsInvalidHTTPManifestMatrix() throws {
@@ -94,8 +106,15 @@ final class VideoAnalyzerPluginTests: XCTestCase {
             (
                 "missing token permission",
                 Self.httpManifestJSON.replacingOccurrences(
-                    of: "\"keychainSecrets\": [\"serverToken\"]",
-                    with: "\"keychainSecrets\": []"
+                    of: "\"localSecrets\": [\"serverToken\"]",
+                    with: "\"localSecrets\": []"
+                )
+            ),
+            (
+                "ambiguous local and keychain token permission",
+                Self.httpManifestJSON.replacingOccurrences(
+                    of: "\"keychainSecrets\": []",
+                    with: "\"keychainSecrets\": [\"serverToken\"]"
                 )
             )
         ]
@@ -121,8 +140,8 @@ final class VideoAnalyzerPluginTests: XCTestCase {
         let pluginDirectory = root.appendingPathComponent("invalid.plugin", isDirectory: true)
         try FileManager.default.createDirectory(at: pluginDirectory, withIntermediateDirectories: true)
         let invalidManifest = Self.httpManifestJSON.replacingOccurrences(
-            of: "\"keychainSecrets\": [\"serverToken\"]",
-            with: "\"keychainSecrets\": []"
+            of: "\"localSecrets\": [\"serverToken\"]",
+            with: "\"localSecrets\": []"
         )
         try invalidManifest.write(
             to: pluginDirectory.appendingPathComponent("manifest.json"),
@@ -148,6 +167,24 @@ final class VideoAnalyzerPluginTests: XCTestCase {
         XCTAssertTrue(PluginMatcher.action(action, matches: [Self.item(name: "demo.mp4", extension: "mp4", mimeType: "video/mp4")]))
         XCTAssertTrue(PluginMatcher.action(action, matches: [Self.item(name: "demo.mkv", extension: "mkv", mimeType: "video/x-matroska")]))
         XCTAssertFalse(PluginMatcher.action(action, matches: [Self.item(name: "notes.txt", extension: "txt", mimeType: "text/plain")]))
+    }
+
+    func testReadmesStateShippedWrongTokenAndHTTP426ConnectionMappings() throws {
+        let repository = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let readme = repository.appendingPathComponent("ExamplePlugins/video-analyzer.plugin/README.md")
+        let requiredFacts = [
+            "A public minimal `/health` is followed by authenticated `/capabilities`; HTTP 401/403 maps to `PluginConnectionIssue.authenticationFailed`.",
+            "HTTP 426 `unsupported_protocol` maps to `PluginConnectionIssue.serverUnavailable`, with the status and code retained in guidance.",
+            "OpenFinder stores `serverToken` in its secured local Application Support `config.json`, not in macOS Keychain.",
+            "The file is atomically maintained with mode `0600`.",
+            "The token remains outside generic plugin configuration and HTTP request JSON.",
+            "OpenFinder keeps the old Keychain item after a successful local migration."
+        ]
+
+        let contents = try String(contentsOf: readme, encoding: .utf8)
+        for fact in requiredFacts {
+            XCTAssertTrue(contents.contains(fact), "\(readme.path) is missing shipped fact: \(fact)")
+        }
     }
 
     private static func item(name: String, extension fileExtension: String, mimeType: String) -> FileItem {
@@ -187,7 +224,8 @@ final class VideoAnalyzerPluginTests: XCTestCase {
         "network": { "required": true, "hosts": ["127.0.0.1", "::1"] },
         "clipboardWrite": false,
         "clipboardRead": false,
-        "keychainSecrets": ["serverToken"],
+        "localSecrets": ["serverToken"],
+        "keychainSecrets": [],
         "remoteAccounts": false,
         "runExternalCommands": false
       },

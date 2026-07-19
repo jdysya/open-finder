@@ -132,12 +132,14 @@ enum AppPluginFixture {
         http: any PluginRunner,
         checker: any PluginConnectionChecking = StubPluginConnectionChecker.ready,
         keychain: any KeychainStore = InMemoryKeychainStore(),
+        localCredentialStore: LocalPluginCredentialStore? = nil,
         workspaceMaintenance: PluginWorkspaceMaintenance = .live()
     ) -> AppModel {
         AppModel(
             remoteDirectory: RemoteAccountDirectory(storageURL: root.appendingPathComponent("accounts.json")),
             configurationStore: JSONConfigStore(url: root.appendingPathComponent("config.json")),
             keychainStore: keychain,
+            localPluginCredentialStore: localCredentialStore,
             videoAnalysisStore: VideoAnalysisResultStore(directory: root.appendingPathComponent("analysis")),
             pluginRunnerRouter: PluginRunnerRouter(processRunner: process, httpRunner: http),
             pluginConnectionChecker: checker,

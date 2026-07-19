@@ -32,7 +32,9 @@ assert_manifest_value() {
   fi
 }
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+if [[ "$MODE" != "build" ]]; then
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+fi
 
 swift build
 BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
@@ -68,13 +70,14 @@ if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
   assert_manifest_value permissions.network.required true
   assert_manifest_value permissions.network.hosts.0 127.0.0.1
   assert_manifest_value permissions.network.hosts.1 ::1
-  assert_manifest_value permissions.keychainSecrets.0 serverToken
+  assert_manifest_value permissions.localSecrets.0 serverToken
   assert_manifest_value permissions.runExternalCommands false
   if /usr/bin/plutil -extract runtime raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
      /usr/bin/plutil -extract entry raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
      /usr/bin/plutil -extract configuration.2 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
      /usr/bin/plutil -extract permissions.network.hosts.2 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
-     /usr/bin/plutil -extract permissions.keychainSecrets.1 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1; then
+     /usr/bin/plutil -extract permissions.localSecrets.1 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1 ||
+     /usr/bin/plutil -extract permissions.keychainSecrets.0 raw -o - "$VIDEO_ANALYZER_MANIFEST" >/dev/null 2>&1; then
     echo "error: packaged Video Analyzer manifest retains a process field or an extra configuration/permission" >&2
     exit 1
   fi
@@ -136,6 +139,12 @@ sign_app_bundle() {
 
 sign_app_bundle
 
+case "$MODE" in
+  build)
+    exit 0
+    ;;
+esac
+
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
@@ -161,7 +170,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|build|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac

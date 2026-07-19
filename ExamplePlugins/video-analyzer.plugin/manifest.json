@@ -35,7 +35,8 @@
     },
     "clipboardWrite": false,
     "clipboardRead": false,
-    "keychainSecrets": ["serverToken"],
+    "keychainSecrets": [],
+    "localSecrets": ["serverToken"],
     "remoteAccounts": false,
     "runExternalCommands": false
   },

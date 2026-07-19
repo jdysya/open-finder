@@ -65,6 +65,114 @@ final class HTTPPluginConnectionProbeTests: XCTestCase {
         XCTAssertEqual(incompatible.issue, .incompatibleProtocol)
     }
 
+    func testTruePluginMismatchAndHTTP426PreserveExistingMappings() async {
+        let otherPlugin = Self.health().replacingOccurrences(
+            of: "dev.openfinder.plugins.video-analyzer", with: "dev.openfinder.plugins.other"
+        )
+        let incompatible = await probe(response: otherPlugin).check(
+            manifest: manifest(), values: ["serverURL": endpoint], secretReferences: references
+        )
+        XCTAssertEqual(incompatible.issue, .incompatiblePlugin)
+
+        let unsupportedProtocol = await probe(
+            response: #"{"schemaVersion":1,"code":"unsupported_protocol","message":"bad fixture-token","retryable":false}"#,
+            status: 426
+        ).check(manifest: manifest(), values: ["serverURL": endpoint], secretReferences: references)
+        XCTAssertEqual(unsupportedProtocol.issue, .serverUnavailable)
+        XCTAssertTrue(unsupportedProtocol.guidance.contains("426"))
+        XCTAssertTrue(unsupportedProtocol.guidance.contains("unsupported_protocol"))
+        XCTAssertFalse(String(describing: unsupportedProtocol).contains("fixture-token"))
+    }
+
+    func testPublicMinimalHealthFollowedByCapabilities401ReturnsAuthenticationFailedNotIncompatiblePlugin() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HTTPPluginWrongToken-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let server = try PortZeroHTTPCharacterizationServer(root: root, program: Self.publicHealthProgram)
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let suppliedBearer = "wrong-fixture-token"
+        let probe = HTTPPluginConnectionProbe(
+            transport: URLSessionHTTPPluginTransport(),
+            credentialResolver: { _ in suppliedBearer }
+        )
+
+        let status = await probe.check(
+            manifest: manifest(), values: ["serverURL": server.endpoint], secretReferences: references
+        )
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertEqual(
+            status.issue, .authenticationFailed,
+            "Public minimal health must reach authenticated capabilities, not report an incompatible plugin."
+        )
+        XCTAssertEqual(
+            status.guidance,
+            "The server rejected the token. Save the matching token in the secured local config and retry."
+        )
+        XCTAssertFalse(String(describing: status).contains(suppliedBearer))
+        XCTAssertEqual(try server.observations().map(\.path), [
+            "/openfinder/plugin/v1/health",
+            "/openfinder/plugin/v1/capabilities"
+        ])
+    }
+
+    func testRealAnalyzerWrongAndCorrectBearersToggleAuthenticationFailureToReady() async throws {
+        let repository = try RealHTTPVideoAnalyzerTestSupport.repository()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HTTPPluginProbeRealAnalyzer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fixture = try VideoAnalyzerFixtureProcess(repository: repository, root: root)
+        defer {
+            RealHTTPVideoAnalyzerTestSupport.assertClean(fixture.stop())
+            try? FileManager.default.removeItem(at: root)
+        }
+        let wrongBearer = "wrong-\(UUID().uuidString.lowercased())"
+        let wrongResolver = PluginCredentialResolver(
+            keychainStore: InMemoryKeychainStore(),
+            localStore: LocalPluginCredentialStore(pluginSecrets: [
+                "dev.openfinder.plugins.video-analyzer": ["serverToken": wrongBearer]
+            ])
+        )
+        let correctResolver = PluginCredentialResolver(
+            keychainStore: InMemoryKeychainStore(),
+            localStore: LocalPluginCredentialStore(pluginSecrets: [
+                "dev.openfinder.plugins.video-analyzer": ["serverToken": fixture.token]
+            ])
+        )
+        let wrongProbe = HTTPPluginConnectionProbe(
+            credentialResolver: wrongResolver
+        )
+        let correctProbe = HTTPPluginConnectionProbe(
+            credentialResolver: correctResolver
+        )
+        let localReferences = [
+            "serverToken": PluginCredentialReference.localConfiguration(
+                pluginID: "dev.openfinder.plugins.video-analyzer", key: "serverToken"
+            )
+        ]
+
+        let wrong = await wrongProbe.check(
+            manifest: manifest(), values: ["serverURL": fixture.endpoint], secretReferences: localReferences
+        )
+        let correct = await correctProbe.check(
+            manifest: manifest(), values: ["serverURL": fixture.endpoint], secretReferences: localReferences
+        )
+
+        XCTAssertEqual(wrong.issue, .authenticationFailed)
+        XCTAssertEqual(correct.state, .ready)
+        XCTAssertEqual(correct.pluginID, "dev.openfinder.plugins.video-analyzer")
+        XCTAssertFalse(String(describing: [wrong, correct]).contains(wrongBearer))
+        XCTAssertFalse(String(describing: [wrong, correct]).contains(fixture.token))
+        XCTAssertEqual(try fixture.history().compactMap(\.path), [
+            "/openfinder/plugin/v1/health",
+            "/openfinder/plugin/v1/capabilities",
+            "/openfinder/plugin/v1/health"
+        ])
+    }
+
     private let endpoint = "http://127.0.0.1:8765"
     private let references = ["serverToken": "fixture-key"]
 
@@ -87,10 +195,51 @@ final class HTTPPluginConnectionProbeTests: XCTestCase {
         .init(schemaVersion: 2, id: "dev.openfinder.plugins.video-analyzer", name: "Analyzer", version: "0.1.0",
               description: nil, author: nil,
               execution: .http(protocolVersion: 1, endpointConfigurationKey: "serverURL", tokenSecretKey: "serverToken"),
-              actions: [], permissions: .none, configuration: [])
+              actions: [],
+              permissions: .init(
+                readFiles: "selected", writeFiles: "taskOutput",
+                network: .init(required: true, hosts: ["127.0.0.1"]),
+                clipboardWrite: false, clipboardRead: false, keychainSecrets: [],
+                remoteAccounts: false, runExternalCommands: false,
+                localSecrets: ["serverToken"]
+              ),
+              configuration: [.init(key: "serverURL", type: "url", title: "Server URL")])
     }
 
     private static func health(status: String = "ready", protocolVersion: Int = 1, checks: String = "[]") -> String {
         #"{"schemaVersion":1,"protocolVersion":\#(protocolVersion),"status":"\#(status)","pluginID":"dev.openfinder.plugins.video-analyzer","pluginVersion":"0.1.0","runtime":{"name":"Python","version":"3.12"},"checks":\#(checks)}"#
     }
+
+    private static let publicHealthProgram = #"""
+import http.server, json, os
+
+TOKEN = os.environ["OPENFINDER_CHARACTERIZATION_TOKEN"]
+OBSERVATIONS = os.environ["OPENFINDER_CHARACTERIZATION_OBSERVATIONS"]
+records = []
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *args):
+        pass
+    def send_json(self, value, status=200):
+        body = json.dumps(value, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("OpenFinder-Plugin-Protocol", "1")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        records.append({"method": "GET", "path": self.path,
+                        "authorizationAccepted": self.headers.get("Authorization") == "Bearer " + TOKEN})
+        with open(OBSERVATIONS, "w", encoding="utf-8") as handle:
+            json.dump(records, handle)
+        if self.path.endswith("/health"):
+            return self.send_json({"schemaVersion":1,"protocolVersion":1,"status":"ready"})
+        self.send_json({"schemaVersion":1,"code":"unauthorized",
+                        "message":"denied wrong-fixture-token","retryable":False}, 401)
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+print("READY " + str(server.server_address[1]), flush=True)
+server.serve_forever()
+"""#
 }

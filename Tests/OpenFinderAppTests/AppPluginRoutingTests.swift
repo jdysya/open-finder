@@ -38,7 +38,8 @@ final class AppPluginRoutingTests: XCTestCase {
             directory: root
         )
         app.setPluginConfigValue("http://127.0.0.1:8765", pluginID: http.id, key: "serverURL")
-        app.setPluginSecret("fixture-token", pluginID: http.id, key: "serverToken")
+        let secretSaved = await app.setPluginSecret("fixture-token", pluginID: http.id, key: "serverToken")
+        XCTAssertTrue(secretSaved)
 
         app.runPlugin(process, action: process.manifest.actions[0], items: [item], pane: app.leftPane)
         app.runPlugin(http, action: http.manifest.actions[0], items: [item], pane: app.leftPane)

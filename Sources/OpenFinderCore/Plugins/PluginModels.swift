@@ -167,20 +167,71 @@ public struct PluginPermissions: Codable, Hashable, Sendable {
     public let clipboardWrite: Bool
     public let clipboardRead: Bool
     public let keychainSecrets: [String]
+    public let localSecrets: [String]
     public let remoteAccounts: Bool
     public let runExternalCommands: Bool
 
     public static let none = PluginPermissions(readFiles: "none", writeFiles: "none", network: .init(), clipboardWrite: false, clipboardRead: false, keychainSecrets: [], remoteAccounts: false, runExternalCommands: false)
 
-    public init(readFiles: String, writeFiles: String, network: PluginNetworkPermission, clipboardWrite: Bool, clipboardRead: Bool, keychainSecrets: [String], remoteAccounts: Bool, runExternalCommands: Bool) {
+    public init(readFiles: String, writeFiles: String, network: PluginNetworkPermission, clipboardWrite: Bool, clipboardRead: Bool, keychainSecrets: [String], remoteAccounts: Bool, runExternalCommands: Bool, localSecrets: [String] = []) {
         self.readFiles = readFiles
         self.writeFiles = writeFiles
         self.network = network
         self.clipboardWrite = clipboardWrite
         self.clipboardRead = clipboardRead
         self.keychainSecrets = keychainSecrets
+        self.localSecrets = localSecrets
         self.remoteAccounts = remoteAccounts
         self.runExternalCommands = runExternalCommands
+    }
+
+    public var secretKeys: [String] { keychainSecrets + localSecrets }
+
+    public func storage(for key: String) -> PluginSecretStorage? {
+        let isKeychain = keychainSecrets.contains(key)
+        let isLocal = localSecrets.contains(key)
+        guard isKeychain != isLocal else { return nil }
+        return isLocal ? .localConfiguration : .keychain
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case readFiles
+        case writeFiles
+        case network
+        case clipboardWrite
+        case clipboardRead
+        case keychainSecrets
+        case localSecrets
+        case remoteAccounts
+        case runExternalCommands
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            readFiles: try container.decode(String.self, forKey: .readFiles),
+            writeFiles: try container.decode(String.self, forKey: .writeFiles),
+            network: try container.decode(PluginNetworkPermission.self, forKey: .network),
+            clipboardWrite: try container.decode(Bool.self, forKey: .clipboardWrite),
+            clipboardRead: try container.decode(Bool.self, forKey: .clipboardRead),
+            keychainSecrets: try container.decodeIfPresent([String].self, forKey: .keychainSecrets) ?? [],
+            remoteAccounts: try container.decode(Bool.self, forKey: .remoteAccounts),
+            runExternalCommands: try container.decode(Bool.self, forKey: .runExternalCommands),
+            localSecrets: try container.decodeIfPresent([String].self, forKey: .localSecrets) ?? []
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(readFiles, forKey: .readFiles)
+        try container.encode(writeFiles, forKey: .writeFiles)
+        try container.encode(network, forKey: .network)
+        try container.encode(clipboardWrite, forKey: .clipboardWrite)
+        try container.encode(clipboardRead, forKey: .clipboardRead)
+        try container.encode(keychainSecrets, forKey: .keychainSecrets)
+        try container.encode(localSecrets, forKey: .localSecrets)
+        try container.encode(remoteAccounts, forKey: .remoteAccounts)
+        try container.encode(runExternalCommands, forKey: .runExternalCommands)
     }
 }
 

@@ -76,7 +76,7 @@ struct PluginConfigurationView: View {
 
     @ViewBuilder
     private var configurationSection: some View {
-        if plugin.manifest.configuration.isEmpty && plugin.manifest.permissions.keychainSecrets.isEmpty {
+        if plugin.manifest.configuration.isEmpty && plugin.manifest.permissions.secretKeys.isEmpty {
             Text("No configurable parameters for this plugin.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -95,10 +95,13 @@ struct PluginConfigurationView: View {
                         pluginConfigControl(field: field)
                     }
                 }
-                ForEach(plugin.manifest.permissions.keychainSecrets, id: \.self) { key in
+                ForEach(plugin.manifest.permissions.secretKeys, id: \.self) { key in
                     GridRow {
                         Text(key)
-                        pluginSecretControl(key: key)
+                        pluginSecretControl(
+                            key: key,
+                            storage: plugin.manifest.permissions.storage(for: key)
+                        )
                     }
                 }
             }
@@ -182,22 +185,43 @@ struct PluginConfigurationView: View {
         }
     }
 
-    private func pluginSecretControl(key: String) -> some View {
-        HStack {
-            SecureField(
-                app.pluginSecretConfigured(pluginID: plugin.id, key: key) ? "Configured" : "Not configured",
-                text: pluginSecretDraftBinding(key: key)
-            )
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 250)
-            Button("Save") {
-                app.setPluginSecret(pluginSecretDrafts[pluginSecretDraftKey(key: key)] ?? "", pluginID: plugin.id, key: key)
-                pluginSecretDrafts[pluginSecretDraftKey(key: key)] = ""
+    private func pluginSecretControl(key: String, storage: PluginSecretStorage?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                SecureField(
+                    app.pluginSecretConfigured(pluginID: plugin.id, key: key)
+                        ? "Configured"
+                        : "Not configured",
+                    text: pluginSecretDraftBinding(key: key)
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 250)
+                Button("Save") {
+                    let draftKey = pluginSecretDraftKey(key: key)
+                    let secret = pluginSecretDrafts[draftKey] ?? ""
+                    Task {
+                        if await app.setPluginSecret(secret, for: plugin.manifest, key: key),
+                           pluginSecretDrafts[draftKey] == secret {
+                            pluginSecretDrafts[draftKey] = ""
+                        }
+                    }
+                }
+                Button("Clear") {
+                    let draftKey = pluginSecretDraftKey(key: key)
+                    let draft = pluginSecretDrafts[draftKey] ?? ""
+                    Task {
+                        if await app.setPluginSecret("", for: plugin.manifest, key: key),
+                           pluginSecretDrafts[draftKey] == draft {
+                            pluginSecretDrafts[draftKey] = ""
+                        }
+                    }
+                }
             }
-            Button("Clear") {
-                app.setPluginSecret("", pluginID: plugin.id, key: key)
-                pluginSecretDrafts[pluginSecretDraftKey(key: key)] = ""
-            }
+            Text(storage == .localConfiguration
+                 ? "Stored in OpenFinder's secured local config."
+                 : "Stored in macOS Keychain.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
