@@ -89,6 +89,10 @@ if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
     echo "error: packaged Video Analyzer plugin contains .venv" >&2
     exit 1
   fi
+  if [[ -e "$VIDEO_ANALYZER_PLUGIN/run.py" || -e "$VIDEO_ANALYZER_PLUGIN/worker" ]]; then
+    echo "error: packaged Video Analyzer plugin contains the removed process bridge" >&2
+    exit 1
+  fi
 fi
 
 if [ -f "$APP_ICON_SOURCE" ]; then

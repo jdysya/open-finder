@@ -4,6 +4,9 @@ This built-in plugin sends selected local videos to an independently running Vid
 service. The plugin is loopback-only: the default endpoint is `http://127.0.0.1:8765`, and the
 matching bearer token is a dedicated local secret.
 
+The bundle is HTTP-client-only and contains no Python worker, executable entry point, or managed
+runtime environment.
+
 OpenFinder stores `serverToken` in its secured local Application Support `config.json`, not in macOS Keychain.
 The file is atomically maintained with mode `0600`.
 The token remains outside generic plugin configuration and HTTP request JSON.
@@ -117,11 +120,3 @@ Other protocol errors that can appear during recovery or load are HTTP 429 `queu
 409 `job_not_terminal` (retryable), 409 `event_history_expired`, 409 `task_conflict`, 400
 `invalid_last_event_id`, and 500 `internal_error` (retryable). Never include the bearer token when
 sharing diagnostics; replace it with `REDACTED`.
-
-## Deprecated process bridge
-
-`run.py` and `worker/` are the deprecated legacy process bridge. The schema-2 HTTP manifest does
-not reference or execute them. They remain in the repository only because they contain existing
-dirty progress work that must not be discarded. Remove them only after the shipped HTTP integration
-has demonstrated stable, real end-to-end validation across startup, analysis, cancellation, result
-artifacts, server-loss recovery, and retry.

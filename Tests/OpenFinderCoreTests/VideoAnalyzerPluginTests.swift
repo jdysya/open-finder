@@ -3,6 +3,18 @@ import XCTest
 @testable import OpenFinderCore
 
 final class VideoAnalyzerPluginTests: XCTestCase {
+    func testSourcePluginContainsNoProcessBridge() {
+        let pluginDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("ExamplePlugins/video-analyzer.plugin", isDirectory: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: pluginDirectory.appendingPathComponent("run.py").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: pluginDirectory.appendingPathComponent("worker", isDirectory: true).path
+        ))
+    }
+
     func testSourceManifestUsesLocalHTTPExecution() throws {
         // Given
         let manifestURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
