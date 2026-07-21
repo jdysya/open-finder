@@ -67,6 +67,25 @@ The base unit is 4 points. Existing pane chrome uses 4, 6, 8, 12, 16, 20, and 24
 - Availability: nonempty selection with a common editable tag scope; empty-area and unsupported selections do not expose an actionable item.
 - Context-clicking an unselected row first normalizes selection to that row.
 
+### Video Analysis Workspace
+
+- Structure: a native video sidebar, summary header, analysis-filter controls, and a scrollable adaptive keyframe grid.
+- Keyframes remain visible as a complete timeline by default; selecting one or more analysis filters narrows the grid with AND semantics and never mutates file metadata.
+- A keyframe opens a system sheet with a larger preview, timestamp, analysis labels, and previous/next navigation.
+- Analysis labels use compact bordered controls and system accent state. They are not Finder tags and do not imply persistence.
+
+### Finder Tag Selection
+
+- Structure: a separate, explicitly named checkbox section containing only analyzer-suggested file tags.
+- Initial state is unselected. Only checked suggestions are submitted to Finder tag reconciliation.
+- The UI states that analysis filters do not write metadata; filtering and Finder synchronization never share selection state.
+
+### Task Progress Row
+
+- Structure: status icon, task title, current phase/detail, completed-unit count, percentage, native progress bar, and actions.
+- Phase changes remain visible in task logs. Recent logs are available through an inline disclosure without expanding every row by default.
+- Indeterminate progress remains available for tasks that cannot report a fraction; terminal rows prioritize their result or error summary.
+
 ## 6. Motion & Interaction
 
 - Use native AppKit/SwiftUI transitions and progress indicators only.
