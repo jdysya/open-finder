@@ -72,13 +72,61 @@ public enum PluginOutputParser {
     }
 
     public static func parseLine(_ line: String) throws -> PluginOutputEvent {
-        let event = try JSONDecoder.openFinder.decode(RawEvent.self, from: Data(line.utf8))
+        let data = Data(line.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any],
+              let type = dictionary["type"] as? String else {
+            throw OpenFinderError.invalidPluginOutput("Event must be a JSON object with a string type")
+        }
+        let allowedKeys: Set<String>
+        let requiredKeys: Set<String>
+        switch type {
+        case "log":
+            allowedKeys = ["type", "level", "message"]
+            requiredKeys = ["type", "message"]
+        case "progress":
+            allowedKeys = ["type", "fraction", "message", "phase", "completed", "total", "unit"]
+            requiredKeys = ["type", "fraction"]
+        case "result":
+            allowedKeys = ["type", "status", "message", "clipboard", "artifacts"]
+            requiredKeys = ["type", "status"]
+        default:
+            throw OpenFinderError.invalidPluginOutput("Unknown event type \(type)")
+        }
+        let keys = Set(dictionary.keys)
+        let unknownKeys = keys.subtracting(allowedKeys)
+        guard unknownKeys.isEmpty else {
+            throw OpenFinderError.invalidPluginOutput(
+                "Unknown field(s) for \(type) event: \(unknownKeys.sorted().joined(separator: ", "))"
+            )
+        }
+        let missingKeys = requiredKeys.subtracting(keys)
+        guard missingKeys.isEmpty else {
+            throw OpenFinderError.invalidPluginOutput(
+                "Missing field(s) for \(type) event: \(missingKeys.sorted().joined(separator: ", "))"
+            )
+        }
+
+        let event = try JSONDecoder.openFinder.decode(RawEvent.self, from: data)
         switch event.type {
         case "log":
-            return .log(level: event.level ?? "info", message: event.message ?? "")
+            guard let message = event.message else {
+                throw OpenFinderError.invalidPluginOutput("Log message must be a string")
+            }
+            return .log(level: event.level ?? "info", message: message)
         case "progress":
+            guard let fraction = event.fraction, fraction.isFinite, (0 ... 1).contains(fraction) else {
+                throw OpenFinderError.invalidPluginOutput("Progress fraction must be a finite number from 0 through 1")
+            }
+            guard (event.completed == nil) == (event.total == nil) else {
+                throw OpenFinderError.invalidPluginOutput("Progress completed and total must be supplied together")
+            }
+            if let completed = event.completed, let total = event.total,
+               completed < 0 || total <= 0 || completed > total {
+                throw OpenFinderError.invalidPluginOutput("Progress completed and total are inconsistent")
+            }
             return .progress(.init(
-                fraction: event.fraction ?? 0,
+                fraction: fraction,
                 message: event.message,
                 phase: event.phase,
                 completed: event.completed,
@@ -86,9 +134,31 @@ public enum PluginOutputParser {
                 unit: event.unit
             ))
         case "result":
-            return .result(status: event.status ?? "success", message: event.message, clipboard: event.clipboard, artifacts: event.artifacts ?? [])
+            guard let status = event.status?.lowercased(),
+                  ["success", "failure", "cancelled"].contains(status) else {
+                throw OpenFinderError.invalidPluginOutput(
+                    "Result status must be success, failure, or cancelled"
+                )
+            }
+            return .result(status: status, message: event.message, clipboard: event.clipboard, artifacts: event.artifacts ?? [])
         default:
             throw OpenFinderError.invalidPluginOutput("Unknown event type \(event.type)")
+        }
+    }
+}
+
+public enum ProcessPluginEventValidator {
+    public static func validate(_ events: [PluginOutputEvent]) throws {
+        let terminalIndexes = events.indices.filter { events[$0].resultStatus != nil }
+        guard terminalIndexes.count == 1 else {
+            throw OpenFinderError.invalidPluginOutput(
+                "Process output must contain exactly one terminal result event"
+            )
+        }
+        guard terminalIndexes[0] == events.indices.last else {
+            throw OpenFinderError.invalidPluginOutput(
+                "Process output contains an event after its terminal result"
+            )
         }
     }
 }

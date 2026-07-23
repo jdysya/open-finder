@@ -5,6 +5,62 @@ import XCTest
 
 @MainActor
 final class AppPluginRoutingTests: XCTestCase {
+    func testProcessPluginReceivesResolvedSecretThroughGeneratedEnvironmentVariable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppProcessSecret-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("input.txt")
+        try Data("input".utf8).write(to: file)
+        let item = try await LocalFileProvider().stat(.local(path: file.path))
+        let processRunner = RecordingPluginRunner()
+        let keychain = InMemoryKeychainStore()
+        let app = AppPluginFixture.app(root: root, process: processRunner, http: processRunner, keychain: keychain)
+        let manifest = PluginManifest(
+            schemaVersion: 1,
+            id: "fixture.process-secret",
+            name: "Process Secret",
+            version: "1.0.0",
+            description: nil,
+            author: nil,
+            runtime: .shell,
+            entry: "run.sh",
+            actions: [AppPluginFixture.action],
+            permissions: .init(
+                readFiles: "selected",
+                writeFiles: "none",
+                network: .init(),
+                clipboardWrite: false,
+                clipboardRead: false,
+                keychainSecrets: ["apiToken"],
+                remoteAccounts: false,
+                runExternalCommands: true
+            ),
+            configuration: []
+        )
+        let plugin = LoadedPlugin(manifest: manifest, directory: root)
+        app.loadedPlugins = [plugin]
+        let secretSaved = await app.setPluginSecret(
+            "fixture-secret-value",
+            pluginID: plugin.id,
+            key: "apiToken"
+        )
+        XCTAssertTrue(secretSaved)
+
+        app.runPlugin(plugin, action: manifest.actions[0], items: [item], pane: app.leftPane)
+        try await AppPluginFixture.waitUntil { !(await processRunner.captured()).isEmpty }
+
+        let requests = await processRunner.captured()
+        let request = try XCTUnwrap(requests.first)
+        let environmentName = try XCTUnwrap(request.input.secrets["apiToken"]?.env)
+        XCTAssertTrue(environmentName.hasPrefix("OPENFINDER_SECRET_"))
+        XCTAssertFalse(environmentName.contains("fixture.process-secret"))
+        XCTAssertEqual(request.environment[environmentName], "fixture-secret-value")
+        XCTAssertNil(request.environment[PluginCredentialReference.keychain(
+            pluginID: plugin.id,
+            key: "apiToken"
+        )])
+    }
+
     func testRoutesBothTransportsAndRetryUsesNewIDWithCapturedConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppPluginRouting-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

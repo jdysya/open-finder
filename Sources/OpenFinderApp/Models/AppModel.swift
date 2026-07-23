@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var taskRecords: [TaskRecord] = []
     @Published var taskLogs: [UUID: [TaskLogLine]] = [:]
     @Published var loadedPlugins: [LoadedPlugin] = []
+    @Published var pluginLoadDiagnostics: [PluginLoadDiagnostic] = []
     @Published var remoteAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
     @Published var pendingTransferOverwrite: PendingTransferOverwrite?
@@ -35,8 +36,16 @@ final class AppModel: ObservableObject {
             }
             let python3Path = configuration.python3Path
             let nodePath = configuration.nodePath
-            if let configurableProcessRunner {
-                Task { await configurableProcessRunner.update(python3Path: python3Path, nodePath: nodePath) }
+            let maxConcurrentTasks = configuration.maxConcurrentTasks
+            let previousRuntimeUpdate = configurationRuntimeUpdateTask
+            let taskQueue = taskQueue
+            let processRunner = configurableProcessRunner
+            configurationRuntimeUpdateTask = Task {
+                await previousRuntimeUpdate?.value
+                await taskQueue.updateMaxConcurrentTasks(maxConcurrentTasks)
+                if let processRunner {
+                    await processRunner.update(python3Path: python3Path, nodePath: nodePath)
+                }
             }
         }
     }
@@ -45,6 +54,7 @@ final class AppModel: ObservableObject {
     let remoteDirectory: RemoteAccountDirectory
     let keychainStore: KeychainStore
     let localPluginCredentialStore: LocalPluginCredentialStore
+    let pluginCredentialResolver: PluginCredentialResolver
     let configurationStore: any AppConfigurationStore
     let pluginRegistry = PluginRegistry()
     let remoteConnectorRegistry: RemoteConnectorRegistry
@@ -57,6 +67,7 @@ final class AppModel: ObservableObject {
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     var taskPollingTask: Task<Void, Never>?
     var configurationSaveTask: Task<Void, Never>?
+    var configurationRuntimeUpdateTask: Task<Void, Never>?
     let configurationPersistenceGate = ConfigurationPersistenceGate()
     var configurationPersistenceIsDeferred = false
     var configurationSaveWasDeferred = false
@@ -115,6 +126,7 @@ final class AppModel: ObservableObject {
             keychainStore: keychainStore,
             localStore: localPluginCredentialStore
         )
+        self.pluginCredentialResolver = pluginCredentialResolver
         if let pluginRunnerRouter {
             self.pluginRunnerRouter = pluginRunnerRouter
             configurableProcessRunner = nil

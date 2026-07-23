@@ -54,11 +54,18 @@ public actor TaskQueueService {
     private var logStorage: [UUID: [TaskLogLine]] = [:]
     private var cancellationRequests: Set<UUID> = []
     private var runningResourceKeys: Set<String> = []
-    private let maxConcurrentTasks: Int
+    private var maxConcurrentTasks: Int
 
     public init(maxConcurrentTasks: Int = 2) {
         self.maxConcurrentTasks = max(1, maxConcurrentTasks)
     }
+
+    public func updateMaxConcurrentTasks(_ value: Int) {
+        maxConcurrentTasks = max(1, value)
+        startNextIfPossible()
+    }
+
+    public func currentMaxConcurrentTasks() -> Int { maxConcurrentTasks }
 
     @discardableResult
     public func enqueue(_ request: TaskRequest) async throws -> UUID {

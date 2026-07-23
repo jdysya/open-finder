@@ -142,7 +142,11 @@ public struct ProcessPluginRunner: PluginRunner {
         collector.finishStdout()
         if let error = collector.firstError { throw error }
         if Task.isCancelled { throw CancellationError() }
-        return PluginRunResult(exitCode: process.terminationStatus, events: collector.events, stdout: collector.stdout, stderr: collector.stderr)
+        let events = collector.events
+        if process.terminationStatus == 0 {
+            try ProcessPluginEventValidator.validate(events)
+        }
+        return PluginRunResult(exitCode: process.terminationStatus, events: events, stdout: collector.stdout, stderr: collector.stderr)
     }
 
     private static func command(for runtime: PluginRuntime, entryURL: URL, runtimePaths: PluginRuntimePaths) -> (executable: URL, arguments: [String]) {

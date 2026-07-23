@@ -32,6 +32,9 @@ extension AppModel {
         if let loadedConfiguration = try? await configurationStore.load() {
             configuration = loadedConfiguration
         }
+        await taskQueue.updateMaxConcurrentTasks(configuration.maxConcurrentTasks)
+        leftPane.showHiddenFiles = configuration.defaultShowHiddenFiles
+        rightPane.showHiddenFiles = configuration.defaultShowHiddenFiles
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()

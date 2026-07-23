@@ -106,6 +106,84 @@ final class PluginSystemTests: XCTestCase {
         )))
     }
 
+    func testProcessOutputRejectsMissingFieldsUnknownFieldsAndInvalidProgress() {
+        let invalidLines = [
+            #"{"type":"log"}"#,
+            #"{"type":"progress","fraction":1.1}"#,
+            #"{"type":"progress","fraction":0.5,"completed":1}"#,
+            #"{"type":"result"}"#,
+            #"{"type":"result","status":"success","unexpected":true}"#,
+            #"{"type":"result","status":"ok"}"#
+        ]
+
+        for line in invalidLines {
+            XCTAssertThrowsError(try PluginOutputParser.parseLine(line), line)
+        }
+    }
+
+    func testProcessOutputRequiresExactlyOneFinalTerminalEvent() throws {
+        let success = try PluginOutputParser.parseLine(#"{"type":"result","status":"success"}"#)
+        let log = try PluginOutputParser.parseLine(#"{"type":"log","message":"done"}"#)
+
+        XCTAssertNoThrow(try ProcessPluginEventValidator.validate([log, success]))
+        XCTAssertThrowsError(try ProcessPluginEventValidator.validate([]))
+        XCTAssertThrowsError(try ProcessPluginEventValidator.validate([success, success]))
+        XCTAssertThrowsError(try ProcessPluginEventValidator.validate([success, log]))
+    }
+
+    func testRegistryKeepsValidSiblingAndReportsInvalidPlugin() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenFinderPluginScan-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let validDirectory = root.appendingPathComponent("valid.openfinderplugin", isDirectory: true)
+        let invalidDirectory = root.appendingPathComponent("broken.openfinderplugin", isDirectory: true)
+        try FileManager.default.createDirectory(at: validDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: invalidDirectory, withIntermediateDirectories: true)
+
+        let manifest = Self.processManifest(id: "dev.openfinder.valid", name: "Valid")
+        try JSONEncoder.openFinder.encode(manifest).write(
+            to: validDirectory.appendingPathComponent("run.sh")
+                .deletingLastPathComponent().appendingPathComponent("manifest.json")
+        )
+        try Data("#!/bin/zsh\n".utf8).write(to: validDirectory.appendingPathComponent("run.sh"))
+        try Data("{}".utf8).write(to: invalidDirectory.appendingPathComponent("manifest.json"))
+
+        let result = try PluginRegistry().scanWithDiagnostics(directory: root, source: .user)
+
+        XCTAssertEqual(result.loaded.map(\.id), ["dev.openfinder.valid"])
+        XCTAssertEqual(result.loaded.first?.source, .user)
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.pluginDirectory.lastPathComponent, "broken.openfinderplugin")
+    }
+
+    func testCatalogUsesDeclaredSourcePriorityAndReportsDuplicateID() {
+        let registry = PluginRegistry()
+        let root = URL(fileURLWithPath: "/tmp/plugins")
+        let development = LoadedPlugin(
+            manifest: Self.processManifest(id: "dev.openfinder.same", name: "Development"),
+            directory: root.appendingPathComponent("development.plugin"),
+            source: .development
+        )
+        let user = LoadedPlugin(
+            manifest: Self.processManifest(id: "dev.openfinder.same", name: "User"),
+            directory: root.appendingPathComponent("user.plugin"),
+            source: .user
+        )
+        let builtIn = LoadedPlugin(
+            manifest: Self.processManifest(id: "dev.openfinder.same", name: "Built-in"),
+            directory: root.appendingPathComponent("built-in.plugin"),
+            source: .builtIn
+        )
+
+        let result = registry.resolveCatalog(from: [
+            .init(loaded: [development, user, builtIn], diagnostics: [])
+        ])
+
+        XCTAssertEqual(result.loaded, [builtIn])
+        XCTAssertEqual(result.diagnostics.count, 2)
+        XCTAssertTrue(result.diagnostics.allSatisfy { $0.kind == .duplicateID })
+    }
+
     func testResolvesPluginConfigurationFromSavedValuesAndDefaults() {
         let manifest = PluginManifest(
             schemaVersion: 1,
@@ -267,4 +345,20 @@ final class PluginSystemTests: XCTestCase {
       "configuration": []
     }
     """
+
+    private static func processManifest(id: String, name: String) -> PluginManifest {
+        PluginManifest(
+            schemaVersion: 1,
+            id: id,
+            name: name,
+            version: "1.0.0",
+            description: nil,
+            author: nil,
+            runtime: .shell,
+            entry: "run.sh",
+            actions: [],
+            permissions: .none,
+            configuration: []
+        )
+    }
 }

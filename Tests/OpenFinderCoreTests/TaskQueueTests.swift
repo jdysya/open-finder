@@ -155,6 +155,36 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(secondRecord.status, .succeeded)
     }
 
+    func testUpdatingConcurrencyStartsAdditionalQueuedWork() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let gate = AnalysisResourceGate()
+        let firstID = try await queue.enqueue(.init(kind: .localCopy, title: "First") { _ in
+            await gate.enterAndWait()
+            return .success(summary: "first", clipboard: nil)
+        })
+        await gate.waitForEntrants(1)
+        let secondID = try await queue.enqueue(.init(kind: .localCopy, title: "Second") { _ in
+            await gate.enterAndWait()
+            return .success(summary: "second", clipboard: nil)
+        })
+        let queuedStatus = await queue.record(for: secondID)?.status
+        XCTAssertEqual(queuedStatus, .queued)
+
+        await queue.updateMaxConcurrentTasks(2)
+        await gate.waitForEntrants(2)
+
+        let concurrency = await queue.currentMaxConcurrentTasks()
+        let runningStatus = await queue.record(for: secondID)?.status
+        let maximumConcurrent = await gate.maximumConcurrent
+        XCTAssertEqual(concurrency, 2)
+        XCTAssertEqual(runningStatus, .running)
+        XCTAssertEqual(maximumConcurrent, 2)
+        await gate.releaseNext()
+        await gate.releaseNext()
+        _ = try await queue.waitForTerminalStatus(firstID, timeout: 2)
+        _ = try await queue.waitForTerminalStatus(secondID, timeout: 2)
+    }
+
     func testCancellingResourceTaskAllowsNextMatchingTaskToStart() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 2)
         let gate = AnalysisResourceGate()

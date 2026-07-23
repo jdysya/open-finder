@@ -3,19 +3,39 @@ import OpenFinderCore
 
 extension AppModel {
     func loadPlugins() {
-        var plugins: [LoadedPlugin] = []
         let projectPlugins = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("ExamplePlugins", isDirectory: true)
         let bundledPlugins = Bundle.main.resourceURL?
             .appendingPathComponent("BuiltinPlugins", isDirectory: true)
         let appSupportPlugins = Self.applicationSupportDirectory()
             .appendingPathComponent("Plugins", isDirectory: true)
-        for directory in [projectPlugins, bundledPlugins, appSupportPlugins].compactMap({ $0 }) {
-            if let scanned = try? pluginRegistry.scan(directory: directory) {
-                plugins.append(contentsOf: scanned)
+        let locations: [(URL, PluginSource)] = [
+            (projectPlugins, .development),
+            (appSupportPlugins, .user)
+        ] + (bundledPlugins.map { [($0, .builtIn)] } ?? [])
+
+        var scanResults: [PluginScanResult] = []
+        for (directory, source) in locations {
+            do {
+                scanResults.append(try pluginRegistry.scanWithDiagnostics(
+                    directory: directory,
+                    source: source
+                ))
+            } catch {
+                scanResults.append(.init(loaded: [], diagnostics: [.init(
+                    kind: .invalidPackage,
+                    source: source,
+                    pluginDirectory: directory,
+                    message: "Could not scan \(source.displayName) plugins: \(error.localizedDescription)"
+                )]))
             }
         }
-        loadedPlugins = Array(Dictionary(grouping: plugins, by: \.id).compactMap { $0.value.first })
+        let catalog = pluginRegistry.resolveCatalog(from: scanResults)
+        loadedPlugins = catalog.loaded
+        pluginLoadDiagnostics = catalog.diagnostics
+        statusMessage = catalog.diagnostics.isEmpty
+            ? "Loaded \(catalog.loaded.count) plugins"
+            : "Loaded \(catalog.loaded.count) plugins with \(catalog.diagnostics.count) diagnostic(s)"
     }
 
     func pluginActions(for items: [FileItem]) -> [(LoadedPlugin, PluginActionManifest)] {

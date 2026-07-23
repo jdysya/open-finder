@@ -28,6 +28,7 @@ extension AppModel {
                 let currentLocation = pane.location
                 let paneID = pane.id.rawValue
                 let runner = pluginRunnerRouter
+                let credentialResolver = pluginCredentialResolver
                 let analysisStore = videoAnalysisStore
                 let workspaceMaintenance = pluginWorkspaceMaintenance
                 let queuedID = try await taskQueue.enqueue(.init(
@@ -38,7 +39,12 @@ extension AppModel {
                     title: "\(plugin.manifest.name): \(action.title)",
                     resourceKey: isVideoAnalysis ? Self.videoAnalyzerResourceKey : nil
                 ) { context in
-                    try await Self.withTaskWorkspace(
+                    let invocationCredentials = try Self.prepareInvocationCredentials(
+                        execution: plugin.manifest.execution,
+                        secrets: resolvedConfiguration.secrets,
+                        credentialResolver: credentialResolver
+                    )
+                    return try await Self.withTaskWorkspace(
                         execution: plugin.manifest.execution,
                         taskID: context.id,
                         currentLocation: currentLocation,
@@ -53,7 +59,7 @@ extension AppModel {
                             context: .init(activePane: paneID, currentLocation: currentLocation),
                             files: items.map(PluginInputFile.init(item:)),
                             config: resolvedConfiguration.config,
-                            secrets: resolvedConfiguration.secrets,
+                            secrets: invocationCredentials.references,
                             tempDirectory: workspace.tempDirectory.path,
                             outputDirectory: workspace.outputDirectory.path
                         )
@@ -62,7 +68,7 @@ extension AppModel {
                             manifest: plugin.manifest,
                             action: action,
                             input: input,
-                            environment: [:],
+                            environment: invocationCredentials.environment,
                             pluginDirectory: plugin.directory,
                             workingDirectory: plugin.directory,
                             onEvent: { event in
@@ -90,10 +96,17 @@ extension AppModel {
                                 result.stderr.isEmpty ? "Plugin exited with \(result.exitCode)" : result.stderr
                             )
                         }
-                        if let failure = result.events.last(where: { $0.isFailureResult }) {
-                            throw OpenFinderError.operationFailed(
-                                failure.resultMessage ?? "Plugin reported failure"
-                            )
+                        if let terminal = result.events.last(where: { $0.resultStatus != nil }) {
+                            switch terminal.resultStatus {
+                            case "failure":
+                                throw OpenFinderError.operationFailed(
+                                    terminal.resultMessage ?? "Plugin reported failure"
+                                )
+                            case "cancelled":
+                                throw CancellationError()
+                            default:
+                                break
+                            }
                         }
                         if isVideoAnalysis {
                             let durable = try await Self.persistVideoAnalysis(
@@ -125,6 +138,30 @@ extension AppModel {
                 statusMessage = error.localizedDescription
             }
         }
+    }
+
+    nonisolated private static func prepareInvocationCredentials(
+        execution: PluginExecution,
+        secrets: [String: PluginSecretReference],
+        credentialResolver: PluginCredentialResolver
+    ) throws -> (references: [String: PluginSecretReference], environment: [String: String]) {
+        guard case .process = execution else { return (secrets, [:]) }
+
+        var references: [String: PluginSecretReference] = [:]
+        var environment: [String: String] = [:]
+        for (index, pair) in secrets.sorted(by: { $0.key < $1.key }).enumerated() {
+            let (logicalKey, reference) = pair
+            guard let secret = try credentialResolver.secret(for: reference.env), !secret.isEmpty else {
+                throw OpenFinderError.missingSecret(logicalKey)
+            }
+            let suffix = logicalKey.uppercased().map { character in
+                character.isASCII && (character.isLetter || character.isNumber) ? character : "_"
+            }
+            let environmentKey = "OPENFINDER_SECRET_\(index)_\(String(suffix))"
+            references[logicalKey] = PluginSecretReference(env: environmentKey)
+            environment[environmentKey] = secret
+        }
+        return (references, environment)
     }
 
     nonisolated private static func workspace(

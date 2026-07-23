@@ -70,6 +70,42 @@ struct PluginSettingsView: View {
                         }
                     }
                 }
+
+                if !app.pluginLoadDiagnostics.isEmpty {
+                    settingsCard(title: "Plugin Diagnostics", systemImage: "exclamationmark.triangle") {
+                        VStack(spacing: 0) {
+                            ForEach(Array(app.pluginLoadDiagnostics.enumerated()), id: \.element.id) { index, diagnostic in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: "xmark.octagon.fill")
+                                        .foregroundStyle(.red)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(diagnostic.pluginDirectory.lastPathComponent)
+                                            .font(.body.weight(.medium))
+                                        Text(diagnostic.message)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                        Text("\(diagnostic.source.displayName) · \(diagnostic.pluginDirectory.path)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Button("Reveal") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([diagnostic.pluginDirectory])
+                                    }
+                                    .buttonStyle(.link)
+                                }
+                                .padding(.vertical, 10)
+                                if index < app.pluginLoadDiagnostics.count - 1 {
+                                    Divider()
+                                        .padding(.leading, 34)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
