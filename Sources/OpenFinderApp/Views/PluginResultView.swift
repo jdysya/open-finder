@@ -6,8 +6,7 @@ struct PluginResultView: View {
     let renderer: PluginRendererDescriptor
     let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
-    let onAction: @MainActor (PresentedPluginResultAction) async
-        -> PresentedPluginResultActionOutcome
+    let actionBridge: PresentedPluginResultActionBridge
     let onDismiss: () -> Void
 
     init(
@@ -15,17 +14,14 @@ struct PluginResultView: View {
         renderer: PluginRendererDescriptor,
         artifactURL: @escaping @Sendable (UUID) async -> URL? = { _ in nil },
         resolvedAssetURL: @escaping (ConfinedAssetReference) -> URL? = { _ in nil },
-        onAction: @escaping @MainActor (PresentedPluginResultAction) async
-            -> PresentedPluginResultActionOutcome = { _ in
-                .init(message: "", managedTagsByMedia: [:])
-            },
+        actionBridge: PresentedPluginResultActionBridge = .noAction,
         onDismiss: @escaping () -> Void
     ) {
         self.projection = projection
         self.renderer = renderer
         self.artifactURL = artifactURL
         self.resolvedAssetURL = resolvedAssetURL
-        self.onAction = onAction
+        self.actionBridge = actionBridge
         self.onDismiss = onDismiss
     }
 
@@ -38,7 +34,7 @@ struct PluginResultView: View {
                         document: document,
                         artifactURL: artifactURL,
                         resolvedAssetURL: resolvedAssetURL,
-                        onAction: onAction,
+                        actionBridge: actionBridge,
                         onDismiss: onDismiss
                     )
                 } else {

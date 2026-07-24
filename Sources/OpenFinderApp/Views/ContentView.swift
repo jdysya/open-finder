@@ -97,7 +97,7 @@ struct ContentView: View {
                     projection: projection,
                     renderer: app.renderer(for: projection),
                     artifactURL: { await app.resolvePresentedPluginResultArtifact($0) },
-                    onAction: { await app.performPresentedPluginResultAction($0) },
+                    actionBridge: app.presentedPluginResultActionBridge(),
                     onDismiss: { app.dismissPluginResult() }
                 )
             }

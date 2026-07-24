@@ -5,8 +5,7 @@ struct MediaAnalysisResultView: View {
     let document: MediaAnalysisDocument
     let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
-    let onAction: @MainActor (PresentedPluginResultAction) async
-        -> PresentedPluginResultActionOutcome
+    let actionBridge: PresentedPluginResultActionBridge
     let onDismiss: () -> Void
 
     @State private var selectedMediaID: String?
@@ -21,16 +20,13 @@ struct MediaAnalysisResultView: View {
         document: MediaAnalysisDocument,
         artifactURL: @escaping @Sendable (UUID) async -> URL? = { _ in nil },
         resolvedAssetURL: @escaping (ConfinedAssetReference) -> URL? = { _ in nil },
-        onAction: @escaping @MainActor (PresentedPluginResultAction) async
-            -> PresentedPluginResultActionOutcome = { _ in
-                .init(message: "", managedTagsByMedia: [:])
-            },
+        actionBridge: PresentedPluginResultActionBridge = .noAction,
         onDismiss: @escaping () -> Void
     ) {
         self.document = document
         self.artifactURL = artifactURL
         self.resolvedAssetURL = resolvedAssetURL
-        self.onAction = onAction
+        self.actionBridge = actionBridge
         self.onDismiss = onDismiss
         _selectedMediaID = State(initialValue: document.items.first?.media.stableID)
         _managedTagsByMedia = State(initialValue: Dictionary(
@@ -137,7 +133,7 @@ struct MediaAnalysisResultView: View {
             Button("应用 Finder 标签选择") {
                 Task {
                     isApplying = true
-                    let outcome = await onAction(.applyMediaAnalysisTags(
+                    let outcome = await actionBridge(.applyMediaAnalysisTags(
                         document: document,
                         selections: tagSelections,
                         managedTagsByMedia: managedTagsByMedia

@@ -71,7 +71,7 @@ final class ApplicationServices {
     let recoveryStore: (any TaskStore)?
     let databaseOpenError: (any Error)?
     let compositionResult: Result<AppDurableHandlerComposition, any Error>
-    private let fileSources: FileSourceRegistry
+    let fileSources: FileSourceRegistry
 
     init(dependencies: ApplicationServiceDependencies = .init()) {
         let remoteDirectory = dependencies.remoteDirectory ?? RemoteAccountDirectory(
@@ -210,95 +210,4 @@ final class ApplicationServices {
         }
     }
 
-    func makeBrowserPanes() -> (left: BrowserPaneModel, right: BrowserPaneModel) {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let providerRegistry = accountService.providerRegistry
-        let resolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider = {
-            location in
-            try await providerRegistry.resolve(
-                accountID: location.accountID.uuidString,
-                revision: location.connectorID.rawValue
-            )
-        }
-        return (
-            BrowserPaneModel(
-                id: .left,
-                location: .local(path: home.path),
-                remoteProviderResolver: resolver,
-                fileSourceRegistry: fileSources,
-                fileBrowserService: browserService
-            ),
-            BrowserPaneModel(
-                id: .right,
-                location: .local(
-                    path: home.appendingPathComponent("Downloads", isDirectory: true).path
-                ),
-                remoteProviderResolver: resolver,
-                fileSourceRegistry: fileSources,
-                fileBrowserService: browserService
-            )
-        )
-    }
-
-    nonisolated static func applicationSupportDirectory() -> URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-        return base.appendingPathComponent("OpenFinder", isDirectory: true)
-    }
-}
-
-private extension ApplicationServices {
-    static func taskRegistrations(
-        pluginResolver: AppPluginTaskResolver,
-        credentialResolver: PluginCredentialResolver,
-        coordinator: PluginExecutionCoordinator,
-        projections: PluginResultProjectionBox,
-        fileSources: FileSourceRegistry,
-        transferCoordinator: TransferCoordinator
-    ) -> [AppDurableHandlerComposition.TaskRegistration] {
-        [
-            .init(
-                handler: PluginExecuteTaskHandler(
-                    pluginResolver: PluginTaskPluginResolver { pluginID, pluginVersion in
-                        try await pluginResolver.resolve(
-                            pluginID: pluginID,
-                            pluginVersion: pluginVersion
-                        )
-                    },
-                    credentialResolver: credentialResolver,
-                    coordinator: coordinator,
-                    publish: { taskID, projection in
-                        await projections.store(projection, for: taskID)
-                    },
-                    cleanupWarning: { events in
-                        _ = await events.appendLog(
-                            PluginWorkspaceMaintenance.cleanupWarning,
-                            level: "warning"
-                        )
-                    }
-                ).taskHandler,
-                dependencies: [
-                    .pluginResolver,
-                    .credentialResolver,
-                    .pluginExecutionCoordinator,
-                ]
-            ),
-            .init(
-                handler: TransferCopyTaskHandler(
-                    fileSources: fileSources,
-                    coordinator: transferCoordinator
-                ).taskHandler,
-                dependencies: [.fileSourceRegistry, .transferCoordinator]
-            ),
-            .init(
-                handler: TransferMoveTaskHandler(
-                    fileSources: fileSources,
-                    coordinator: transferCoordinator
-                ).taskHandler,
-                dependencies: [.fileSourceRegistry, .transferCoordinator]
-            ),
-        ]
-    }
 }

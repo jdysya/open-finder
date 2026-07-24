@@ -28,6 +28,15 @@ extension AppModel {
         await services.perform(action)
     }
 
+    func presentedPluginResultActionBridge() -> PresentedPluginResultActionBridge {
+        .init(action: { [weak self] action in
+            guard let self else {
+                return .init(message: "", managedTagsByMedia: [:])
+            }
+            return await self.performPresentedPluginResultAction(action)
+        })
+    }
+
     func runPlugin(
         _ plugin: LoadedPlugin,
         action: PluginActionManifest,

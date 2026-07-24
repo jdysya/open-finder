@@ -34,7 +34,7 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
         XCTAssertEqual(app.rightPane.id, .right)
         XCTAssertTrue(app.activeBrowser === app.leftPane)
 
-        let actionOutcome = await app.performPresentedPluginResultAction(
+        let actionOutcome = await app.presentedPluginResultActionBridge()(
             .applyMediaAnalysisTags(
                 document: .init(
                     documentID: UUID(),
