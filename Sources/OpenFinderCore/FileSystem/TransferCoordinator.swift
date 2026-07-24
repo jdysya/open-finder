@@ -46,6 +46,7 @@ public struct TransferRequest: Codable, Hashable, Sendable {
     public let source: Location
     public let destination: Location
     public let overwrite: TransferOverwritePolicy
+    public let destinationSnapshots: [TransferEntrySnapshot?]
 
     public init(
         taskID: TaskID,
@@ -53,7 +54,8 @@ public struct TransferRequest: Codable, Hashable, Sendable {
         entries: [TransferEntrySnapshot],
         source: Location,
         destination: Location,
-        overwrite: TransferOverwritePolicy
+        overwrite: TransferOverwritePolicy,
+        destinationSnapshots: [TransferEntrySnapshot?]? = nil
     ) {
         self.taskID = taskID
         self.operation = operation
@@ -61,6 +63,8 @@ public struct TransferRequest: Codable, Hashable, Sendable {
         self.source = source
         self.destination = destination
         self.overwrite = overwrite
+        self.destinationSnapshots = destinationSnapshots
+            ?? Array(repeating: nil, count: entries.count)
     }
 }
 
@@ -229,6 +233,7 @@ public actor TransferCoordinator {
     }
 
     public typealias Progress = @Sendable (TaskProgressSnapshot) async -> Void
+    public typealias BeforeEffects = @Sendable () async throws -> Void
 
     private struct Attempt: Sendable {
         let request: TransferRequest
@@ -264,6 +269,7 @@ public actor TransferCoordinator {
         _ request: TransferRequest,
         operations: TransferFileOperations,
         progress: Progress? = nil,
+        beforeEffects: BeforeEffects? = nil,
         faultPoint: FaultPoint? = nil
     ) async throws {
         guard !runningTasks.contains(request.taskID) else {
@@ -284,9 +290,16 @@ public actor TransferCoordinator {
         if let existing = attempts[request.taskID], existing.request != request {
             throw intervention(for: request.entries.first, request: request, reason: .requestChanged)
         }
+        guard request.destinationSnapshots.count == request.entries.count else {
+            throw intervention(
+                for: request.entries.first,
+                request: request,
+                reason: .requestChanged
+            )
+        }
         let completed = attempts[request.taskID]?.completedItemIDs ?? []
 
-        for entry in request.entries {
+        for (index, entry) in request.entries.enumerated() {
             try Task.checkCancellation()
             try validate(entry: entry, belongsTo: sourceID, request: request)
             let current = try await operations.sourceSnapshot(for: entry)
@@ -311,16 +324,37 @@ public actor TransferCoordinator {
             guard entry.matches(current) else {
                 throw intervention(for: entry, request: request, reason: .sourceChanged)
             }
-            if let destination, request.overwrite == .rejectExisting {
-                let reason: TransferInterventionReason =
-                    request.operation == .copy && entry.contentMatches(destination)
-                    ? .alreadyCopied
-                    : .destinationConflict
-                throw intervention(for: entry, request: request, reason: reason)
+            if request.overwrite == .rejectExisting {
+                if let destination {
+                    let reason: TransferInterventionReason =
+                        request.operation == .copy && entry.contentMatches(destination)
+                        ? .alreadyCopied
+                        : .destinationConflict
+                    throw intervention(for: entry, request: request, reason: reason)
+                }
+            } else {
+                let expected = request.destinationSnapshots[index]
+                let destinationMatches: Bool
+                switch (expected, destination) {
+                case (nil, nil):
+                    destinationMatches = true
+                case (.some(let expected), .some(let destination)):
+                    destinationMatches = expected.matches(destination)
+                case (.none, .some), (.some, .none):
+                    destinationMatches = false
+                }
+                guard destinationMatches else {
+                    throw intervention(
+                        for: entry,
+                        request: request,
+                        reason: .destinationConflict
+                    )
+                }
             }
         }
 
         attempts[request.taskID] = Attempt(request: request, completedItemIDs: completed)
+        try await beforeEffects?()
         for (index, entry) in request.entries.enumerated() {
             try Task.checkCancellation()
             let ordinal = index + 1
