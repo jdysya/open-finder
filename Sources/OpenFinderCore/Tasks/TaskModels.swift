@@ -67,6 +67,20 @@ public enum TaskStatus: String, Codable, Hashable, Sendable {
     }
 }
 
+public struct PersistedTaskRecoverySnapshot: Codable, Hashable, Sendable {
+    public let status: TaskStatus
+    public let startedAt: Date?
+
+    public init(status: TaskStatus, startedAt: Date?) {
+        self.status = status
+        self.startedAt = startedAt
+    }
+
+    var isQueuedAndNeverStarted: Bool {
+        status == .queued && startedAt == nil
+    }
+}
+
 public enum TaskStatusReasonCode: String, Codable, Hashable, Sendable {
     case recoveryInterrupted
     case unknownHandler

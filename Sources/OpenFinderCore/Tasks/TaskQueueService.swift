@@ -114,6 +114,21 @@ public actor TaskQueueService {
         descriptorData: Data,
         fallbackID: UUID = UUID()
     ) async throws -> UUID {
+        try await recoverPersistedTask(
+            request,
+            descriptorData: descriptorData,
+            persisted: PersistedTaskRecoverySnapshot(status: .queued, startedAt: nil),
+            fallbackID: fallbackID
+        )
+    }
+
+    @discardableResult
+    public func recoverPersistedTask(
+        _ request: TaskRequest,
+        descriptorData: Data,
+        persisted: PersistedTaskRecoverySnapshot,
+        fallbackID: UUID = UUID()
+    ) async throws -> UUID {
         let descriptor: TaskDescriptorEnvelope
         do {
             descriptor = try JSONDecoder().decode(TaskDescriptorEnvelope.self, from: descriptorData)
@@ -134,14 +149,31 @@ public actor TaskQueueService {
             )
             return fallbackID
         }
-        return try await enqueue(TaskRequest(
+        let recoveredRequest = TaskRequest(
             kind: request.kind,
             title: request.title,
             inputSummary: request.inputSummary,
             resourceKey: request.resourceKey,
             descriptor: descriptor,
             operation: request.operation
-        ))
+        )
+        guard !persisted.isQueuedAndNeverStarted else {
+            return try await enqueue(recoveredRequest)
+        }
+
+        requests[descriptor.taskID] = recoveredRequest
+        var record = TaskRecord(
+            id: descriptor.taskID,
+            kind: request.kind,
+            title: request.title,
+            startedAt: persisted.startedAt,
+            inputSummary: request.inputSummary,
+            descriptor: descriptor
+        )
+        record.markInterrupted()
+        records[descriptor.taskID] = record
+        logStorage[descriptor.taskID] = []
+        return descriptor.taskID
     }
 
     public func record(for id: UUID) -> TaskRecord? { records[id] }
