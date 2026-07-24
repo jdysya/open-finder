@@ -30,9 +30,11 @@ struct OpenFinderCommands: Commands {
                 .keyboardShortcut(".", modifiers: [.command, .shift])
         }
         CommandMenu("Actions") {
-            Button("Copy to Other Pane") { app.copySelectionToOtherPane(move: false) }
+            Button("Copy to Other Pane") { app.performTransferAction(.copy) }
+                .disabled(app.transferActionPresentationState(for: .copy) != .enabled)
                 .keyboardShortcut("c", modifiers: [.command, .option])
-            Button("Move to Other Pane") { app.copySelectionToOtherPane(move: true) }
+            Button("Move to Other Pane") { app.performTransferAction(.move) }
+                .disabled(app.transferActionPresentationState(for: .move) != .enabled)
                 .keyboardShortcut("v", modifiers: [.command, .option])
             Button("Reveal in Finder") { app.revealSelectedInFinder() }
             Button("Open in Terminal") { app.openSelectedInTerminal() }

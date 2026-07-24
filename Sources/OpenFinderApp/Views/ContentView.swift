@@ -67,9 +67,11 @@ struct ContentView: View {
                     .help("New File")
                 Button { app.activeBrowser.createFolder() } label: { Image(systemName: "folder.badge.plus") }
                     .help("New Folder")
-                Button { app.copySelectionToOtherPane(move: false) } label: { Image(systemName: "doc.on.doc") }
+                Button { app.performTransferAction(.copy) } label: { Image(systemName: "doc.on.doc") }
+                    .disabled(app.transferActionPresentationState(for: .copy) != .enabled)
                     .help("Copy selected items to the other pane")
-                Button { app.copySelectionToOtherPane(move: true) } label: { Image(systemName: "arrow.right.doc.on.clipboard") }
+                Button { app.performTransferAction(.move) } label: { Image(systemName: "arrow.right.doc.on.clipboard") }
+                    .disabled(app.transferActionPresentationState(for: .move) != .enabled)
                     .help("Move selected items to the other pane")
                 Divider()
                 Button { app.activeBrowser.toggleHidden() } label: { Image(systemName: app.activeBrowser.showHiddenFiles ? "eye.slash" : "eye") }

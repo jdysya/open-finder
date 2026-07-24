@@ -103,27 +103,35 @@ final class BrowserPaneCapabilityActionTests: XCTestCase {
         print("FORGED_ACTION uiReason=\(expected) adapterReason=\(expected) executed=false")
     }
 
-    func testLocalTransferMenuActionsRemainEnabled() throws {
-        let item = makeItem(
-            sourceID: .local,
-            writable: true,
-            supportsTags: true,
-            scopes: [.local]
-        )
-        let adapter = BrowserPaneFileOperationAdapter(
-            location: item.location.fileLocation,
-            listingCapabilities: .init(
-                source: .init(sourceID: .local),
-                isReadable: true,
-                isWritable: true,
-                supportsTags: true
+    func testSupportedSourceTransferMenuActionsRemainEnabled() throws {
+        let sources: [(String, FileSourceID, Bool)] = [
+            ("local", .local, true),
+            ("webdav", .remote(accountID: UUID(), connectorID: .webDAV), false),
+            ("kodbox", .remote(accountID: UUID(), connectorID: .kodbox), true)
+        ]
+
+        for (name, sourceID, supportsTags) in sources {
+            let item = makeItem(
+                sourceID: sourceID,
+                writable: true,
+                supportsTags: supportsTags,
+                scopes: supportsTags ? [.local] : []
             )
-        )
+            let adapter = BrowserPaneFileOperationAdapter(
+                location: item.location.fileLocation,
+                listingCapabilities: .init(
+                    source: .init(sourceID: sourceID),
+                    isReadable: true,
+                    isWritable: true,
+                    supportsTags: supportsTags
+                )
+            )
 
-        let menu = try XCTUnwrap(makeMenu(item: item, adapter: adapter))
+            let menu = try XCTUnwrap(makeMenu(item: item, adapter: adapter))
 
-        XCTAssertEqual(menu.item(withTitle: "Copy to Other Pane")?.isEnabled, true)
-        XCTAssertEqual(menu.item(withTitle: "Move to Other Pane")?.isEnabled, true)
+            XCTAssertEqual(menu.item(withTitle: "Copy to Other Pane")?.isEnabled, true, name)
+            XCTAssertEqual(menu.item(withTitle: "Move to Other Pane")?.isEnabled, true, name)
+        }
     }
 
     func testSelectedLegacyRcloneDisablesTransferMenuActions() throws {
@@ -168,6 +176,65 @@ final class BrowserPaneCapabilityActionTests: XCTestCase {
                 .rejected(expected),
                 operation.rawValue
             )
+        }
+    }
+
+    func testSelectedLegacyRcloneTransferActionIsDisabledAndRejectedAtAppBoundary() throws {
+        let remoteID = UUID(uuidString: "00000000-0000-0000-0000-0000000000AB")!
+        let item = FileItem(
+            id: "legacy-rclone-transfer-item",
+            name: "report.txt",
+            location: .rclone(remoteID: remoteID, path: "/report.txt"),
+            kind: .file,
+            size: 1,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let app = AppModel(startAutomatically: false)
+        app.leftPane.location = .rclone(remoteID: remoteID, path: "/")
+        app.leftPane.items = [item]
+        app.leftPane.selection = [item.id]
+        let expected = FileCapabilityUnsupportedReason.legacyRclone(remoteID: remoteID)
+
+        XCTAssertEqual(
+            app.transferActionPresentationState(for: .copy),
+            .disabled(expected)
+        )
+
+        app.performTransferAction(.copy)
+
+        XCTAssertEqual(app.statusMessage, expected.localizedDescription)
+        XCTAssertNil(app.pendingTransferOverwrite)
+        XCTAssertTrue(app.taskRecords.isEmpty)
+    }
+
+    func testSupportedSourceTransferActionPresentationsRemainEnabled() {
+        let sources: [(FileSourceID, Bool)] = [
+            (.local, true),
+            (.remote(accountID: UUID(), connectorID: .webDAV), false),
+            (.remote(accountID: UUID(), connectorID: .kodbox), true)
+        ]
+
+        for (sourceID, supportsTags) in sources {
+            let item = makeItem(
+                sourceID: sourceID,
+                writable: true,
+                supportsTags: supportsTags,
+                scopes: supportsTags ? [.local] : []
+            )
+            let app = AppModel(startAutomatically: false)
+            app.leftPane.location = item.location
+            app.leftPane.items = [item]
+            app.leftPane.selection = [item.id]
+
+            XCTAssertEqual(app.transferActionPresentationState(for: .copy), .enabled)
+            XCTAssertEqual(app.transferActionPresentationState(for: .move), .enabled)
         }
     }
 

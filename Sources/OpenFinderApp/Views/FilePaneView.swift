@@ -215,12 +215,7 @@ struct FilePaneView: View {
     }
 
     private func performTransfer(move: Bool, items: [FileItem]) {
-        do {
-            try pane.requireCapability(.open, items: items)
-            app.copySelectionToOtherPane(move: move)
-        } catch {
-            pane.errorMessage = error.localizedDescription
-        }
+        app.performTransferAction(move ? .move : .copy)
     }
 
     private func actionPresentation(
