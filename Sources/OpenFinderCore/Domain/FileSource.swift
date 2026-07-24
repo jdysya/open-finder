@@ -280,10 +280,23 @@ public struct FileRelationalCapabilities: Codable, Hashable, Sendable {
         guard sourceSupport.isSupported else { return sourceSupport }
         let destinationSupport = FileSourceCapabilities(sourceID: destination)[.create]
         guard destinationSupport.isSupported else { return destinationSupport }
-        guard source == destination else { return .unsupported(.crossSource) }
-        if overwriteExisting, destination.isRemote {
-            return .unsupported(.remoteOverwrite)
+        switch (source, destination) {
+        case (.local, .local), (.remote, .local):
+            return .supported
+        case (.local, .remote):
+            return overwriteExisting
+                ? .unsupported(.remoteOverwrite)
+                : .supported
+        case (.remote(let sourceAccount, let sourceConnector),
+              .remote(let destinationAccount, let destinationConnector)):
+            guard sourceAccount == destinationAccount,
+                  sourceConnector == destinationConnector
+            else {
+                return .unsupported(.crossSource)
+            }
+            return overwriteExisting
+                ? .unsupported(.remoteOverwrite)
+                : .supported
         }
-        return .supported
     }
 }

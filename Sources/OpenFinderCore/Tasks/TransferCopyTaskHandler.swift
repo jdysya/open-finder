@@ -20,7 +20,10 @@ public struct TransferCopyTaskHandler: Sendable {
             descriptor,
             events in
             let envelope = try TransferTaskEnvelope.decode(from: descriptor)
-            let operations = try await fileSources.rebuildTransferOperations(for: envelope)
+            let operations = try await fileSources.rebuildTransferOperations(
+                for: envelope,
+                requestID: descriptor.taskID
+            )
             let request = TransferRequest(
                 taskID: descriptor.taskID,
                 operation: .copy,

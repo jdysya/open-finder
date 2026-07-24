@@ -1,6 +1,30 @@
 import Foundation
 
 extension TransferRegistryIO {
+    static func publishMaterializedFile(
+        _ materializedURL: URL,
+        named name: String,
+        to destination: URL,
+        overwrite: TransferOverwritePolicy
+    ) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: destination.path) else {
+            try fileManager.copyItem(at: materializedURL, to: destination)
+            return
+        }
+        guard overwrite == .replaceExisting else {
+            throw OpenFinderError.operationFailed(
+                "Local destination already contains: \(name)"
+            )
+        }
+        let staged = destination.deletingLastPathComponent()
+            .appendingPathComponent(".openfinder-transfer-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: staged) }
+        try fileManager.copyItem(at: materializedURL, to: staged)
+        try fileManager.removeItem(at: destination)
+        try fileManager.moveItem(at: staged, to: destination)
+    }
+
     static func upload(
         _ localURL: URL,
         to parent: RemotePath,

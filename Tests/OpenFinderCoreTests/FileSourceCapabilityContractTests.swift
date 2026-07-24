@@ -32,7 +32,9 @@ final class FileSourceCapabilityContractTests: XCTestCase {
                     )
                     for capability in [FileCapability.copy, .move] {
                         let expected: FileCapabilitySupport
-                        if source.id != destination.id {
+                        if source.id.isRemote,
+                           destination.id.isRemote,
+                           source.id != destination.id {
                             expected = .unsupported(.crossSource)
                         } else if overwriteExisting && destination.id.isRemote {
                             expected = .unsupported(.remoteOverwrite)

@@ -182,7 +182,8 @@ public actor FileSourceRegistry {
 
     public func materialize(
         _ location: Location,
-        revision: String = "0"
+        revision: String = "0",
+        requestID: UUID = UUID()
     ) async throws -> MaterializationLease {
         let resolved = try await resolve(location, revision: revision)
         guard resolved.capabilities[.materialize].isSupported else {
@@ -203,7 +204,8 @@ public actor FileSourceRegistry {
             return try await materializationService.materialize(
                 .init(
                     sourceID: resolved.location.sourceID,
-                    path: resolved.location.path
+                    path: resolved.location.path,
+                    requestID: requestID
                 ),
                 provider: adapter.provider
             )

@@ -250,19 +250,11 @@ public actor TransferCoordinator {
         to destination: FileSourceID,
         overwrite: TransferOverwritePolicy
     ) -> FileCapabilitySupport {
-        if overwrite == .replaceExisting, destination.isRemote {
-            return .unsupported(.remoteOverwrite)
-        }
-        switch (source, destination) {
-        case (.local, _), (_, .local):
-            return .supported
-        case (.remote(let sourceAccount, let sourceConnector),
-              .remote(let destinationAccount, let destinationConnector)):
-            return sourceAccount == destinationAccount
-                && sourceConnector == destinationConnector
-                ? .supported
-                : .unsupported(.crossSource)
-        }
+        FileRelationalCapabilities(
+            source: source,
+            destination: destination,
+            overwriteExisting: overwrite == .replaceExisting
+        ).copy
     }
 
     public func execute(
@@ -280,11 +272,12 @@ public actor TransferCoordinator {
 
         let sourceID = try resolvedSourceID(for: request.source)
         let destinationID = try resolvedSourceID(for: request.destination)
-        let support = Self.support(
-            from: sourceID,
-            to: destinationID,
-            overwrite: request.overwrite
+        let relation = FileRelationalCapabilities(
+            source: sourceID,
+            destination: destinationID,
+            overwriteExisting: request.overwrite == .replaceExisting
         )
+        let support = request.operation == .copy ? relation.copy : relation.move
         if case .unsupported(let reason) = support { throw reason }
 
         if let existing = attempts[request.taskID], existing.request != request {

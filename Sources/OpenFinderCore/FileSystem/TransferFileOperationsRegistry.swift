@@ -32,7 +32,8 @@ public extension FileSourceRegistry {
     }
 
     func rebuildTransferOperations(
-        for envelope: TransferTaskEnvelope
+        for envelope: TransferTaskEnvelope,
+        requestID: UUID = UUID()
     ) async throws -> TransferFileOperations {
         let source = try await resolve(
             envelope.source,
@@ -61,7 +62,14 @@ public extension FileSourceRegistry {
                     entry: entry,
                     source: source,
                     destination: destination,
-                    overwrite: overwrite
+                    overwrite: overwrite,
+                    materialize: {
+                        try await self.materialize(
+                            $0,
+                            revision: envelope.sourceRevision,
+                            requestID: requestID
+                        )
+                    }
                 )
             }
         )
@@ -131,8 +139,18 @@ enum TransferRegistryIO {
         entry: TransferEntrySnapshot,
         source: ResolvedFileSource,
         destination: ResolvedFileSource,
-        overwrite: TransferOverwritePolicy
+        overwrite: TransferOverwritePolicy,
+        materialize: @Sendable (Location) async throws -> MaterializationLease
     ) async throws {
+        let capability: FileCapability = operation == .copy ? .copy : .move
+        let support = FileRelationalCapabilities(
+            source: source.location.sourceID,
+            destination: destination.location.sourceID,
+            overwriteExisting: overwrite == .replaceExisting
+        )[capability]
+        if case .unsupported(let reason) = support {
+            throw reason
+        }
         switch (source.adapter, destination.adapter) {
         case (.local(let localSource), .local):
             if operation == .copy {
@@ -169,14 +187,25 @@ enum TransferRegistryIO {
                 named: entry.name,
                 isDirectory: entry.item.isDirectory
             )
-            try await download(
-                remotePath,
-                kind: entry.kind,
-                named: entry.name,
-                to: target,
-                remote: remoteSource.provider,
-                overwrite: overwrite
-            )
+            if entry.kind == .directory || entry.kind == .package {
+                try await download(
+                    remotePath,
+                    kind: entry.kind,
+                    named: entry.name,
+                    to: target,
+                    remote: remoteSource.provider,
+                    overwrite: overwrite
+                )
+            } else {
+                let lease = try await materialize(entry.location)
+                defer { try? lease.release() }
+                try publishMaterializedFile(
+                    lease.url,
+                    named: entry.name,
+                    to: target,
+                    overwrite: overwrite
+                )
+            }
             if operation == .move {
                 try await remoteSource.provider.delete(item: remotePath)
             }
