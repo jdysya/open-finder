@@ -210,6 +210,66 @@ final class GRDBTaskStoreTests: XCTestCase {
         XCTAssertEqual(executionCount, 1)
     }
 
+    func testShadowStoreCannotBecomeDurableReader() async throws {
+        let url = makeDatabaseURL()
+        defer { removeDatabase(at: url) }
+        let store = GRDBTaskStore(
+            database: try AppDatabase(url: url),
+            mode: .shadowWrite
+        )
+
+        do {
+            _ = try await store.loadPersistedTasks()
+            XCTFail("Expected the shadow store to reject durable reads")
+        } catch {
+            XCTAssertEqual(
+                error as? GRDBTaskStoreError,
+                .durableReadUnavailable
+            )
+        }
+    }
+
+    func testStartupInterruptsRunningAndCancellingInOneRecoveryStep() async throws {
+        let url = makeDatabaseURL()
+        defer { removeDatabase(at: url) }
+        let store = GRDBTaskStore(
+            database: try AppDatabase(url: url),
+            mode: .durable
+        )
+        for (ordinal, status) in [(61, TaskStatus.running), (62, .cancelling)] {
+            let taskID = UUID()
+            let descriptor = TaskDescriptorEnvelope(
+                taskID: taskID,
+                handlerID: DurableTaskHandlerID.transferMove.rawValue,
+                payloadVersion: 1,
+                resourceKey: "fixture:move",
+                lineage: .init(rootTaskID: taskID),
+                queueOrdinal: UInt64(ordinal)
+            )
+            try await store.enqueue(
+                descriptor: descriptor,
+                record: TaskRecord(
+                    id: taskID,
+                    kind: .localMove,
+                    title: "Active move \(ordinal)",
+                    status: status,
+                    startedAt: Date(),
+                    descriptor: descriptor
+                )
+            )
+        }
+
+        try await store.interruptActiveTasks()
+        let recovered = try await store.loadPersistedTasks()
+
+        XCTAssertEqual(recovered.map(\.record.status), [.interrupted, .interrupted])
+        XCTAssertEqual(
+            recovered.map(\.record.reasonCode),
+            [.recoveryInterrupted, .recoveryInterrupted]
+        )
+        XCTAssertTrue(recovered.allSatisfy { $0.record.finishedAt != nil })
+    }
+
     private func makeDatabaseURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("GRDBTaskStoreTests-\(UUID().uuidString).sqlite")

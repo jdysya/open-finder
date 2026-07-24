@@ -48,6 +48,8 @@ final class AppModel: ObservableObject {
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     let pluginTaskResolver: AppPluginTaskResolver
     let pluginResultProjections: PluginResultProjectionBox
+    let recoveryTaskStore: (any TaskStore)?
+    let taskDatabaseOpenError: (any Error)?
     var durableReadinessTask: Task<Result<Void, any Error>, Never>?
     var taskPollingTask: Task<Void, Never>?
     var didLoadInitialState = false
@@ -60,6 +62,7 @@ final class AppModel: ObservableObject {
         remoteConnectorRegistry: RemoteConnectorRegistry = .builtIn,
         remoteProviderRegistry: RemoteProviderRegistry? = nil,
         taskQueue: TaskQueueService? = nil,
+        taskDatabaseURL: URL? = nil,
         videoAnalysisStore: VideoAnalysisResultStore? = nil,
         pluginRunnerRouter: PluginRunnerRouter? = nil,
         pluginConnectionChecker: (any PluginConnectionChecking)? = nil,
@@ -82,7 +85,28 @@ final class AppModel: ObservableObject {
         let localPluginCredentialStore = localPluginCredentialStore ?? LocalPluginCredentialStore()
         self.remoteDirectory = remoteDirectory
         self.remoteConnectorRegistry = remoteConnectorRegistry
-        let configuredTaskQueue = taskQueue ?? TaskQueueService(maxConcurrentTasks: 2)
+        var openedTaskStore: (any TaskStore)?
+        var taskDatabaseOpenError: (any Error)?
+        if let taskDatabaseURL {
+            do {
+                try FileManager.default.createDirectory(
+                    at: taskDatabaseURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                openedTaskStore = GRDBTaskStore(
+                    database: try AppDatabase(url: taskDatabaseURL),
+                    mode: .durable
+                )
+            } catch {
+                taskDatabaseOpenError = error
+            }
+        }
+        recoveryTaskStore = openedTaskStore
+        self.taskDatabaseOpenError = taskDatabaseOpenError
+        let configuredTaskQueue = taskQueue ?? TaskQueueService(
+            maxConcurrentTasks: 2,
+            store: openedTaskStore
+        )
         self.taskQueue = configuredTaskQueue
         let configurationService = RuntimeConfigurationService(
             store: configurationStore,
@@ -216,28 +240,41 @@ final class AppModel: ObservableObject {
                 rendererEntries: pluginRendererEntries
             )
         }
-        durableReadinessTask = Task {
+        durableReadinessTask = Task { [weak self] in
+            guard let self else {
+                return .failure(CancellationError())
+            }
             do {
+                if let taskDatabaseOpenError = self.taskDatabaseOpenError {
+                    throw taskDatabaseOpenError
+                }
                 let composition = try compositionResult.get()
                 let registry = try await composition.makeTaskHandlerRegistry()
                 try await configuredTaskQueue.installHandlerRegistry(registry)
+                if let store = self.recoveryTaskStore {
+                    try await store.interruptActiveTasks(at: Date())
+                    let persistedTasks = try await store.loadPersistedTasks()
+                    try await configuredTaskQueue.restorePersistedHistory(persistedTasks)
+                }
+                await self.refreshTasks()
+                if startAutomatically {
+                    await self.loadInitialState()
+                    await self.pluginTaskResolver.register(self.loadedPlugins)
+                }
+                await configuredTaskQueue.resumeRecoveredTasks()
+                self.durableHandlerReadiness = .ready
+                if startAutomatically {
+                    self.startTaskPolling()
+                }
                 return .success(())
             } catch {
+                self.durableHandlerReadiness = .unavailable(error.localizedDescription)
+                if startAutomatically {
+                    await self.loadInitialState()
+                    self.startTaskPolling()
+                }
                 return .failure(error)
             }
-        }
-        Task { [weak self] in
-            guard let result = await self?.durableReadinessTask?.value else { return }
-            switch result {
-            case .success:
-                self?.durableHandlerReadiness = .ready
-            case .failure(let error):
-                self?.durableHandlerReadiness = .unavailable(error.localizedDescription)
-            }
-        }
-        if startAutomatically {
-            Task { await loadInitialState() }
-            startTaskPolling()
         }
     }
 

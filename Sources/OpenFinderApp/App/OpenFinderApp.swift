@@ -11,7 +11,10 @@ final class OpenFinderAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct OpenFinderApp: App {
     @NSApplicationDelegateAdaptor(OpenFinderAppDelegate.self) private var appDelegate
-    @StateObject private var appModel = AppModel()
+    @StateObject private var appModel = AppModel(
+        taskDatabaseURL: AppModel.applicationSupportDirectory()
+            .appendingPathComponent("tasks.sqlite")
+    )
 
     var body: some Scene {
         WindowGroup("OpenFinder", id: "main") {

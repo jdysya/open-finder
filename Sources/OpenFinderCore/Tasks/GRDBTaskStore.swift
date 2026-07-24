@@ -9,6 +9,8 @@ public enum TaskStoreMode: Sendable {
 public enum GRDBTaskStoreError: Error, Equatable {
     case descriptorRecordMismatch
     case queueOrdinalOutOfRange
+    case durableReadUnavailable
+    case malformedPersistedTask
 }
 
 public final class GRDBTaskStore: TaskStore, Sendable {
@@ -162,6 +164,52 @@ public final class GRDBTaskStore: TaskStore, Sendable {
         }
     }
 
+    public func interruptActiveTasks(at date: Date = Date()) async throws {
+        try requireDurableRead()
+        try await databasePool.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE task_records
+                    SET status = ?, status_reason = ?,
+                        finished_at = MAX(created_at, ?)
+                    WHERE status IN (?, ?)
+                    """,
+                arguments: [
+                    TaskStatus.interrupted.rawValue,
+                    TaskStatusReasonCode.recoveryInterrupted.rawValue,
+                    date.timeIntervalSince1970,
+                    TaskStatus.running.rawValue,
+                    TaskStatus.cancelling.rawValue,
+                ]
+            )
+        }
+    }
+
+    public func loadPersistedTasks() async throws -> [PersistedTaskState] {
+        try requireDurableRead()
+        return try await databasePool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT
+                        d.task_id, d.handler_id, d.payload_version, d.redacted_payload,
+                        d.root_task_id, d.parent_task_id, d.attempt, d.resource_key,
+                        d.idempotency_key, d.queue_ordinal,
+                        r.kind_payload, r.title, r.status, r.status_reason, r.progress,
+                        r.progress_detail, r.created_at, r.started_at, r.finished_at,
+                        r.input_summary, r.result_summary, r.error_message,
+                        r.log_file_path, r.retry_count, r.clipboard_text
+                    FROM task_descriptors d
+                    JOIN task_records r ON r.task_id = d.task_id
+                    ORDER BY d.queue_ordinal
+                    """
+            )
+            return try rows.map { row in
+                try Self.decodePersistedTask(row, db: db)
+            }
+        }
+    }
+
     public func link(artifactID: UUID, to taskID: UUID, ordinal: Int) async throws {
         try await write { db in
             try db.execute(
@@ -187,5 +235,109 @@ public final class GRDBTaskStore: TaskStore, Sendable {
         } catch {
             guard mode == .shadowWrite else { throw error }
         }
+    }
+
+    private func requireDurableRead() throws {
+        guard mode == .durable else {
+            throw GRDBTaskStoreError.durableReadUnavailable
+        }
+    }
+
+    private static func decodePersistedTask(
+        _ row: Row,
+        db: Database
+    ) throws -> PersistedTaskState {
+        guard
+            let taskID = UUID(uuidString: row["task_id"]),
+            let rootTaskID = UUID(uuidString: row["root_task_id"]),
+            let status = TaskStatus(rawValue: row["status"]),
+            let queueOrdinal = UInt64(exactly: row["queue_ordinal"] as Int64)
+        else {
+            throw GRDBTaskStoreError.malformedPersistedTask
+        }
+        let parentTaskID: UUID?
+        if let parent: String = row["parent_task_id"] {
+            guard let decoded = UUID(uuidString: parent) else {
+                throw GRDBTaskStoreError.malformedPersistedTask
+            }
+            parentTaskID = decoded
+        } else {
+            parentTaskID = nil
+        }
+        let redactedPayloadData: Data = row["redacted_payload"]
+        let kindPayload: Data = row["kind_payload"]
+        let progressDetailData: Data? = row["progress_detail"]
+        let descriptor = TaskDescriptorEnvelope(
+            taskID: taskID,
+            handlerID: row["handler_id"],
+            payloadVersion: row["payload_version"],
+            resourceKey: row["resource_key"],
+            idempotencyKey: row["idempotency_key"],
+            lineage: .init(
+                rootTaskID: rootTaskID,
+                parentTaskID: parentTaskID,
+                attempt: row["attempt"]
+            ),
+            queueOrdinal: queueOrdinal,
+            redactedPayload: try JSONDecoder().decode(
+                [String: String].self,
+                from: redactedPayloadData
+            )
+        )
+        let reasonRaw: String? = row["status_reason"]
+        let record = TaskRecord(
+            id: taskID,
+            kind: try JSONDecoder().decode(TaskKind.self, from: kindPayload),
+            title: row["title"],
+            status: status,
+            progress: row["progress"],
+            progressDetail: try progressDetailData.map {
+                try JSONDecoder().decode(TaskProgressSnapshot.self, from: $0)
+            },
+            createdAt: Date(timeIntervalSince1970: row["created_at"]),
+            startedAt: (row["started_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            finishedAt: (row["finished_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            inputSummary: row["input_summary"],
+            resultSummary: row["result_summary"],
+            errorMessage: row["error_message"],
+            logFilePath: row["log_file_path"],
+            retryCount: row["retry_count"],
+            clipboardText: row["clipboard_text"],
+            descriptor: descriptor,
+            reasonCode: reasonRaw.flatMap(TaskStatusReasonCode.init(rawValue:))
+        )
+        let logRows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT sequence, logged_at, level, message
+                FROM task_logs
+                WHERE task_id = ?
+                ORDER BY sequence
+                """,
+            arguments: [taskID.uuidString]
+        )
+        let logs = logRows.map { logRow in
+            TaskLogLine(
+                id: deterministicLogID(taskID: taskID, sequence: logRow["sequence"]),
+                taskID: taskID,
+                date: Date(timeIntervalSince1970: logRow["logged_at"]),
+                level: logRow["level"],
+                message: logRow["message"]
+            )
+        }
+        return PersistedTaskState(descriptor: descriptor, record: record, logs: logs)
+    }
+
+    private static func deterministicLogID(taskID: UUID, sequence: Int64) -> UUID {
+        var bytes = taskID.uuid
+        withUnsafeMutableBytes(of: &bytes) { buffer in
+            var encoded = UInt64(bitPattern: sequence).bigEndian
+            withUnsafeBytes(of: &encoded) { sequenceBytes in
+                for index in sequenceBytes.indices {
+                    buffer[8 + index] ^= sequenceBytes[index]
+                }
+            }
+        }
+        return UUID(uuid: bytes)
     }
 }

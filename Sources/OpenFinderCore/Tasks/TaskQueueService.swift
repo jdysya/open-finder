@@ -105,6 +105,63 @@ public actor TaskQueueService {
         handlerRegistry = registry
     }
 
+    public func restorePersistedHistory(
+        _ persistedTasks: [PersistedTaskState]
+    ) async throws {
+        guard records.isEmpty, queue.isEmpty, running.isEmpty, starting.isEmpty else {
+            throw OpenFinderError.operationFailed(
+                "Persisted task history must be restored into an empty queue"
+            )
+        }
+        let ordered = persistedTasks.sorted {
+            $0.descriptor.queueOrdinal < $1.descriptor.queueOrdinal
+        }
+        for persisted in ordered {
+            let descriptor = persisted.descriptor
+            guard descriptor.taskID == persisted.record.id,
+                  persisted.record.descriptor == descriptor
+            else {
+                throw GRDBTaskStoreError.descriptorRecordMismatch
+            }
+            let request = TaskRequest(
+                kind: persisted.record.kind,
+                title: persisted.record.title,
+                inputSummary: persisted.record.inputSummary,
+                resourceKey: descriptor.resourceKey,
+                descriptor: descriptor
+            )
+            requests[descriptor.taskID] = request
+            records[descriptor.taskID] = persisted.record
+            logStorage[descriptor.taskID] = persisted.logs
+            nextReservedQueueOrdinal = max(
+                nextReservedQueueOrdinal,
+                descriptor.queueOrdinal &+ 1
+            )
+
+            guard persisted.record.status == .queued else { continue }
+            guard persisted.record.startedAt == nil else {
+                records[descriptor.taskID]?.markInterrupted()
+                await persistRecord(descriptor.taskID)
+                continue
+            }
+            if let reasonCode = await unavailableRecoveryReason(for: descriptor) {
+                await finish(
+                    descriptor.taskID,
+                    status: .unavailable,
+                    result: nil,
+                    error: nil,
+                    reasonCode: reasonCode
+                )
+                continue
+            }
+            queue.append(descriptor.taskID)
+        }
+    }
+
+    public func resumeRecoveredTasks() async {
+        await startNextIfPossible()
+    }
+
     public func reserveQueueOrdinal() -> UInt64 {
         let reserved = nextReservedQueueOrdinal
         nextReservedQueueOrdinal &+= 1
@@ -479,6 +536,31 @@ public actor TaskQueueService {
             .handlerUnavailable
         case .unknownHandler(_, let payloadVersion):
             payloadVersion == 1 ? .unknownHandler : .unsupportedPayloadVersion
+        }
+    }
+
+    private func unavailableRecoveryReason(
+        for descriptor: TaskDescriptorEnvelope
+    ) async -> TaskStatusReasonCode? {
+        switch descriptor.availability {
+        case .unavailable(let reasonCode):
+            return reasonCode
+        case .available:
+            break
+        }
+        guard let handlerRegistry else {
+            return .handlerUnavailable
+        }
+        do {
+            _ = try await handlerRegistry.handler(
+                for: descriptor.handlerID,
+                payloadVersion: descriptor.payloadVersion
+            )
+            return nil
+        } catch let error as TaskHandlerRegistryError {
+            return registryReason(for: error)
+        } catch {
+            return .handlerUnavailable
         }
     }
 
