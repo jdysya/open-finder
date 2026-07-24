@@ -9,11 +9,6 @@ extension AppModel {
         pane: BrowserPaneModel
     ) {
         Task {
-            let resolvedConfiguration = PluginConfigurationResolver.resolve(
-                manifest: plugin.manifest,
-                values: configuration.pluginConfigurationValues[plugin.id] ?? [:],
-                secretReferences: configuredPluginSecretReferences(for: plugin.manifest)
-            )
             do {
                 if case .http = plugin.manifest.execution {
                     let connection = await checkPluginConnection(plugin)
@@ -22,116 +17,81 @@ extension AppModel {
                         return
                     }
                 }
-                let isVideoAnalysis = plugin.id == Self.videoAnalyzerPluginID
-                    && action.id == Self.videoAnalyzerActionID
-                let analysisBox = VideoAnalysisResultBox()
                 let currentLocation = pane.location
                 let paneID = pane.id.rawValue
-                let runner = pluginRunnerRouter
-                let credentialResolver = pluginCredentialResolver
+                let resultBox = PluginResultProjectionBox()
+                let legacyAnalysisBox = VideoAnalysisResultBox()
+                let coordinator = pluginExecutionCoordinator
                 let analysisStore = videoAnalysisStore
-                let workspaceMaintenance = pluginWorkspaceMaintenance
+                let configurationValues = configuration.pluginConfigurationValues[plugin.id] ?? [:]
+                let secretReferences = configuredPluginSecretReferences(for: plugin.manifest)
                 let queuedID = try await taskQueue.enqueue(.init(
-                    kind: isVideoAnalysis ? .videoAnalysis : .plugin(
-                        pluginID: plugin.id,
-                        actionID: action.id
-                    ),
+                    kind: .plugin(pluginID: plugin.id, actionID: action.id),
                     title: "\(plugin.manifest.name): \(action.title)",
-                    resourceKey: isVideoAnalysis ? Self.videoAnalyzerResourceKey : nil
+                    resourceKey: action.output?.resultSchemaID
                 ) { context in
-                    let invocationCredentials = try Self.prepareInvocationCredentials(
-                        execution: plugin.manifest.execution,
-                        secrets: resolvedConfiguration.secrets,
-                        credentialResolver: credentialResolver
+                    await context.appendLog(
+                        "Starting plugin \(plugin.manifest.name) / \(action.title)"
                     )
-                    return try await Self.withTaskWorkspace(
-                        execution: plugin.manifest.execution,
+                    let outcome = try await coordinator.execute(.init(
+                        plugin: plugin,
+                        pluginVersion: plugin.manifest.version,
+                        action: action,
                         taskID: context.id,
-                        currentLocation: currentLocation,
-                        maintenance: workspaceMaintenance,
-                        context: context
-                    ) { workspace in
-                        let input = PluginInput(
-                            schemaVersion: 1,
-                            taskID: context.id,
-                            actionID: action.id,
-                            app: .init(name: "OpenFinder", version: "0.1.0"),
-                            context: .init(activePane: paneID, currentLocation: currentLocation),
-                            files: items.map(PluginInputFile.init(item:)),
-                            config: resolvedConfiguration.config,
-                            secrets: invocationCredentials.references,
-                            tempDirectory: workspace.tempDirectory.path,
-                            outputDirectory: workspace.outputDirectory.path
-                        )
-                        await context.appendLog("Starting plugin \(plugin.manifest.name) / \(action.title)")
-                        let result = try await runner.run(.init(
-                            manifest: plugin.manifest,
-                            action: action,
-                            input: input,
-                            environment: invocationCredentials.environment,
-                            pluginDirectory: plugin.directory,
-                            workingDirectory: plugin.directory,
-                            onEvent: { event in
-                                Task {
-                                    switch event {
-                                    case .log(let level, let message):
-                                        await context.appendLog(message, level: level)
-                                    case .progress(let progress):
-                                        await context.updateProgress(.init(
-                                            fraction: progress.fraction,
-                                            phase: progress.phase,
-                                            detail: progress.message,
-                                            completed: progress.completed,
-                                            total: progress.total,
-                                            unit: progress.unit
-                                        ))
-                                    case .result(_, let message, _, _):
-                                        if let message { await context.appendLog(message) }
-                                    }
+                        app: .init(name: "OpenFinder", version: "0.1.0"),
+                        context: .init(activePane: paneID, currentLocation: currentLocation),
+                        files: items.map(PluginInputFile.init(item:)),
+                        configurationValues: configurationValues,
+                        secretReferences: secretReferences
+                    ), callbacks: .init(
+                        onEvent: { event in
+                            Task {
+                                switch event {
+                                case .log(let level, let message):
+                                    await context.appendLog(message, level: level)
+                                case .progress(let progress):
+                                    await context.updateProgress(.init(
+                                        fraction: progress.fraction,
+                                        phase: progress.phase,
+                                        detail: progress.message,
+                                        completed: progress.completed,
+                                        total: progress.total,
+                                        unit: progress.unit
+                                    ))
+                                case .result(_, let message, _, _):
+                                    if let message { await context.appendLog(message) }
                                 }
                             }
-                        ))
-                        if result.exitCode != 0 {
-                            throw OpenFinderError.operationFailed(
-                                result.stderr.isEmpty ? "Plugin exited with \(result.exitCode)" : result.stderr
-                            )
-                        }
-                        if let terminal = result.events.last(where: { $0.resultStatus != nil }) {
-                            switch terminal.resultStatus {
-                            case "failure":
-                                throw OpenFinderError.operationFailed(
-                                    terminal.resultMessage ?? "Plugin reported failure"
-                                )
-                            case "cancelled":
-                                throw CancellationError()
-                            default:
-                                break
-                            }
-                        }
-                        if isVideoAnalysis {
-                            let durable = try await Self.persistVideoAnalysis(
-                                events: result.events,
-                                taskID: context.id,
-                                workspace: workspace,
+                        },
+                        publish: { projection in
+                            await resultBox.store(projection)
+                            if let analysis = try await Self.legacyVideoAnalysis(
+                                projection: projection,
                                 execution: plugin.manifest.execution,
                                 store: analysisStore
+                            ) {
+                                await legacyAnalysisBox.store(analysis)
+                            }
+                        },
+                        cleanupWarning: {
+                            await context.appendLog(
+                                PluginWorkspaceMaintenance.cleanupWarning,
+                                level: "warning"
                             )
-                            await analysisBox.store(durable)
                         }
-                        let message = result.events.compactMap { event in
-                            if case .result(_, let message, _, _) = event { return message }
-                            return nil
-                        }.last ?? "Plugin completed"
-                        return .success(
-                            summary: message,
-                            clipboard: result.events.compactMap(\.clipboardText).last
-                        )
-                    }
+                    ))
+                    return .success(summary: outcome.summary, clipboard: outcome.clipboard)
                 })
                 statusMessage = "Queued plugin task \(queuedID.uuidString.prefix(8))"
                 await observeTask(queuedID)
-                if let analysis = await analysisBox.value {
-                    await cacheVideoAnalysis(analysis, analyzerVersion: Self.videoAnalyzerVersion)
+                if let projection = await resultBox.value {
+                    presentedPluginResult = projection
+                }
+                if let analysis = await legacyAnalysisBox.value {
+                    await cacheVideoAnalysis(
+                        analysis,
+                        analyzerVersion: plugin.manifest.version
+                    )
                     presentedVideoAnalysis = analysis
                 }
             } catch {
@@ -140,84 +100,34 @@ extension AppModel {
         }
     }
 
-    nonisolated private static func prepareInvocationCredentials(
-        execution: PluginExecution,
-        secrets: [String: PluginSecretReference],
-        credentialResolver: PluginCredentialResolver
-    ) throws -> (references: [String: PluginSecretReference], environment: [String: String]) {
-        guard case .process = execution else { return (secrets, [:]) }
-
-        var references: [String: PluginSecretReference] = [:]
-        var environment: [String: String] = [:]
-        for (index, pair) in secrets.sorted(by: { $0.key < $1.key }).enumerated() {
-            let (logicalKey, reference) = pair
-            guard let secret = try credentialResolver.secret(for: reference.env), !secret.isEmpty else {
-                throw OpenFinderError.missingSecret(logicalKey)
-            }
-            let suffix = logicalKey.uppercased().map { character in
-                character.isASCII && (character.isLetter || character.isNumber) ? character : "_"
-            }
-            let environmentKey = "OPENFINDER_SECRET_\(index)_\(String(suffix))"
-            references[logicalKey] = PluginSecretReference(env: environmentKey)
-            environment[environmentKey] = secret
-        }
-        return (references, environment)
-    }
-
-    nonisolated private static func workspace(
-        execution: PluginExecution,
-        taskID: UUID,
-        currentLocation: Location
-    ) -> PluginWorkspace {
-        if case .http = execution { return .makeHTTP(taskID: taskID) }
-        return .make(taskID: taskID, currentLocation: currentLocation)
-    }
-
-    nonisolated private static func withTaskWorkspace<Value>(
-        execution: PluginExecution,
-        taskID: UUID,
-        currentLocation: Location,
-        maintenance: PluginWorkspaceMaintenance,
-        context: TaskExecutionContext,
-        operation: (PluginWorkspace) async throws -> Value
-    ) async throws -> Value {
-        let workspace = workspace(execution: execution, taskID: taskID, currentLocation: currentLocation)
-        let outcome: Result<Value, Error>
-        do {
-            try FileManager.default.createDirectory(at: workspace.tempDirectory, withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: workspace.outputDirectory, withIntermediateDirectories: true)
-            outcome = .success(try await operation(workspace))
-        } catch {
-            outcome = .failure(error)
-        }
-        do {
-            try maintenance.cleanup(workspace)
-        } catch {
-            await maintenance.reportFailure(context)
-        }
-        return try outcome.get()
-    }
-
-    nonisolated private static func persistVideoAnalysis(
-        events: [PluginOutputEvent],
-        taskID: UUID,
-        workspace: PluginWorkspace,
+    nonisolated private static func legacyVideoAnalysis(
+        projection: PluginResultProjection,
         execution: PluginExecution,
         store: VideoAnalysisResultStore
-    ) async throws -> VideoAnalysisResult {
+    ) async throws -> VideoAnalysisResult? {
+        guard let unknown = projection.project(UnknownPluginResult.self),
+              unknown.schemaID == "videoAnalysisResult" else {
+            return nil
+        }
+        let events: [PluginOutputEvent] = [.result(
+            status: "success",
+            message: unknown.message,
+            clipboard: nil,
+            artifacts: unknown.artifacts
+        )]
         switch execution {
         case .http:
             let result = try VideoAnalysisPluginResultDecoder.decode(
                 from: events,
-                expectedTaskID: taskID,
-                expectedOutputDirectory: workspace.outputDirectory
+                expectedTaskID: unknown.taskID,
+                expectedOutputDirectory: unknown.outputDirectory
             )
-            let reader = try ConfinedArtifactReader(root: workspace.outputDirectory)
+            let reader = try ConfinedArtifactReader(root: unknown.outputDirectory)
             return try await store.persistConfinedAssets(in: result, from: reader)
         case .process:
             let result = try VideoAnalysisPluginResultDecoder.decode(
                 from: events,
-                expectedTaskID: taskID
+                expectedTaskID: unknown.taskID
             )
             return try await store.persistAssets(in: result)
         }

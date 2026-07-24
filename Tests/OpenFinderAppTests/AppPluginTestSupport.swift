@@ -14,9 +14,7 @@ struct StubPluginConnectionChecker: PluginConnectionChecking {
     static let ready = StubPluginConnectionChecker(status: .init(
         state: .ready,
         guidance: "Ready",
-        protocolVersion: 1,
-        pluginID: "fixture.http",
-        pluginVersion: "1.0.0"
+        protocolVersion: 1
     ))
 }
 

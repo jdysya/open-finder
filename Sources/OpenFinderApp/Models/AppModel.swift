@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     @Published var statusMessage: String = "Ready"
     @Published var pendingTransferOverwrite: PendingTransferOverwrite?
     @Published var presentedVideoAnalysis: VideoAnalysisResult?
+    @Published var presentedPluginResult: PluginResultProjection?
     @Published var pluginConnectionStatuses: [String: PluginConnectionStatus] = [:]
     @Published var configuration = AppConfiguration() {
         didSet {
@@ -63,6 +64,7 @@ final class AppModel: ObservableObject {
     let videoAnalysisStore: VideoAnalysisResultStore
     let pluginRunnerRouter: PluginRunnerRouter
     let pluginConnectionChecker: any PluginConnectionChecking
+    let pluginExecutionCoordinator: PluginExecutionCoordinator
     let pluginWorkspaceMaintenance: PluginWorkspaceMaintenance
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     var taskPollingTask: Task<Void, Never>?
@@ -127,19 +129,30 @@ final class AppModel: ObservableObject {
             localStore: localPluginCredentialStore
         )
         self.pluginCredentialResolver = pluginCredentialResolver
+        let configuredRunner: PluginRunnerRouter
         if let pluginRunnerRouter {
-            self.pluginRunnerRouter = pluginRunnerRouter
+            configuredRunner = pluginRunnerRouter
             configurableProcessRunner = nil
         } else {
             let processRunner = ConfigurableProcessPluginRunner()
-            self.pluginRunnerRouter = PluginRunnerRouter(
+            configuredRunner = PluginRunnerRouter(
                 processRunner: processRunner,
                 httpRunner: HTTPPluginRunner(credentialResolver: pluginCredentialResolver)
             )
             configurableProcessRunner = processRunner
         }
-        self.pluginConnectionChecker = pluginConnectionChecker
+        self.pluginRunnerRouter = configuredRunner
+        let configuredConnectionChecker = pluginConnectionChecker
             ?? HTTPPluginConnectionProbe(credentialResolver: pluginCredentialResolver)
+        self.pluginConnectionChecker = configuredConnectionChecker
+        self.pluginExecutionCoordinator = PluginExecutionCoordinator(
+            runner: configuredRunner,
+            connectionChecker: configuredConnectionChecker,
+            credentialResolver: pluginCredentialResolver,
+            workspaceMaintenance: .init { workspace in
+                try pluginWorkspaceMaintenance.cleanup(.init(executionWorkspace: workspace))
+            }
+        )
         self.pluginWorkspaceMaintenance = pluginWorkspaceMaintenance
         leftPane = BrowserPaneModel(
             id: .left,

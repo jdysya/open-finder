@@ -12,6 +12,18 @@ struct PluginWorkspace: Equatable {
     let outputDirectory: URL
     let cleanupPolicy: PluginWorkspaceCleanupPolicy
 
+    init(
+        taskRoot: URL,
+        tempDirectory: URL,
+        outputDirectory: URL,
+        cleanupPolicy: PluginWorkspaceCleanupPolicy
+    ) {
+        self.taskRoot = taskRoot
+        self.tempDirectory = tempDirectory
+        self.outputDirectory = outputDirectory
+        self.cleanupPolicy = cleanupPolicy
+    }
+
     static func make(taskID: UUID, currentLocation: Location) -> PluginWorkspace {
         let taskRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenFinderTasks", isDirectory: true)
@@ -46,6 +58,22 @@ struct PluginWorkspace: Equatable {
         guard cleanupPolicy == .removeTaskRootAfterExecution,
               FileManager.default.fileExists(atPath: taskRoot.path) else { return }
         try FileManager.default.removeItem(at: taskRoot)
+    }
+
+    init(executionWorkspace: PluginExecutionWorkspace) {
+        let policy: PluginWorkspaceCleanupPolicy
+        switch executionWorkspace.cleanupPolicy {
+        case .preserve:
+            policy = .preserve
+        case .removeTaskRootAfterExecution:
+            policy = .removeTaskRootAfterExecution
+        }
+        self.init(
+            taskRoot: executionWorkspace.taskRoot,
+            tempDirectory: executionWorkspace.tempDirectory,
+            outputDirectory: executionWorkspace.outputDirectory,
+            cleanupPolicy: policy
+        )
     }
 }
 

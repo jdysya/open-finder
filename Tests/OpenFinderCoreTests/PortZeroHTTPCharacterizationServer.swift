@@ -15,7 +15,11 @@ enum HTTPCharacterizationServerError: Error, Equatable, Sendable {
     case readinessTimedOut
 }
 
-enum HTTPCharacterizationResponseMode: String, Sendable { case standard, malformedSSE }
+enum HTTPCharacterizationResponseMode: String, Sendable {
+    case standard
+    case malformedSSE
+    case mediaAnalysis
+}
 
 final class PortZeroHTTPCharacterizationServer: @unchecked Sendable {
     let endpoint: String
@@ -137,12 +141,13 @@ final class PortZeroHTTPCharacterizationServer: @unchecked Sendable {
     }
 
     private static let program = #"""
-import http.server, json, os
+import hashlib, http.server, json, os, pathlib
 
 TOKEN = os.environ["OPENFINDER_CHARACTERIZATION_TOKEN"]
 OBSERVATIONS = os.environ["OPENFINDER_CHARACTERIZATION_OBSERVATIONS"]
 RESPONSE_MODE = os.environ.get("OPENFINDER_CHARACTERIZATION_RESPONSE_MODE", "standard")
 records = []
+media_artifacts = {}
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -173,7 +178,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.endswith("/capabilities"):
             return self.send_json({"schemaVersion":1,"protocolVersion":1,"pluginID":"dev.openfinder.plugins.video-analyzer","pluginVersion":"0.1.0","actions":[{"id":"analyze-video"}],"features":{"sse":True,"polling":True,"cancellation":True,"fileArtifacts":True},"limits":{"maxRequestBytes":1048576,"terminalRetentionSeconds":1800,"maxEventsPerJob":10000,"maxQueuedJobs":100}})
         task_id = self.path.split("/")[-2] if self.path.endswith("/result") or self.path.endswith("/events") else ""
-        result = {"schemaVersion":1,"eventID":2,"taskID":task_id,"type":"result","status":"success","artifacts":[]}
+        artifacts = media_artifacts.get(task_id, [])
+        result = {"schemaVersion":1,"eventID":2,"taskID":task_id,"type":"result","status":"success","artifacts":artifacts}
         if self.path.endswith("/events"):
             if RESPONSE_MODE == "malformedSSE":
                 body = b"id: 1\nevent: progress\ndata: {not-json}\n\n"
@@ -193,7 +199,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         if not self.record(body):
             return self.send_json({"schemaVersion":1,"code":"unauthorized","message":"denied","retryable":False}, 401)
-        task_id = body["taskID"]
+        task_id = body["taskID"].lower()
+        if RESPONSE_MODE == "mediaAnalysis":
+            document = {"schemaID":"mediaAnalysis.v1","schemaVersion":1,
+                        "documentID":"11111111-1111-1111-1111-111111111111",
+                        "taskID":task_id,"items":[],"suggestedTags":[],"actions":[],
+                        "managedTagLedger":{"mediaEntries":[]},"createdAt":"2025-01-01T00:00:00Z"}
+            data = json.dumps(document,separators=(",", ":")).encode()
+            output = pathlib.Path(body["outputDirectory"])
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "media-analysis.json").write_bytes(data)
+            media_artifacts[task_id] = [{"type":"mediaAnalysis.v1",
+                "relativePath":"media-analysis.json","mediaType":"application/json",
+                "byteCount":len(data),"sha256":hashlib.sha256(data).hexdigest()}]
         self.send_json({"schemaVersion":1,"taskID":task_id,"state":"queued","createdAt":"2026-07-18T00:00:00Z","updatedAt":"2026-07-18T00:00:00Z","startedAt":None,"finishedAt":None,"lastEventID":0,"resultAvailable":False}, 202)
 
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
