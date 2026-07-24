@@ -1,11 +1,6 @@
 import Foundation
 import GRDB
 
-public enum TaskStoreMode: Sendable {
-    case shadowWrite
-    case durable
-}
-
 public enum GRDBTaskStoreError: Error, Equatable {
     case descriptorRecordMismatch
     case queueOrdinalOutOfRange
@@ -15,11 +10,8 @@ public enum GRDBTaskStoreError: Error, Equatable {
 
 public final class GRDBTaskStore: TaskStore, Sendable {
     private let databasePool: DatabasePool
-    private let mode: TaskStoreMode
-
-    public init(database: AppDatabase, mode: TaskStoreMode) {
+    public init(database: AppDatabase) {
         databasePool = database.databasePool
-        self.mode = mode
     }
 
     public func enqueue(
@@ -165,7 +157,6 @@ public final class GRDBTaskStore: TaskStore, Sendable {
     }
 
     public func interruptActiveTasks(at date: Date = Date()) async throws {
-        try requireDurableRead()
         try await databasePool.write { db in
             try db.execute(
                 sql: """
@@ -186,7 +177,6 @@ public final class GRDBTaskStore: TaskStore, Sendable {
     }
 
     public func loadPersistedTasks() async throws -> [PersistedTaskState] {
-        try requireDurableRead()
         return try await databasePool.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -230,17 +220,7 @@ public final class GRDBTaskStore: TaskStore, Sendable {
     private func write(
         _ updates: @escaping @Sendable (Database) throws -> Void
     ) async throws {
-        do {
-            try await databasePool.write(updates)
-        } catch {
-            guard mode == .shadowWrite else { throw error }
-        }
-    }
-
-    private func requireDurableRead() throws {
-        guard mode == .durable else {
-            throw GRDBTaskStoreError.durableReadUnavailable
-        }
+        try await databasePool.write(updates)
     }
 
     private static func decodePersistedTask(

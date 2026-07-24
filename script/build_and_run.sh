@@ -20,6 +20,7 @@ APP_ICON_SOURCE="$ROOT_DIR/Resources/OpenFinder.icns"
 APP_ICON_NAME="OpenFinder.icns"
 VIDEO_ANALYZER_PLUGIN="$APP_RESOURCES/BuiltinPlugins/video-analyzer.plugin"
 VIDEO_ANALYZER_MANIFEST="$VIDEO_ANALYZER_PLUGIN/manifest.json"
+TEST_FIXTURE_PLUGIN_ID="dev.openfinder.fixtures.spectrum-inspector"
 
 assert_manifest_value() {
   local key="$1"
@@ -63,6 +64,7 @@ if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
   assert_manifest_value execution.protocolVersion 1
   assert_manifest_value execution.endpointConfigurationKey serverURL
   assert_manifest_value execution.tokenSecretKey serverToken
+  assert_manifest_value actions.0.output.resultType mediaAnalysis.v1
   assert_manifest_value configuration.0.key serverURL
   assert_manifest_value configuration.0.default http://127.0.0.1:8765
   assert_manifest_value configuration.1.key useJoyTag
@@ -91,6 +93,12 @@ if [ -d "$ROOT_DIR/ExamplePlugins" ]; then
   fi
   if [[ -e "$VIDEO_ANALYZER_PLUGIN/run.py" || -e "$VIDEO_ANALYZER_PLUGIN/worker" ]]; then
     echo "error: packaged Video Analyzer plugin contains the removed process bridge" >&2
+    exit 1
+  fi
+  if grep -RFl --include manifest.json \
+       "\"id\": \"$TEST_FIXTURE_PLUGIN_ID\"" "$APP_RESOURCES/BuiltinPlugins" |
+       grep -q .; then
+    echo "error: test-only media analysis fixture was packaged in BuiltinPlugins" >&2
     exit 1
   fi
 fi

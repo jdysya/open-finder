@@ -25,6 +25,19 @@ Key fields implemented in `OpenFinderCore`:
 
 Schema 2 uses an `execution` object instead of top-level `runtime` and `entry`. The currently supported HTTP transport is protocol version 1. See [`plugins/http-plugin-v1.md`](plugins/http-plugin-v1.md) and the machine-readable [`plugins/http-plugin-v1.openapi.json`](plugins/http-plugin-v1.openapi.json).
 
+### Result schemas
+
+An action's `output.resultType` is the schema identifier used for result handling and rendering.
+The current structured media contract is `mediaAnalysis.v1`. A successful producer returns exactly
+one artifact whose `type` is also `mediaAnalysis.v1`; the artifact contains a UTF-8 JSON
+`MediaAnalysisDocument` with `schemaID: "mediaAnalysis.v1"` and `schemaVersion: 1`.
+
+Result routing is schema-driven, not plugin-ID-driven. The bundled Video Analyzer and the test-only
+Spectrum Inspector fixture use different plugin IDs but the same result handler and Renderer Catalog
+entry. A new image, audio, or video analyzer can therefore use the media renderer without adding a
+plugin-specific Swift view or registration. Unknown result schemas remain available through the
+generic artifact presentation and are never decoded as media analysis.
+
 ## Runtime protocol
 
 OpenFinder sends a single JSON object to plugin stdin:
@@ -61,6 +74,12 @@ stderr is stored as debug log text. Success requires both exit code `0` and a te
 - `zip-selected.plugin`: writes a zip archive to the task output directory.
 - `upload-image-demo.plugin`: emits deterministic demo upload URLs without network calls.
 - `batch-rename-demo.plugin`: dry-run rename preview copied to clipboard.
+- `video-analyzer.plugin`: sends local video paths to a loopback HTTP service and returns
+  `mediaAnalysis.v1`.
+
+Test-only plugin packages live under `Tests/**/Fixtures`, are copied only into the test resource
+bundle, and must not be placed in `ExamplePlugins`; the app packaging script rejects the known
+second-media fixture ID if it appears in `BuiltinPlugins`.
 
 
 ## Runtime paths

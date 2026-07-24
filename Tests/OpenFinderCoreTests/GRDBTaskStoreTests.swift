@@ -8,7 +8,7 @@ final class GRDBTaskStoreTests: XCTestCase {
         let url = makeDatabaseURL()
         defer { removeDatabase(at: url) }
         let database = try AppDatabase(url: url)
-        let store = GRDBTaskStore(database: database, mode: .durable)
+        let store = GRDBTaskStore(database: database)
         let registry = TaskHandlerRegistry()
         try await registry.register(TaskHandler(
             handlerID: DurableTaskHandlerID.transferCopy.rawValue,
@@ -127,7 +127,7 @@ final class GRDBTaskStoreTests: XCTestCase {
             await executions.increment()
             return .success(summary: "must not run", clipboard: nil)
         })
-        let store = GRDBTaskStore(database: database, mode: .durable)
+        let store = GRDBTaskStore(database: database)
         let queue = TaskQueueService(
             maxConcurrentTasks: 1,
             handlerRegistry: registry,
@@ -161,81 +161,10 @@ final class GRDBTaskStoreTests: XCTestCase {
         }
     }
 
-    func testShadowWriteInsertFailureAllowsInMemoryExecution() async throws {
-        let url = makeDatabaseURL()
-        defer { removeDatabase(at: url) }
-        let database = try AppDatabase(url: url)
-        try await database.databasePool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER reject_task_record
-                BEFORE INSERT ON task_records
-                BEGIN
-                    SELECT RAISE(ABORT, 'fixture task record rejection');
-                END
-                """)
-        }
-        let executions = ExecutionCounter()
-        let registry = TaskHandlerRegistry()
-        try await registry.register(TaskHandler(
-            handlerID: DurableTaskHandlerID.transferCopy.rawValue,
-            payloadVersion: 1
-        ) { _, _ in
-            await executions.increment()
-            return .success(summary: "shadow execution", clipboard: nil)
-        })
-        let store = GRDBTaskStore(database: database, mode: .shadowWrite)
-        let queue = TaskQueueService(
-            maxConcurrentTasks: 1,
-            handlerRegistry: registry,
-            store: store
-        )
-        let taskID = UUID()
-        let descriptor = TaskDescriptorEnvelope(
-            taskID: taskID,
-            handlerID: DurableTaskHandlerID.transferCopy.rawValue,
-            payloadVersion: 1,
-            lineage: .init(rootTaskID: taskID),
-            queueOrdinal: 53
-        )
-
-        let enqueuedID = try await queue.enqueue(.init(
-            kind: .localCopy,
-            title: "Shadow task",
-            descriptor: descriptor
-        ))
-        let terminal = try await queue.waitForTerminalStatus(enqueuedID, timeout: 2)
-        let executionCount = await executions.value
-
-        XCTAssertEqual(terminal.status, .succeeded)
-        XCTAssertEqual(executionCount, 1)
-    }
-
-    func testShadowStoreCannotBecomeDurableReader() async throws {
-        let url = makeDatabaseURL()
-        defer { removeDatabase(at: url) }
-        let store = GRDBTaskStore(
-            database: try AppDatabase(url: url),
-            mode: .shadowWrite
-        )
-
-        do {
-            _ = try await store.loadPersistedTasks()
-            XCTFail("Expected the shadow store to reject durable reads")
-        } catch {
-            XCTAssertEqual(
-                error as? GRDBTaskStoreError,
-                .durableReadUnavailable
-            )
-        }
-    }
-
     func testStartupInterruptsRunningAndCancellingInOneRecoveryStep() async throws {
         let url = makeDatabaseURL()
         defer { removeDatabase(at: url) }
-        let store = GRDBTaskStore(
-            database: try AppDatabase(url: url),
-            mode: .durable
-        )
+        let store = GRDBTaskStore(database: try AppDatabase(url: url))
         for (ordinal, status) in [(61, TaskStatus.running), (62, .cancelling)] {
             let taskID = UUID()
             let descriptor = TaskDescriptorEnvelope(

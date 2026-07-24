@@ -23,7 +23,7 @@
         "mimePrefixes": ["video/"],
         "matchMode": "all"
       },
-      "output": { "resultType": "videoAnalysisResult", "canCopyToClipboard": false }
+      "output": { "resultType": "mediaAnalysis.v1", "canCopyToClipboard": false }
     }
   ],
   "permissions": {

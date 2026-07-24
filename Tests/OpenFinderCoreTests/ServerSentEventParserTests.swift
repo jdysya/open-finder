@@ -27,7 +27,7 @@ final class ServerSentEventParserTests: XCTestCase {
                 status: "success",
                 message: "Analyzed 1 video.",
                 clipboard: nil,
-                artifacts: [PluginArtifact(type: "videoAnalysisResult", file: PluginFileArtifact(
+                artifacts: [PluginArtifact(type: "mediaAnalysis.v1", file: PluginFileArtifact(
                     relativePath: "result.json",
                     mediaType: "application/json",
                     byteCount: 2_048,
@@ -37,7 +37,7 @@ final class ServerSentEventParserTests: XCTestCase {
         ])
         XCTAssertEqual(events.last?.artifacts, [
             .init(
-                type: "videoAnalysisResult",
+                type: "mediaAnalysis.v1",
                 relativePath: "result.json",
                 mediaType: "application/json",
                 byteCount: 2_048,
@@ -233,7 +233,7 @@ final class ServerSentEventParserTests: XCTestCase {
 
     id: 7
     event: result
-    data: {"schemaVersion":1,"eventID":7,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","message":"Analyzed 1 video.","artifacts":[{"type":"videoAnalysisResult","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
+    data: {"schemaVersion":1,"eventID":7,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","message":"Analyzed 1 video.","artifacts":[{"type":"mediaAnalysis.v1","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
 
 
     """

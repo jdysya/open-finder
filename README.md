@@ -13,6 +13,9 @@ OpenFinder is a native macOS SwiftUI/AppKit prototype for the product described 
 - WebDAV remote browser: settings account form, Keychain-backed password storage, active-pane navigation, remote list/mkdir/delete/rename, upload/download/copy/move through the task queue, HTTPS credential guard, no silent overwrite, and multistatus failure validation.
 - Kodbox browser and tags: personal and team-public tag display, personal catalog management, permission-gated team tag management, and scoped file/folder association. See [`docs/kodbox-tag-support.md`](docs/kodbox-tag-support.md) for the API and safety boundaries. Generic WebDAV remains intentionally tag-unsupported.
 - Security/persistence seams: bookmark records, in-memory and macOS Keychain stores, JSON config store.
+- Durable GRDB task and artifact persistence with roll-forward recovery and safe startup failure.
+- Schema-driven plugin results: `mediaAnalysis.v1` uses one shared renderer across plugin IDs;
+  unknown schemas use generic artifact presentation.
 
 ## Build and test
 
@@ -48,6 +51,12 @@ See `docs/architecture.md` for the code-level architecture/design guide and `doc
 
 The app also scans the repo-local `ExamplePlugins/` during development and bundled `Contents/Resources/BuiltinPlugins/` when launched through the run script.
 
+Architecture references:
+
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/task-recovery.md`](docs/task-recovery.md)
+- [`docs/renderer-catalog.md`](docs/renderer-catalog.md)
+
 ## Roadmap alignment
 
-This repository implements the Phase 0–5 foundation from `docs/plan.md`, including the 0.1 boundary of local dual-pane browsing, custom context actions, plugin manifest + script runner, task queue, image-upload example plugin, and WebDAV remote browser. Later production hardening should add byte-level transfer progress, richer conflict dialogs, durable SQLite persistence, sandbox/security-scoped bookmark flows, XPC plugin runners, rclone provider support, signing/notarization, and onboarding.
+This repository implements the Phase 0–5 foundation from `docs/plan.md`, including the 0.1 boundary of local dual-pane browsing, custom context actions, plugin manifest + script runner, task queue, image-upload example plugin, and WebDAV remote browser. Later production hardening should add byte-level transfer progress, richer conflict dialogs, sandbox/security-scoped bookmark flows, XPC plugin runners, rclone provider support, signing/notarization, and onboarding.

@@ -152,7 +152,7 @@ private final class RecoveryFixture {
         databaseURL = root.appendingPathComponent("tasks.sqlite")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        store = GRDBTaskStore(database: try AppDatabase(url: databaseURL), mode: .durable)
+        store = GRDBTaskStore(database: try AppDatabase(url: databaseURL))
     }
 
     func transferDescriptor(

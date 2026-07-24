@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.openfinder.fixtures.spectrum-inspector",
+  "name": "Spectrum Inspector Fixture",
+  "version": "1.0.0",
+  "description": "Test-only second media analysis producer.",
+  "author": "OpenFinder Tests",
+  "runtime": { "type": "shell" },
+  "entry": "fixture.sh",
+  "actions": [
+    {
+      "id": "inspect-spectrum",
+      "title": "Inspect Spectrum",
+      "category": "Analysis",
+      "selection": { "minItems": 1, "maxItems": 10, "allowDirectories": false },
+      "match": {
+        "extensions": ["wav", "aiff"],
+        "uttypes": [],
+        "mimePrefixes": ["audio/"],
+        "matchMode": "all"
+      },
+      "output": { "resultType": "mediaAnalysis.v1", "canCopyToClipboard": false }
+    }
+  ],
+  "permissions": {
+    "readFiles": "selected",
+    "writeFiles": "taskOutput",
+    "network": { "required": false, "hosts": [] },
+    "clipboardWrite": false,
+    "clipboardRead": false,
+    "keychainSecrets": [],
+    "remoteAccounts": false,
+    "runExternalCommands": true
+  },
+  "configuration": []
+}

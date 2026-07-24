@@ -45,29 +45,6 @@ final class HTTPPluginVideoAnalyzerFailureE2ETests: XCTestCase {
         XCTAssertFalse(try fixture.history().contains { $0.kind == "submission" })
     }
 
-    func testMalformedFixtureResultProducesTypedDecoderFailure() async throws {
-        let repository = try RealHTTPVideoAnalyzerTestSupport.repository()
-        let workspace = try RealHTTPVideoAnalyzerWorkspace(label: "malformed-result")
-        let fixture = try VideoAnalyzerFixtureProcess(repository: repository, root: workspace.root)
-        defer {
-            RealHTTPVideoAnalyzerTestSupport.assertClean(fixture.stop())
-            workspace.remove()
-        }
-        let taskID = UUID()
-        let (runner, _) = try RealHTTPVideoAnalyzerTestSupport.configuredRunner(fixture: fixture)
-        let run = try await runner.run(RealHTTPVideoAnalyzerTestSupport.request(
-            taskID: taskID, fixture: fixture, workspace: workspace,
-            config: ["fixtureScenario": "malformed"]
-        ))
-
-        XCTAssertEqual(run.events.last?.resultStatus, "success")
-        XCTAssertThrowsError(try VideoAnalysisPluginResultDecoder.decode(
-            from: run.events, expectedTaskID: taskID, expectedOutputDirectory: workspace.output
-        )) { error in
-            XCTAssertEqual(error as? VideoAnalysisPluginResultError, .malformedResultArtifact)
-        }
-    }
-
     func testTaskQueueRetryAfterServerCrashUsesNewIDAndPreservesConfiguration() async throws {
         let repository = try RealHTTPVideoAnalyzerTestSupport.repository()
         let firstWorkspace = try RealHTTPVideoAnalyzerWorkspace(label: "crash-first")

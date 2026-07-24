@@ -21,7 +21,7 @@ final class PluginArtifactTests: XCTestCase {
             byteCount: 12,
             sha256: String(repeating: "a", count: 64)
         )
-        let artifact = PluginArtifact(type: "videoAnalysisResult", file: file)
+        let artifact = PluginArtifact(type: MediaAnalysisDocument.schemaIdentifier, file: file)
 
         let decoded = try JSONDecoder.openFinder.decode(
             PluginArtifact.self,

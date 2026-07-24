@@ -120,36 +120,44 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
         try await waitUntil { await cancellation.wasCancelled() }
     }
 
-    func testCurrentMediaSurfaceKeepsTwoVideoSelectionSummaryAndAndFacets() {
-        let result = Self.mediaResult
-        XCTAssertEqual(result.videos.map(\.name), ["First.mov", "Second.mov"])
+    func testCurrentMediaSurfaceKeepsTwoItemSelectionSummaryAndAndFacets() {
+        let document = Self.mediaDocument
+        XCTAssertEqual(document.items.map(\.media.displayName), ["First.mov", "Second.mov"])
         XCTAssertEqual(
             MediaPresentationSemantics.selectedPath(
-                in: result.videos.map(\.path),
+                in: document.items.map(\.media.sourcePath),
                 requested: nil
             ),
             "/tmp/First.mov"
         )
-        XCTAssertEqual(result.videos[0].summary.totalFrames, 2)
-        XCTAssertEqual(result.videos[0].summary.faceVisible, 1)
-        XCTAssertEqual(result.videos[0].summary.explicit, 1)
+        let first = document.items[0]
+        let presentation = MediaAnalysisPresentationService()
+        XCTAssertEqual(presentation.summary(for: first).map(\.key), [
+            "totalFrames", "faceVisible", "explicit"
+        ])
         XCTAssertEqual(
-            VideoAnalysisPresentation.frames(
-                in: result.videos[0],
-                matching: ["露脸", "完全裸露"]
+            presentation.moments(
+                in: first,
+                matching: [
+                    .init(key: "faceVisible", value: .bool(true)),
+                    .init(key: "nudityLevel", value: .text("explicit"))
+                ]
             ).map(\.index),
             [1]
         )
         XCTAssertEqual(
-            VideoAnalysisPresentation.frames(
-                in: result.videos[0],
-                matching: ["露脸", "完全穿着"]
+            presentation.moments(
+                in: first,
+                matching: [
+                    .init(key: "faceVisible", value: .bool(true)),
+                    .init(key: "nudityLevel", value: .text("none"))
+                ]
             ).map(\.index),
             []
         )
         XCTAssertEqual(
-            VideoAnalysisPresentation.finderTagSuggestions(
-                in: result.videos[0],
+            presentation.suggestedTags(
+                in: first,
                 selectedNames: ["Review"]
             ).map(\.name),
             ["Review"]
@@ -158,21 +166,21 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
             MediaPresentationSemantics.previewIndex(
                 from: 0,
                 offset: 1,
-                available: result.videos[0].frames.map(\.index)
+                available: first.moments.map(\.index)
             ),
             1
         )
         XCTAssertNil(MediaPresentationSemantics.previewIndex(
             from: 1,
             offset: 1,
-            available: result.videos[0].frames.map(\.index)
+            available: first.moments.map(\.index)
         ))
         XCTAssertEqual(MediaPresentationSemantics.closeTitle, "关闭")
         XCTAssertEqual(MediaPresentationSemantics.emptyTitle, "没有分析结果")
         XCTAssertEqual(
             MediaPresentationSemantics.mediaAccessibilityLabel(
-                name: result.videos[0].name,
-                keyframeCount: result.videos[0].frames.count
+                name: first.media.displayName,
+                keyframeCount: first.moments.count
             ),
             "First.mov，2 个关键帧"
         )
@@ -185,40 +193,44 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
         )
     }
 
-    private static let mediaResult = VideoAnalysisResult(
+    private static let mediaDocument = MediaAnalysisDocument(
+        documentID: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!,
         taskID: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!,
-        videos: [
+        items: [
             .init(
-                path: "/tmp/First.mov",
-                name: "First.mov",
-                summary: .init(
-                    totalFrames: 2,
-                    faceVisible: 1,
-                    explicit: 1,
-                    moderate: 0,
-                    partial: 0,
-                    none: 1
+                media: .init(
+                    stableID: "first",
+                    sourcePath: "/tmp/First.mov",
+                    displayName: "First.mov"
                 ),
-                frames: [
+                summaryMetrics: [
+                    .init(key: "totalFrames", value: 2, unit: .count),
+                    .init(key: "faceVisible", value: 1, unit: .count),
+                    .init(key: "explicit", value: 1, unit: .count),
+                ],
+                facets: [],
+                moments: [
                     .init(
                         index: 0,
                         timestamp: 0,
-                        imagePath: "/tmp/first-0.jpg",
-                        faceVisible: false,
-                        faceCount: 0,
-                        nudityLevel: .none,
                         summary: "Opening",
-                        tags: []
+                        facets: [
+                            .init(key: "faceVisible", value: .bool(false)),
+                            .init(key: "nudityLevel", value: .text("none")),
+                        ],
+                        assets: [],
+                        suggestedTags: []
                     ),
                     .init(
                         index: 1,
                         timestamp: 10,
-                        imagePath: "/tmp/first-1.jpg",
-                        faceVisible: true,
-                        faceCount: 1,
-                        nudityLevel: .explicit,
                         summary: "Subject",
-                        tags: []
+                        facets: [
+                            .init(key: "faceVisible", value: .bool(true)),
+                            .init(key: "nudityLevel", value: .text("explicit")),
+                        ],
+                        assets: [],
+                        suggestedTags: []
                     ),
                 ],
                 suggestedTags: [
@@ -231,24 +243,25 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
                         modelVersion: "1"
                     ),
                 ],
-                reportPath: nil
+                report: nil
             ),
             .init(
-                path: "/tmp/Second.mov",
-                name: "Second.mov",
-                summary: .init(
-                    totalFrames: 0,
-                    faceVisible: 0,
-                    explicit: 0,
-                    moderate: 0,
-                    partial: 0,
-                    none: 0
+                media: .init(
+                    stableID: "second",
+                    sourcePath: "/tmp/Second.mov",
+                    displayName: "Second.mov"
                 ),
-                frames: [],
+                summaryMetrics: [],
+                facets: [],
+                moments: [],
                 suggestedTags: [],
-                reportPath: nil
+                report: nil
             ),
-        ]
+        ],
+        suggestedTags: [],
+        actions: MediaAnalysisAction.standard,
+        managedTagLedger: .init(mediaEntries: []),
+        createdAt: Date(timeIntervalSince1970: 1_735_689_600)
     )
 
     private func waitUntil(

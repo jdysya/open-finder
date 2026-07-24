@@ -93,8 +93,7 @@ final class ApplicationServices {
                     withIntermediateDirectories: true
                 )
                 openedTaskStore = GRDBTaskStore(
-                    database: try AppDatabase(url: taskDatabaseURL),
-                    mode: .durable
+                    database: try AppDatabase(url: taskDatabaseURL)
                 )
             } catch {
                 taskDatabaseOpenError = error

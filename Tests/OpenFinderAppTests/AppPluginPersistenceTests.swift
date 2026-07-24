@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class AppPluginPersistenceTests: XCTestCase {
-    func testHTTPLegacyVideoResultRemainsGenericAfterWorkspaceCleanup() async throws {
+    func testHTTPMediaAnalysisResultRemainsPresentedAfterWorkspaceCleanup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppPluginPersistence-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -23,7 +23,10 @@ final class AppPluginPersistenceTests: XCTestCase {
             category: nil,
             selection: .init(minItems: 1, maxItems: nil, allowDirectories: false),
             match: nil,
-            output: .init(resultType: "videoAnalysisResult", canCopyToClipboard: false)
+            output: .init(
+                resultType: MediaAnalysisDocument.schemaIdentifier,
+                canCopyToClipboard: false
+            )
         )
         let manifest = PluginManifest(
             schemaVersion: 2,
@@ -67,10 +70,13 @@ final class AppPluginPersistenceTests: XCTestCase {
         let workspaceRoot = URL(fileURLWithPath: request.input.tempDirectory).deletingLastPathComponent()
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceRoot.path))
         let projection = try XCTUnwrap(app.presentedPluginResult)
-        XCTAssertEqual(projection.resultSchemaID, "videoAnalysisResult")
-        XCTAssertEqual(projection.handlerIdentifier, .unknown)
-        XCTAssertNotNil(projection.project(UnknownPluginResult.self))
-        XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: projection).identifier, .unknown)
+        XCTAssertEqual(projection.resultSchemaID, MediaAnalysisDocument.schemaIdentifier)
+        XCTAssertEqual(projection.handlerIdentifier, .mediaAnalysis)
+        XCTAssertNotNil(projection.project(MediaAnalysisDocument.self))
+        XCTAssertEqual(
+            PluginRendererCatalog.standard.renderer(for: projection).identifier,
+            .mediaAnalysis
+        )
     }
 }
 
@@ -85,37 +91,31 @@ private actor FileAnalysisPluginRunner: PluginRunner {
     func run(_ request: PluginRunRequest) async throws -> PluginRunResult {
         requests.append(request)
         let output = URL(fileURLWithPath: request.input.outputDirectory, isDirectory: true)
-        let frame = output.appendingPathComponent("frames/frame.jpg")
-        let report = output.appendingPathComponent("reports/report.html")
-        try FileManager.default.createDirectory(at: frame.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: report.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("frame".utf8).write(to: frame)
-        try Data("report".utf8).write(to: report)
-        let result = VideoAnalysisResult(
+        let result = MediaAnalysisDocument(
+            documentID: request.input.taskID,
             taskID: request.input.taskID,
-            videos: [.init(
-                path: videoPath,
-                name: "video.mp4",
-                summary: .init(totalFrames: 1, faceVisible: 1, explicit: 0, moderate: 0, partial: 0, none: 1),
-                frames: [.init(
-                    index: 0,
-                    timestamp: 1,
-                    imagePath: "frames/frame.jpg",
-                    faceVisible: true,
-                    faceCount: 1,
-                    nudityLevel: .none,
-                    summary: "frame",
-                    tags: []
-                )],
+            items: [.init(
+                media: .init(
+                    stableID: "fixture-video",
+                    sourcePath: videoPath,
+                    displayName: "video.mp4"
+                ),
+                summaryMetrics: [.init(key: "totalFrames", value: 0, unit: .count)],
+                facets: [],
+                moments: [],
                 suggestedTags: [],
-                reportPath: "reports/report.html"
-            )]
+                report: nil
+            )],
+            suggestedTags: [],
+            actions: MediaAnalysisAction.standard,
+            managedTagLedger: .init(mediaEntries: []),
+            createdAt: Date(timeIntervalSince1970: 1_735_689_600)
         )
         let data = try JSONEncoder.openFinder.encode(result)
         try data.write(to: output.appendingPathComponent("result.json"))
         let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         let artifact = PluginArtifact(
-            type: "videoAnalysisResult",
+            type: MediaAnalysisDocument.schemaIdentifier,
             file: .init(
                 relativePath: "result.json",
                 mediaType: "application/json",

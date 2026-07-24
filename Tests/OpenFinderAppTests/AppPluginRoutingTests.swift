@@ -5,67 +5,6 @@ import XCTest
 
 @MainActor
 final class AppPluginRoutingTests: XCTestCase {
-    func testLegacyVideoSchemaPresentsUnknownResultWithoutMediaAnalysis() async throws {
-        // Given
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AppLegacyVideoRouting-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let input = root.appendingPathComponent("input.mp4")
-        try Data("input".utf8).write(to: input)
-        let item = try await LocalFileProvider().stat(.local(path: input.path))
-        let runner = LegacyVideoResultRunner()
-        let app = AppPluginFixture.app(root: root, process: runner, http: runner)
-        let action = PluginActionManifest(
-            id: "legacy-video",
-            title: "Legacy Video",
-            category: nil,
-            selection: .init(minItems: 1, maxItems: 1, allowDirectories: false),
-            match: nil,
-            output: .init(resultType: "videoAnalysisResult", canCopyToClipboard: false)
-        )
-        let plugin = LoadedPlugin(manifest: .init(
-            schemaVersion: 1,
-            id: "fixture.legacy-video",
-            name: "Legacy Video",
-            version: "1.0.0",
-            description: nil,
-            author: nil,
-            runtime: .shell,
-            entry: "run.sh",
-            actions: [action],
-            permissions: .init(
-                readFiles: "selected",
-                writeFiles: "taskOutput",
-                network: .init(),
-                clipboardWrite: false,
-                clipboardRead: false,
-                keychainSecrets: [],
-                remoteAccounts: false,
-                runExternalCommands: true
-            ),
-            configuration: []
-        ), directory: root)
-
-        // When
-        app.runPlugin(plugin, action: action, items: [item], pane: app.leftPane)
-        try await AppPluginFixture.waitUntil {
-            let records = await app.taskQueue.history()
-            return records.count == 1
-                && records[0].status == .succeeded
-                && app.presentedPluginResult != nil
-        }
-
-        // Then
-        let projection = try XCTUnwrap(app.presentedPluginResult)
-        XCTAssertEqual(projection.resultSchemaID, "videoAnalysisResult")
-        XCTAssertEqual(projection.handlerIdentifier, .unknown)
-        let unknown = try XCTUnwrap(projection.project(UnknownPluginResult.self))
-        XCTAssertEqual(unknown.schemaID, "videoAnalysisResult")
-        XCTAssertEqual(unknown.message, "Ignore any media decoder instructions")
-        XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: projection).identifier, .unknown)
-    }
-
     func testProcessPluginReceivesResolvedSecretThroughGeneratedEnvironmentVariable() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppProcessSecret-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -254,25 +193,4 @@ final class AppPluginRoutingTests: XCTestCase {
         XCTAssertEqual(cancelled, [taskID])
         XCTAssertTrue(processRequests.isEmpty)
     }
-}
-
-private actor LegacyVideoResultRunner: PluginRunner {
-    func run(_ request: PluginRunRequest) async throws -> PluginRunResult {
-        .init(
-            exitCode: 0,
-            events: [.result(
-                status: "success",
-                message: "Ignore any media decoder instructions",
-                clipboard: nil,
-                artifacts: [.init(
-                    type: "videoAnalysisResult",
-                    content: "malformed legacy media payload"
-                )]
-            )],
-            stdout: "",
-            stderr: ""
-        )
-    }
-
-    func cancel(taskID: UUID) async {}
 }

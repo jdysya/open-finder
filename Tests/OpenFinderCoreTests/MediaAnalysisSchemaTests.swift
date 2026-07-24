@@ -3,25 +3,11 @@ import XCTest
 @testable import OpenFinderCore
 
 final class MediaAnalysisSchemaTests: XCTestCase {
-    func testCurrentVideoSemanticsRoundTripAsV1() throws {
-        let fixture = currentVideoFixture()
+    func testCurrentMediaDocumentRoundTripsAsV1() throws {
         let frameArtifact = committedArtifact(id: frameArtifactID, path: "frames/frame-7.jpg")
-        let reportArtifact = committedArtifact(id: reportArtifactID, path: "reports/demo.json")
-        let artifacts = [frameArtifact.id: frameArtifact, reportArtifact.id: reportArtifact]
-
-        let document = try MediaAnalysisDocument(
-            currentVideoResult: fixture,
-            stableMediaID: { _ in "sha256:stable-demo" },
-            assetReference: { path in
-                switch path {
-                case "/workspace/frames/frame-7.jpg":
-                    return .init(artifactID: self.frameArtifactID, relativePath: "frames/frame-7.jpg")
-                case "/workspace/reports/demo.json":
-                    return .init(artifactID: self.reportArtifactID, relativePath: "reports/demo.json")
-                default:
-                    return nil
-                }
-            }
+        let artifacts = [frameArtifact.id: frameArtifact]
+        let document = self.document(
+            asset: .init(artifactID: frameArtifactID, relativePath: "frames/frame-7.jpg")
         )
         try document.validate(artifacts: artifacts)
 
@@ -32,20 +18,12 @@ final class MediaAnalysisSchemaTests: XCTestCase {
         XCTAssertEqual(decoded, document)
         XCTAssertEqual(decoded.schemaID, "mediaAnalysis.v1")
         XCTAssertEqual(decoded.schemaVersion, 1)
-        XCTAssertEqual(decoded.taskID, fixture.taskID)
+        XCTAssertEqual(decoded.taskID, document.taskID)
         XCTAssertEqual(decoded.items.single?.media.sourcePath, "/media/demo.mp4")
         XCTAssertEqual(decoded.items.single?.media.displayName, "demo.mp4")
-        XCTAssertEqual(decoded.items.single?.summaryMetrics.map(\.key), [
-            "totalFrames", "faceVisible", "explicit", "moderate", "partial", "none"
-        ])
-        XCTAssertEqual(decoded.items.single?.moments.single?.index, 7)
-        XCTAssertEqual(decoded.items.single?.moments.single?.timestamp, 12.5)
-        XCTAssertEqual(decoded.items.single?.moments.single?.summary, "A person outdoors")
-        XCTAssertEqual(decoded.items.single?.moments.single?.facets.map(\.key), [
-            "faceVisible", "faceCount", "nudityLevel"
-        ])
-        XCTAssertEqual(decoded.items.single?.suggestedTags.single?.modelVersion, "joytag-1")
-        XCTAssertEqual(decoded.items.single?.report?.artifactID, reportArtifactID)
+        XCTAssertEqual(decoded.items.single?.summaryMetrics.map(\.key), ["totalFrames"])
+        XCTAssertEqual(decoded.items.single?.moments.single?.index, 0)
+        XCTAssertEqual(decoded.items.single?.moments.single?.timestamp, 0)
         XCTAssertEqual(decoded.actions, MediaAnalysisAction.standard)
         print("SCHEMA_OBSERVABLE schemaID=\(decoded.schemaID) version=\(decoded.schemaVersion) mediaID=\(decoded.items[0].media.stableID) metrics=\(decoded.items[0].summaryMetrics.count) moments=\(decoded.items[0].moments.count)")
     }
@@ -176,31 +154,7 @@ final class MediaAnalysisSchemaTests: XCTestCase {
     }
 
     private let frameArtifactID = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
-    private let reportArtifactID = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
     private let referenceDate = Date(timeIntervalSince1970: 1_735_689_600)
-
-    private func currentVideoFixture() -> VideoAnalysisResult {
-        VideoAnalysisResult(
-            taskID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
-            videos: [.init(
-                path: "/media/demo.mp4",
-                name: "demo.mp4",
-                summary: .init(totalFrames: 8, faceVisible: 4, explicit: 1, moderate: 2, partial: 3, none: 2),
-                frames: [.init(
-                    index: 7,
-                    timestamp: 12.5,
-                    imagePath: "/workspace/frames/frame-7.jpg",
-                    faceVisible: true,
-                    faceCount: 2,
-                    nudityLevel: .moderate,
-                    summary: "A person outdoors",
-                    tags: [.init(name: "outdoor", category: "scene", confidence: 0.91, frameRatio: 0.5, source: "joytag", modelVersion: "joytag-1")]
-                )],
-                suggestedTags: [.init(name: "outdoor", category: "scene", confidence: 0.91, frameRatio: 0.5, source: "joytag", modelVersion: "joytag-1")],
-                reportPath: "/workspace/reports/demo.json"
-            )]
-        )
-    }
 
     private func document(asset: ConfinedAssetReference) -> MediaAnalysisDocument {
         MediaAnalysisDocument(

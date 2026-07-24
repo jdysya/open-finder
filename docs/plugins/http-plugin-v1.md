@@ -131,6 +131,11 @@ HTTP results are file-backed. Every artifact contains `type`, `relativePath`, `m
 
 The HTTP protocol MUST NOT put artifact contents or Base64 frames in JSON or SSE. Keyframe bytes stay in files below `outputDirectory`; JSON result files refer to frame and report files by confined relative paths. A server MUST NOT return, read, or copy an arbitrary absolute artifact path even when such a path exists locally.
 
+For a structured result, the artifact `type` MUST equal the invoking manifest action's
+`output.resultType`. Media analyzers use `mediaAnalysis.v1` and return exactly one JSON document
+artifact of that type. The document's `schemaID` and `schemaVersion` are validated independently of
+the transport envelope. The protocol does not assign renderer behavior by server or plugin ID.
+
 ## Restart-safe client behavior (without recovery)
 
 OpenFinder may reconnect only to the same live job using `Last-Event-ID`, and may fall back to one-second snapshot polling when capabilities advertise polling. A transport disconnect followed by `job_not_found`, a changed server process, or expired history is a failure of that attempt, not evidence of success. Retry is a new job with a new task UUID. No stdout text, HTTP 2xx alone, or stale snapshot may be treated as terminal success; success requires the single validated terminal result whose `taskID` matches the active task.
