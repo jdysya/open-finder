@@ -190,9 +190,9 @@ struct FilePaneView: View {
         case .quickLook:
             pane.quickLookSelected()
         case .copyToOtherPane:
-            app.copySelectionToOtherPane(move: false)
+            performTransfer(move: false, items: items)
         case .moveToOtherPane:
-            app.copySelectionToOtherPane(move: true)
+            performTransfer(move: true, items: items)
         case .goBack:
             pane.goBack()
         case .goForward:
@@ -214,13 +214,22 @@ struct FilePaneView: View {
         }
     }
 
+    private func performTransfer(move: Bool, items: [FileItem]) {
+        do {
+            try pane.requireCapability(.open, items: items)
+            app.copySelectionToOtherPane(move: move)
+        } catch {
+            pane.errorMessage = error.localizedDescription
+        }
+    }
+
     private func actionPresentation(
         _ action: FileTableAction,
         _ items: [FileItem]
     ) -> FileCapabilityPresentationState? {
         let operation: FileSourceOperation
         switch action {
-        case .open:
+        case .open, .copyToOtherPane, .moveToOtherPane:
             operation = .open
         case .editTags:
             operation = .editTags
@@ -240,8 +249,8 @@ struct FilePaneView: View {
             operation = .createFile
         case .createFolder:
             operation = .createFolder
-        case .copyToOtherPane, .moveToOtherPane, .goBack, .goForward, .goUp,
-             .refresh, .toggleHidden, .selectAll, .plugin:
+        case .goBack, .goForward, .goUp, .refresh, .toggleHidden, .selectAll,
+             .plugin:
             return nil
         }
         return pane.capabilityPresentationState(for: operation, items: items)

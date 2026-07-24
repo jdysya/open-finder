@@ -259,8 +259,8 @@ struct FileTableRepresentable: NSViewRepresentable {
             let deleteTitle = selected.contains { item in if case .local = item.location { return false }; return true } ? "Delete…" : "Move to Trash"
             addActionItem(deleteTitle, selector: #selector(trash(_:)), action: .trash, items: selected, to: menu)
             menu.addItem(.separator())
-            addItem("Copy to Other Pane", action: #selector(copyToOtherPane(_:)), to: menu)
-            addItem("Move to Other Pane", action: #selector(moveToOtherPane(_:)), to: menu)
+            addActionItem("Copy to Other Pane", selector: #selector(copyToOtherPane(_:)), action: .copyToOtherPane, items: selected, to: menu)
+            addActionItem("Move to Other Pane", selector: #selector(moveToOtherPane(_:)), action: .moveToOtherPane, items: selected, to: menu)
             menu.addItem(.separator())
             addActionItem("Reveal in Finder", selector: #selector(reveal(_:)), action: .revealInFinder, items: selected, to: menu)
             addActionItem("Open in Terminal", selector: #selector(terminal(_:)), action: .openInTerminal, items: selected, to: menu)

@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import OpenFinderApp
 @testable import OpenFinderCore
@@ -101,6 +103,74 @@ final class BrowserPaneCapabilityActionTests: XCTestCase {
         print("FORGED_ACTION uiReason=\(expected) adapterReason=\(expected) executed=false")
     }
 
+    func testLocalTransferMenuActionsRemainEnabled() throws {
+        let item = makeItem(
+            sourceID: .local,
+            writable: true,
+            supportsTags: true,
+            scopes: [.local]
+        )
+        let adapter = BrowserPaneFileOperationAdapter(
+            location: item.location.fileLocation,
+            listingCapabilities: .init(
+                source: .init(sourceID: .local),
+                isReadable: true,
+                isWritable: true,
+                supportsTags: true
+            )
+        )
+
+        let menu = try XCTUnwrap(makeMenu(item: item, adapter: adapter))
+
+        XCTAssertEqual(menu.item(withTitle: "Copy to Other Pane")?.isEnabled, true)
+        XCTAssertEqual(menu.item(withTitle: "Move to Other Pane")?.isEnabled, true)
+    }
+
+    func testSelectedLegacyRcloneDisablesTransferMenuActions() throws {
+        let remoteID = UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!
+        let item = FileItem(
+            id: "legacy-rclone-item",
+            name: "report.txt",
+            location: .rclone(remoteID: remoteID, path: "/report.txt"),
+            kind: .file,
+            size: 1,
+            modificationDate: nil,
+            creationDate: nil,
+            uti: nil,
+            mimeType: "text/plain",
+            fileExtension: "txt",
+            isHidden: false,
+            isReadable: true,
+            isWritable: true
+        )
+        let adapter = BrowserPaneFileOperationAdapter(
+            location: item.location.fileLocation,
+            listingCapabilities: nil
+        )
+        let expected = FileCapabilityUnsupportedReason.legacyRclone(remoteID: remoteID)
+
+        let menu = try XCTUnwrap(makeMenu(item: item, adapter: adapter))
+
+        for title in ["Copy to Other Pane", "Move to Other Pane"] {
+            let action = try XCTUnwrap(menu.item(withTitle: title))
+            XCTAssertFalse(action.isEnabled, title)
+            XCTAssertEqual(action.toolTip, expected.localizedDescription, title)
+        }
+        let actionableItems = menu.items.filter { !$0.isSeparatorItem }
+        XCTAssertFalse(actionableItems.isEmpty)
+        XCTAssertTrue(actionableItems.allSatisfy { !$0.isEnabled })
+        XCTAssertTrue(actionableItems.allSatisfy {
+            $0.toolTip == expected.localizedDescription
+        })
+        for operation in FileSourceOperation.allCases {
+            XCTAssertEqual(
+                adapter.decision(for: operation, items: [item]),
+                .rejected(expected),
+                operation.rawValue
+            )
+        }
+    }
+
     private func makeItem(
         sourceID: FileSourceID,
         writable: Bool,
@@ -135,5 +205,57 @@ final class BrowserPaneCapabilityActionTests: XCTestCase {
             tagScopes: scopes,
             supportsTagEditing: supportsTags
         )
+    }
+
+    private func makeMenu(
+        item: FileItem,
+        adapter: BrowserPaneFileOperationAdapter
+    ) -> NSMenu? {
+        var selection: Set<String> = [item.id]
+        let parent = FileTableRepresentable(
+            items: [item],
+            directorySizeText: [:],
+            selection: Binding(
+                get: { selection },
+                set: { selection = $0 }
+            ),
+            onOpen: { _ in },
+            onActivate: {},
+            onDropFileURLs: { _ in },
+            remoteFileDownloader: { _, _ in },
+            pluginActionsForSelection: { _ in [] },
+            presentationForAction: { action, items in
+                switch action {
+                case .copyToOtherPane, .moveToOtherPane:
+                    adapter.presentationState(for: .open, items: items)
+                case .open:
+                    adapter.presentationState(for: .open, items: items)
+                case .editTags:
+                    adapter.presentationState(for: .editTags, items: items)
+                case .rename:
+                    adapter.presentationState(for: .rename, items: items)
+                case .trash:
+                    adapter.presentationState(for: .trash, items: items)
+                case .revealInFinder:
+                    adapter.presentationState(for: .revealInFinder, items: items)
+                case .openInTerminal:
+                    adapter.presentationState(for: .openInTerminal, items: items)
+                case .quickLook:
+                    adapter.presentationState(for: .quickLook, items: items)
+                case .createFile, .createFolder, .goBack, .goForward, .goUp,
+                     .refresh, .toggleHidden, .selectAll, .plugin:
+                    nil
+                }
+            },
+            onAction: { _, _ in }
+        )
+        let coordinator = FileTableRepresentable.Coordinator(parent)
+        let table = NSTableView()
+        table.dataSource = coordinator
+        table.delegate = coordinator
+        table.reloadData()
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        XCTAssertEqual(table.selectedRowIndexes, IndexSet(integer: 0))
+        return coordinator.makeMenu(tableView: table, row: 0)
     }
 }
