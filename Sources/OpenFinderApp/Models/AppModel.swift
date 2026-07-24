@@ -113,6 +113,9 @@ final class AppModel: ObservableObject {
             credentialStore: keychainStore
         )
         self.remoteProviderRegistry = configuredProviderRegistry
+        let fileSourceRegistry = FileSourceRegistry(
+            remoteProviderRegistry: configuredProviderRegistry
+        )
         let resolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider = { location in
             try await configuredProviderRegistry.resolve(
                 accountID: location.accountID.uuidString,
@@ -157,12 +160,14 @@ final class AppModel: ObservableObject {
         leftPane = BrowserPaneModel(
             id: .left,
             location: .local(path: home.path),
-            remoteProviderResolver: resolver
+            remoteProviderResolver: resolver,
+            fileSourceRegistry: fileSourceRegistry
         )
         rightPane = BrowserPaneModel(
             id: .right,
             location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path),
-            remoteProviderResolver: resolver
+            remoteProviderResolver: resolver,
+            fileSourceRegistry: fileSourceRegistry
         )
         if startAutomatically {
             Task { await loadInitialState() }

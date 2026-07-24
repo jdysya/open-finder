@@ -10,22 +10,28 @@ extension BrowserPaneModel {
     func refresh(preservingTagEditorSession session: TagEditorSession?) async {
         let refreshedLocation = location
         let refreshedLocationGeneration = locationGeneration
+        listingGeneration &+= 1
+        let refreshedListingGeneration = listingGeneration
         isLoading = true
         errorMessage = nil
-        remoteParent = nil
-        defer { isLoading = false }
+        hideListingParentWhileRefreshing()
+        defer {
+            if listingGeneration == refreshedListingGeneration {
+                isLoading = false
+            }
+        }
         do {
             let listing = try await listItems(at: refreshedLocation)
             guard location == refreshedLocation,
-                  locationGeneration == refreshedLocationGeneration
+                  locationGeneration == refreshedLocationGeneration,
+                  listingGeneration == refreshedListingGeneration
             else {
                 return
             }
             if let session, !isCurrentTagEditorSession(session) {
                 return
             }
-            remoteParent = listing.remoteParent
-            items = listing.items
+            publish(listing)
             if session != nil {
                 isRestoringTagEditorSelection = true
                 selection.formIntersection(Set(items.map(\.id)))
@@ -37,6 +43,7 @@ extension BrowserPaneModel {
         } catch {
             guard location == refreshedLocation,
                   locationGeneration == refreshedLocationGeneration,
+                  listingGeneration == refreshedListingGeneration,
                   session.map(isCurrentTagEditorSession) ?? true
             else {
                 return

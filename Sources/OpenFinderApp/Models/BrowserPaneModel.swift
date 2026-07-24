@@ -10,8 +10,21 @@ struct TagEditorSession {
 }
 
 struct BrowserPaneListing {
+    let locationCapabilities: FileSourceCapabilities
+    let listingCapabilities: FileListingCapabilities
+    let providerRevision: String
     let items: [FileItem]
     let remoteParent: RemotePath?
+
+    func retainingItemsWithoutParent() -> Self {
+        .init(
+            locationCapabilities: locationCapabilities,
+            listingCapabilities: listingCapabilities,
+            providerRevision: providerRevision,
+            items: items,
+            remoteParent: nil
+        )
+    }
 }
 
 @MainActor
@@ -24,6 +37,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             invalidateTagEditorSession()
         }
     }
+    @Published private(set) var fileSourceListing: BrowserPaneListing?
     @Published var items: [FileItem] = []
     @Published var selection: Set<String> = [] {
         didSet {
@@ -42,24 +56,60 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     let provider = LocalFileProvider()
     let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
+    let fileSourceRegistry: FileSourceRegistry
+    let providerRevisionResolver: @Sendable (Location) async -> String
     var directorySizeCache: [String: Int64] = [:]
     var directorySizeTasks: [String: Task<Void, Never>] = [:]
-    var remoteParent: RemotePath?
     let remoteMaterializationDirectory: URL
     var tagEditorSession: TagEditorSession?
     var tagEditorGeneration: UInt64 = 0
     var locationGeneration: UInt64 = 0
+    var listingGeneration: UInt64 = 0
     var isRestoringTagEditorSelection = false
 
     init(
         id: PaneID,
         location: Location,
-        remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider
+        remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider,
+        fileSourceRegistry: FileSourceRegistry? = nil,
+        providerRevisionResolver: @escaping @Sendable (Location) async -> String = {
+            switch $0.fileLocation {
+            case .resolved(let location):
+                switch location.sourceID {
+                case .local:
+                    "local"
+                case .remote(_, let connectorID):
+                    connectorID.rawValue
+                }
+            case .unsupported:
+                "unsupported"
+            }
+        }
     ) {
         self.id = id
         self.location = location
         history = [location]
         self.remoteProviderResolver = remoteProviderResolver
+        self.providerRevisionResolver = providerRevisionResolver
+        if let fileSourceRegistry {
+            self.fileSourceRegistry = fileSourceRegistry
+        } else {
+            self.fileSourceRegistry = FileSourceRegistry(
+                remoteProviderRegistry: RemoteProviderRegistry { accountID, revision in
+                    guard let accountID = UUID(uuidString: accountID) else {
+                        throw RemoteProviderRegistry.UnsupportedProviderError(
+                            accountID: accountID,
+                            revision: revision
+                        )
+                    }
+                    return try await remoteProviderResolver(.init(
+                        accountID: accountID,
+                        connectorID: .init(rawValue: revision),
+                        path: .init(identifier: "/", displayPath: "/")
+                    ))
+                }
+            )
+        }
         remoteMaterializationDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenFinderRemoteFiles-\(UUID().uuidString)", isDirectory: true)
     }
@@ -95,4 +145,29 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     var canGoBack: Bool { historyIndex > 0 }
     var canGoForward: Bool { historyIndex + 1 < history.count }
+
+    var locationCapabilities: FileSourceCapabilities? {
+        fileSourceListing?.locationCapabilities
+    }
+
+    var listingCapabilities: FileListingCapabilities? {
+        fileSourceListing?.listingCapabilities
+    }
+
+    var listingProviderRevision: String? {
+        fileSourceListing?.providerRevision
+    }
+
+    var remoteParent: RemotePath? {
+        fileSourceListing?.remoteParent
+    }
+
+    func hideListingParentWhileRefreshing() {
+        fileSourceListing = fileSourceListing?.retainingItemsWithoutParent()
+    }
+
+    func publish(_ listing: BrowserPaneListing) {
+        fileSourceListing = listing
+        items = listing.items
+    }
 }

@@ -3,10 +3,21 @@ import OpenFinderCore
 
 extension BrowserPaneModel {
     func listItems(at location: Location) async throws -> BrowserPaneListing {
-        switch location {
-        case .local:
+        let revision = await providerRevisionResolver(location)
+        let source = try await fileSourceRegistry.resolve(location, revision: revision)
+        switch source.adapter {
+        case .local(let adapter):
+            let capabilities = FileListingCapabilities(
+                source: source.capabilities,
+                isReadable: true,
+                isWritable: true,
+                supportsTags: true
+            )
             return .init(
-                items: try await provider.list(
+                locationCapabilities: source.capabilities,
+                listingCapabilities: capabilities,
+                providerRevision: revision,
+                items: try await adapter.provider.list(
                     location,
                     options: .init(
                         showHiddenFiles: showHiddenFiles,
@@ -15,17 +26,18 @@ extension BrowserPaneModel {
                 ),
                 remoteParent: nil
             )
-        case .webDAV, .remote:
-            let remoteLocation = try remoteLocation(for: location)
-            let remote = try await remoteProvider(for: remoteLocation)
-            let listing = try await remote.list(directory: remoteLocation.path)
+        case .remote(let adapter):
+            guard case .remote(let accountID, let connectorID) = source.location.sourceID else {
+                preconditionFailure("Remote adapter must have a remote source ID")
+            }
+            let listing = try await adapter.provider.list(directory: source.location.path)
             let fileItems = listing.items.map { remoteItem in
                 FileItem(
-                    id: "remote:\(remoteLocation.accountID.uuidString):\(remoteItem.remotePath.identifier)",
+                    id: "remote:\(accountID.uuidString):\(remoteItem.remotePath.identifier)",
                     name: remoteItem.name,
                     location: .remote(.init(
-                        accountID: remoteLocation.accountID,
-                        connectorID: remoteLocation.connectorID,
+                        accountID: accountID,
+                        connectorID: connectorID,
                         path: remoteItem.remotePath
                     )),
                     kind: remoteItem.kind,
@@ -45,9 +57,13 @@ extension BrowserPaneModel {
                     supportsTagEditing: remoteItem.supportsTagEditing
                 )
             }
-            return .init(items: sortItems(fileItems), remoteParent: listing.parent)
-        case .rclone:
-            throw OpenFinderError.unsupportedLocation(location)
+            return .init(
+                locationCapabilities: source.capabilities,
+                listingCapabilities: source.effectiveCapabilities(for: listing.capabilities),
+                providerRevision: adapter.revision,
+                items: sortItems(fileItems),
+                remoteParent: listing.parent
+            )
         }
     }
 
