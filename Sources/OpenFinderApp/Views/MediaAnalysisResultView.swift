@@ -135,7 +135,12 @@ struct MediaAnalysisResultView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isApplying || finderTagCount == 0)
+            .accessibilityIdentifier("media-analysis-apply")
+            .disabled(!Self.isFinderTagApplyEnabled(
+                selectedTagsByMedia: finderTagsByMedia,
+                managedTagsByMedia: managedTagsByMedia,
+                isApplying: isApplying
+            ))
         }
         .padding(12)
         .background(.bar)
@@ -143,6 +148,18 @@ struct MediaAnalysisResultView: View {
 
     private var finderTagCount: Int {
         finderTagsByMedia.values.reduce(0) { $0 + $1.count }
+    }
+
+    static func isFinderTagApplyEnabled(
+        selectedTagsByMedia: [String: Set<String>],
+        managedTagsByMedia: [String: Set<String>],
+        isApplying: Bool = false
+    ) -> Bool {
+        guard !isApplying else { return false }
+        let mediaIDs = Set(selectedTagsByMedia.keys).union(managedTagsByMedia.keys)
+        return mediaIDs.contains {
+            selectedTagsByMedia[$0, default: []] != managedTagsByMedia[$0, default: []]
+        }
     }
 
     private var tagSelections: [MediaAnalysisTagSelection] {

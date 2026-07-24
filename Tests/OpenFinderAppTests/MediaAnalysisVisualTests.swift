@@ -8,11 +8,12 @@ import XCTest
 
 @MainActor
 final class MediaAnalysisVisualTests: XCTestCase {
-    func testCaptureMediaAndUnknownArtifactRenderers() async throws {
+    func testCaptureMediaAnalysisRendererStates() async throws {
         let outputDirectory = try evidenceDirectory()
         let mediaURL = outputDirectory.appendingPathComponent("media-analysis.png")
         let previewURL = outputDirectory.appendingPathComponent("media-analysis-preview.png")
         let unknownURL = outputDirectory.appendingPathComponent("unknown-artifacts.png")
+        let zeroSelectionURL = outputDirectory.appendingPathComponent("media-analysis-zero-selection-remove.png")
         let taskID = UUID(uuidString: "28282828-2828-2828-2828-282828282828")!
         let (artifactResults, asset) = try await committedPreviewAsset(
             taskID: taskID,
@@ -130,12 +131,46 @@ final class MediaAnalysisVisualTests: XCTestCase {
             size: .init(width: 760, height: 520)
         )
 
+        let managedDocument = MediaAnalysisDocument(
+            documentID: document.documentID,
+            taskID: document.taskID,
+            items: document.items,
+            suggestedTags: document.suggestedTags,
+            actions: document.actions,
+            managedTagLedger: .init(mediaEntries: [
+                .init(stableMediaID: item.media.stableID, tagNames: [tag.name]),
+            ]),
+            createdAt: document.createdAt
+        )
+        XCTAssertTrue(
+            MediaAnalysisResultView.isFinderTagApplyEnabled(
+                selectedTagsByMedia: [item.media.stableID: []],
+                managedTagsByMedia: [item.media.stableID: [tag.name]]
+            )
+        )
+        try render(
+            PluginResultView(
+                projection: .init(
+                    resultSchemaID: MediaAnalysisDocument.schemaIdentifier,
+                    handlerIdentifier: .mediaAnalysis,
+                    value: managedDocument
+                ),
+                catalog: .standard,
+                resolvedAssetURL: { _ in resolvedAssetURL },
+                onDismiss: {}
+            ),
+            to: zeroSelectionURL,
+            size: .init(width: 1120, height: 760)
+        )
+
         XCTAssertGreaterThan(try Data(contentsOf: mediaURL).count, 0)
         XCTAssertGreaterThan(try Data(contentsOf: previewURL).count, 0)
         XCTAssertGreaterThan(try Data(contentsOf: unknownURL).count, 0)
+        XCTAssertGreaterThan(try Data(contentsOf: zeroSelectionURL).count, 0)
         print(
             "TASK28_VISUAL media=\(mediaURL.path) preview=\(previewURL.path) "
-                + "unknown=\(unknownURL.path)"
+                + "unknown=\(unknownURL.path) zeroSelection=\(zeroSelectionURL.path) "
+                + "zeroSelectionApplyEnabled=true"
         )
     }
 

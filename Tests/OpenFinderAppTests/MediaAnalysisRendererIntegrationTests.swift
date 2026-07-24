@@ -4,6 +4,47 @@ import XCTest
 @testable import OpenFinderApp
 
 final class MediaAnalysisRendererIntegrationTests: XCTestCase {
+    @MainActor
+    func testFinderTagApplyEligibilityBaseline() {
+        XCTAssertFalse(
+            MediaAnalysisResultView.isFinderTagApplyEnabled(
+                selectedTagsByMedia: [:],
+                managedTagsByMedia: [:]
+            )
+        )
+        XCTAssertTrue(
+            MediaAnalysisResultView.isFinderTagApplyEnabled(
+                selectedTagsByMedia: ["media-1": ["Review"]],
+                managedTagsByMedia: [:]
+            )
+        )
+    }
+
+    @MainActor
+    func testDeselectingOnlyManagedTagKeepsApplyEnabledAndPlansRemoval() {
+        let managed = ["media-1": Set(["Review"])]
+        let selected = ["media-1": Set<String>()]
+        XCTAssertTrue(
+            MediaAnalysisResultView.isFinderTagApplyEnabled(
+                selectedTagsByMedia: selected,
+                managedTagsByMedia: managed
+            )
+        )
+
+        let item = Self.document(taskID: UUID()).items[0]
+        let update = MediaAnalysisTagLedgerService().update(
+            ledger: .init(mediaEntries: [
+                .init(stableMediaID: item.media.stableID, tagNames: managed[item.media.stableID] ?? []),
+            ]),
+            item: item,
+            currentTags: [.local(name: "Review")],
+            selectedNames: selected[item.media.stableID] ?? []
+        )
+        XCTAssertEqual(update.changes.removals.map(\.name), ["Review"])
+        XCTAssertTrue(update.changes.additions.isEmpty)
+        XCTAssertTrue(update.nextManagedTagNames.isEmpty)
+    }
+
     func testTwoPluginsShareRendererAndInteractions() async throws {
         let processRunner = MediaDocumentPluginRunner()
         let httpRunner = MediaDocumentPluginRunner()
