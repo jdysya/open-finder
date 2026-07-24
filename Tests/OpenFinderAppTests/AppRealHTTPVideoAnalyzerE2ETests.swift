@@ -48,15 +48,19 @@ final class AppRealHTTPVideoAnalyzerE2ETests: XCTestCase {
         app.runPlugin(plugin, action: plugin.manifest.actions[0], items: [item], pane: app.leftPane)
         try await AppPluginFixture.waitUntil {
             let records = await app.taskQueue.history()
-            return records.count == 1 && records[0].status.isTerminal && app.presentedVideoAnalysis != nil
+            return records.count == 1 && records[0].status.isTerminal && app.presentedPluginResult != nil
         }
         let firstSubmission = try XCTUnwrap(fixture.history().first { $0.kind == "submission" })
         let firstID = try XCTUnwrap(firstSubmission.taskID)
         let firstRecord = await app.taskQueue.record(for: firstID)
         XCTAssertEqual(firstRecord?.status, .succeeded)
         XCTAssertEqual(firstSubmission.config?["useJoyTag"], "false")
-        let firstFrame = try XCTUnwrap(app.presentedVideoAnalysis?.videos[0].frames[0].imagePath)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: firstFrame))
+        let firstProjection = try XCTUnwrap(app.presentedPluginResult)
+        XCTAssertEqual(firstProjection.resultSchemaID, "videoAnalysisResult")
+        XCTAssertEqual(firstProjection.handlerIdentifier, .unknown)
+        XCTAssertNotNil(firstProjection.project(UnknownPluginResult.self))
+        XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: firstProjection).identifier, .unknown)
+        XCTAssertNil(app.presentedVideoAnalysis)
 
         app.setPluginConfigValue("http://127.0.0.1:9", pluginID: plugin.id, key: "serverURL")
         app.setPluginConfigValue("true", pluginID: plugin.id, key: "useJoyTag")

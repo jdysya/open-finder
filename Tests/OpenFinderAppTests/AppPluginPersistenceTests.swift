@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class AppPluginPersistenceTests: XCTestCase {
-    func testHTTPVideoResultPersistsBeforeWorkspaceCleanup() async throws {
+    func testHTTPLegacyVideoResultRemainsGenericAfterWorkspaceCleanup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppPluginPersistence-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -52,7 +52,12 @@ final class AppPluginPersistenceTests: XCTestCase {
         XCTAssertTrue(secretSaved)
 
         app.runPlugin(plugin, action: action, items: [item], pane: app.leftPane)
-        try await AppPluginFixture.waitUntil { app.presentedVideoAnalysis != nil }
+        try await AppPluginFixture.waitUntil {
+            let records = await app.taskQueue.history()
+            return records.count == 1
+                && records[0].status == .succeeded
+                && app.presentedPluginResult != nil
+        }
 
         let captured = await http.captured()
         let request = try XCTUnwrap(captured.first)
@@ -61,12 +66,12 @@ final class AppPluginPersistenceTests: XCTestCase {
         XCTAssertEqual(records.first?.status, .succeeded)
         let workspaceRoot = URL(fileURLWithPath: request.input.tempDirectory).deletingLastPathComponent()
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceRoot.path))
-        let result = try XCTUnwrap(app.presentedVideoAnalysis)
-        let framePath = try XCTUnwrap(result.videos.first?.frames.first?.imagePath)
-        let reportPath = try XCTUnwrap(result.videos.first?.reportPath)
-        XCTAssertTrue(framePath.contains("analysis/assets/\(request.input.taskID.uuidString)"))
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: framePath)), Data("frame".utf8))
-        XCTAssertEqual(try String(contentsOfFile: reportPath, encoding: .utf8), "report")
+        let projection = try XCTUnwrap(app.presentedPluginResult)
+        XCTAssertEqual(projection.resultSchemaID, "videoAnalysisResult")
+        XCTAssertEqual(projection.handlerIdentifier, .unknown)
+        XCTAssertNotNil(projection.project(UnknownPluginResult.self))
+        XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: projection).identifier, .unknown)
+        XCTAssertNil(app.presentedVideoAnalysis)
     }
 }
 
