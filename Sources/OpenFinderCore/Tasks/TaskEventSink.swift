@@ -53,7 +53,8 @@ public actor TaskEventSink {
 
     @discardableResult
     public func updateStatus(_ status: TaskStatus) async -> Bool {
-        await submit(.status(status))
+        guard !status.isTerminal else { return false }
+        return await submit(.status(status))
     }
 
     public func markEffectsCommitted() async throws {
@@ -87,9 +88,6 @@ public actor TaskEventSink {
         let sequence = nextSequence
         nextSequence &+= 1
         pending.append(.init(sequence: sequence, event: event))
-        if case .status(let status) = event, status.isTerminal {
-            accepting = false
-        }
         if !draining {
             draining = true
             Task { await self.drain() }
@@ -105,9 +103,6 @@ public actor TaskEventSink {
             let accepted = terminal ? false : await consume(item.event)
             if accepted {
                 history.append(item.event)
-                if case .status(let status) = item.event, status.isTerminal {
-                    terminal = true
-                }
             }
             eventWaiters.removeValue(forKey: item.sequence)?.resume(returning: accepted)
         }

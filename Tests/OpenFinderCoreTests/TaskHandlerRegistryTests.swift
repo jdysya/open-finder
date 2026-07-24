@@ -132,6 +132,34 @@ final class TaskHandlerRegistryTests: XCTestCase {
         XCTAssertEqual(record.resultSummary, "version 2")
     }
 
+    func testPrematureSucceededStatusCannotMaskHandlerFailure() async throws {
+        let registry = TaskHandlerRegistry()
+        try await registry.register(TaskHandler(
+            handlerID: DurableTaskHandlerID.transferCopy.rawValue,
+            payloadVersion: 1
+        ) { _, events in
+            let accepted = await events.updateStatus(.succeeded)
+            XCTAssertFalse(accepted)
+            throw OpenFinderError.operationFailed("failure after premature success")
+        })
+        let queue = TaskQueueService(maxConcurrentTasks: 1, handlerRegistry: registry)
+        let id = try await queue.enqueue(.init(
+            kind: .localCopy,
+            title: "Premature terminal status",
+            descriptor: makeDescriptor(resourceKey: "premature-terminal")
+        ))
+
+        let record = try await queue.waitForTerminalStatus(id, timeout: 2)
+
+        XCTAssertEqual(record.status, .failed)
+        XCTAssertNotNil(record.errorMessage)
+        XCTAssertNil(record.resultSummary)
+        print(
+            "PREMATURE_TERMINAL_OBSERVABLE terminal=\(record.status.rawValue) " +
+            "error=\(record.errorMessage ?? "missing") result=\(record.resultSummary ?? "missing")"
+        )
+    }
+
     func testCancellationBeforeCommitAbortsButCancellationAfterCommitPreservesSuccess() async throws {
         let beforeGate = HandlerGate()
         let beforeRegistry = TaskHandlerRegistry()
@@ -149,7 +177,7 @@ final class TaskHandlerRegistryTests: XCTestCase {
             title: "Cancel before commit",
             descriptor: makeDescriptor(resourceKey: "before")
         ))
-        await beforeGate.waitUntilEntered()
+        try await beforeGate.waitUntilEntered()
         await beforeQueue.cancel(beforeID)
         await beforeGate.release()
         let before = try await beforeQueue.waitForTerminalStatus(beforeID, timeout: 2)
@@ -170,7 +198,7 @@ final class TaskHandlerRegistryTests: XCTestCase {
             title: "Cancel after commit",
             descriptor: makeDescriptor(resourceKey: "after")
         ))
-        await afterGate.waitUntilEntered()
+        try await afterGate.waitUntilEntered()
         await afterQueue.cancel(afterID)
         let whileCommitted = await afterQueue.record(for: afterID)
         await afterGate.release()
@@ -213,19 +241,20 @@ private actor SinkCapture {
 
 private actor HandlerGate {
     private var entered = false
-    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiter: CheckedContinuation<Void, Never>?
 
     func enterAndWait() async {
         entered = true
-        entryWaiters.forEach { $0.resume() }
-        entryWaiters.removeAll()
         await withCheckedContinuation { releaseWaiter = $0 }
     }
 
-    func waitUntilEntered() async {
-        guard !entered else { return }
-        await withCheckedContinuation { entryWaiters.append($0) }
+    func waitUntilEntered(timeout: Duration = .seconds(2)) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !entered, clock.now < deadline {
+            try await clock.sleep(for: .milliseconds(10))
+        }
+        guard entered else { throw OpenFinderError.timeout("Handler did not start") }
     }
 
     func release() {

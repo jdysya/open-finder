@@ -337,11 +337,8 @@ public actor TaskQueueService {
         case .log(let message, let level):
             appendLog(id, message, level: level)
         case .status(let status):
-            if status.isTerminal {
-                finish(id, status: status, result: nil, error: nil)
-            } else {
-                records[id]?.status = status
-            }
+            guard !status.isTerminal else { return false }
+            records[id]?.status = status
         }
         return true
     }
