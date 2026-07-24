@@ -164,18 +164,18 @@ final class FileSourceRegistryTests: XCTestCase {
     }
 
     func testCancelledMaterializationCleansItsNamespaceWhenProviderFinishesNormally() async throws {
-        let provider = CancellationIgnoringRemoteProvider()
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenFinderRegistryCancellation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let localFile = root.appendingPathComponent("local.txt")
         try Data("local".utf8).write(to: localFile)
-        let registry = FileSourceRegistry(
-            remoteProviderRegistry: RemoteProviderRegistry { _, _ in provider },
+        let stableProvider = FileSourceTestRemoteProvider(identity: "stable")
+        let stableRegistry = FileSourceRegistry(
+            remoteProviderRegistry: RemoteProviderRegistry { _, _ in stableProvider },
             materializationRoot: root
         )
-        let stableLease = try await registry.materialize(
+        let stableLease = try await stableRegistry.materialize(
             remoteLocation(identifier: "stable", name: "stable.txt"),
             revision: "r1"
         )
@@ -185,39 +185,46 @@ final class FileSourceRegistryTests: XCTestCase {
             name: "cancelled.txt"
         )
 
-        let cancelled = Task {
-            try await registry.materialize(
-                cancelledLocation,
-                revision: "r1"
+        for _ in 0..<2 {
+            let provider = CancellationIgnoringRemoteProvider()
+            let registry = FileSourceRegistry(
+                remoteProviderRegistry: RemoteProviderRegistry { _, _ in provider },
+                materializationRoot: root
+            )
+            let cancelled = Task {
+                try await registry.materialize(
+                    cancelledLocation,
+                    revision: "r1"
+                )
+            }
+            await provider.waitUntilCancelledDownloadStarts()
+            cancelled.cancel()
+            await provider.finishCancelledDownload()
+
+            do {
+                _ = try await cancelled.value
+                XCTFail("A cancelled materialization must not return a live lease")
+            } catch is CancellationError {}
+
+            let remainingDirectories = try FileManager.default
+                .contentsOfDirectory(
+                    at: root,
+                    includingPropertiesForKeys: [.isDirectoryKey]
+                )
+                .filter {
+                    try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+                }
+            XCTAssertEqual(
+                remainingDirectories.map { $0.resolvingSymlinksInPath() },
+                [stableNamespace.resolvingSymlinksInPath()]
             )
         }
-        await provider.waitUntilCancelledDownloadStarts()
-        cancelled.cancel()
-        await provider.finishCancelledDownload()
-
-        do {
-            _ = try await cancelled.value
-            XCTFail("A cancelled materialization must not return a live lease")
-        } catch is CancellationError {}
-
-        let remainingDirectories = try FileManager.default
-            .contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey]
-            )
-            .filter {
-                try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
-            }
-        XCTAssertEqual(
-            remainingDirectories.map { $0.resolvingSymlinksInPath() },
-            [stableNamespace.resolvingSymlinksInPath()]
-        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: stableLease.url.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: localFile.path))
         try stableLease.release()
         print(
             "CANCELLATION noLeaseReturned=true cancelledNamespaceRemoved=true " +
-            "stableLeasePreserved=true localPreserved=true"
+            "stableLeasePreserved=true localPreserved=true repeatedInterruptions=2"
         )
     }
 
