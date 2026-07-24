@@ -58,7 +58,7 @@ final class TransferTaskHandlerTests: XCTestCase {
         )
     }
 
-    func testQueuedPersistedCopyRestoresAndExecutesInDescriptorOrder() async throws {
+    func testQueuedCopyRestoresAndExecutes() async throws {
         // Given
         let fixture = try TransferHandlerFixture()
         defer { fixture.cleanup() }
@@ -84,7 +84,8 @@ final class TransferTaskHandlerTests: XCTestCase {
         // When
         let taskID = try await queue.recoverPersistedTask(
             .init(kind: .localCopy, title: "Recovered copy"),
-            descriptorData: descriptorData
+            descriptorData: descriptorData,
+            persisted: .init(status: .queued, startedAt: nil)
         )
         let record = try await queue.waitForTerminalStatus(taskID, timeout: 2)
         let finalRecord = await queue.record(for: taskID)
@@ -104,7 +105,7 @@ final class TransferTaskHandlerTests: XCTestCase {
         )
     }
 
-    func testInterruptedRetryRevalidatesMutatedDestinationWithoutOverwrite() async throws {
+    func testInterruptedCopyRetryRevalidatesDestination() async throws {
         // Given
         let fixture = try TransferHandlerFixture()
         defer { fixture.cleanup() }
