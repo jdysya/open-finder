@@ -136,7 +136,7 @@ final class FileSourceCapabilityContractTests: XCTestCase {
         )
     }
 
-    func testAdapterPreflightAndUIConsumeTheSameTypedReason() {
+    func testAdapterPreflightAndPresentationIndependentlyPreserveTypedReason() {
         let rcloneID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
         let expected = FileCapabilityUnsupportedReason.legacyRclone(remoteID: rcloneID)
         guard case .unsupported(let adapterReason) = Location
@@ -146,11 +146,24 @@ final class FileSourceCapabilityContractTests: XCTestCase {
             return XCTFail("Expected typed adapter rejection")
         }
 
-        let consumers = FileCapabilityReasonConsumerProbe(adapterReason)
+        let decision = FileCapabilityDecision.rejected(adapterReason)
+        let candidate = FileLocation(
+            sourceID: .local,
+            path: .init(identifier: "/tmp/archive", displayPath: "/tmp/archive")
+        )
 
-        XCTAssertEqual(consumers.adapter, expected)
-        XCTAssertEqual(consumers.preflight, expected)
-        XCTAssertEqual(consumers.userInterface, expected)
+        XCTAssertEqual(
+            FileLocationCapabilityAdapter.apply(decision, to: candidate),
+            .unsupported(expected)
+        )
+        XCTAssertEqual(
+            FileOperationPreflight.evaluate(decision),
+            .rejected(expected)
+        )
+        XCTAssertEqual(
+            FileCapabilityPresentationState(decision),
+            .disabled(expected)
+        )
     }
 
     private var sourceCases: [SourceCase] {
