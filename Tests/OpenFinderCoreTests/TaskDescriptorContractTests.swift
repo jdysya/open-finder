@@ -96,6 +96,37 @@ final class TaskDescriptorContractTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(TaskDescriptorEnvelope.self, from: malformed))
     }
 
+    func testMalformedPersistedDescriptorRemainsVisibleAndDoesNotExecute() async throws {
+        let malformed = Data(#"{"handlerID":"plugin.execute.v1","payloadVersion":"#.utf8)
+        let fallbackID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let executions = ExecutionCounter()
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let request = TaskRequest(kind: .localCopy, title: "Recovered malformed task") { _ in
+            await executions.increment()
+            return .success(summary: "must not execute", clipboard: nil)
+        }
+
+        let id = try await queue.recoverPersistedTask(
+            request,
+            descriptorData: malformed,
+            fallbackID: fallbackID
+        )
+        let record = try await queue.waitForTerminalStatus(id, timeout: 2)
+        let executionCount = await executions.value
+        let history = await queue.history()
+
+        XCTAssertEqual(id, fallbackID)
+        XCTAssertEqual(record.status, .unavailable)
+        XCTAssertEqual(record.reasonCode, .malformedPayload)
+        XCTAssertNil(record.descriptor)
+        XCTAssertEqual(executionCount, 0)
+        XCTAssertTrue(history.contains(where: { $0.id == fallbackID }))
+        print(
+            "MALFORMED_RECOVERY_OBSERVABLE id=\(id.uuidString) reason=\(record.reasonCode?.rawValue ?? "missing") " +
+            "status=\(record.status.rawValue) executionCount=\(executionCount)"
+        )
+    }
+
     func testInterruptedAndUnavailableAreImmutableTerminalStatuses() async throws {
         XCTAssertTrue(TaskStatus.interrupted.isTerminal)
         XCTAssertTrue(TaskStatus.unavailable.isTerminal)

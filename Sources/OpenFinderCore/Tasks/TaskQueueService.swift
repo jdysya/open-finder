@@ -97,6 +97,42 @@ public actor TaskQueueService {
         return id
     }
 
+    @discardableResult
+    public func recoverPersistedTask(
+        _ request: TaskRequest,
+        descriptorData: Data,
+        fallbackID: UUID = UUID()
+    ) async throws -> UUID {
+        let descriptor: TaskDescriptorEnvelope
+        do {
+            descriptor = try JSONDecoder().decode(TaskDescriptorEnvelope.self, from: descriptorData)
+        } catch {
+            records[fallbackID] = TaskRecord(
+                id: fallbackID,
+                kind: request.kind,
+                title: request.title,
+                inputSummary: request.inputSummary
+            )
+            logStorage[fallbackID] = []
+            finish(
+                fallbackID,
+                status: .unavailable,
+                result: nil,
+                error: nil,
+                reasonCode: .malformedPayload
+            )
+            return fallbackID
+        }
+        return try await enqueue(TaskRequest(
+            kind: request.kind,
+            title: request.title,
+            inputSummary: request.inputSummary,
+            resourceKey: request.resourceKey,
+            descriptor: descriptor,
+            operation: request.operation
+        ))
+    }
+
     public func record(for id: UUID) -> TaskRecord? { records[id] }
 
     public func history() -> [TaskRecord] {
