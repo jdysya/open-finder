@@ -8,8 +8,16 @@ let package = Package(
         .library(name: "OpenFinderCore", targets: ["OpenFinderCore"]),
         .executable(name: "OpenFinder", targets: ["OpenFinderApp"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.10.0")
+    ],
     targets: [
-        .target(name: "OpenFinderCore"),
+        .target(
+            name: "OpenFinderCore",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift")
+            ]
+        ),
         .executableTarget(
             name: "OpenFinderApp",
             dependencies: ["OpenFinderCore"],
