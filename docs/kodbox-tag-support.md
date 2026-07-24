@@ -48,7 +48,7 @@ OpenFinder reads the current team catalog before a catalog mutation and sends th
 Team catalog management and item association have separate permissions:
 
 - `sourceInfo.isGroupRoot == true` enables team tag creation, rename, move, and delete for that scope.
-- The decoded item's writable state enables association, provided the item belongs to the same account and `groupID` as the tag. For compatibility with existing Kodbox listings, an absent or malformed `canWrite` value currently defaults to writable.
+- The decoded item's writable state enables association, provided the item belongs to the same account and `groupID` as the tag. An absent or malformed `canWrite` value defaults to read-only; Kodbox permissions fail closed unless the listing explicitly reports writability.
 - A writable non-admin can associate existing team tags without receiving catalog-management capabilities.
 - An admin cannot associate a tag with a read-only item or with an item from another team scope.
 
