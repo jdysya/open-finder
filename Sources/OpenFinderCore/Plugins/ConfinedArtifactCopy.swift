@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -7,6 +8,28 @@ extension ConfinedArtifactReader {
         to destination: URL,
         maximumByteCount: Int = .max
     ) throws {
+        try copy(relativePath: relativePath, expected: nil, to: destination, maximumByteCount: maximumByteCount)
+    }
+
+    public func copy(
+        artifact: PluginFileArtifact,
+        to destination: URL,
+        maximumByteCount: Int = Self.maximumResultBytes
+    ) throws {
+        try copy(
+            relativePath: artifact.relativePath,
+            expected: artifact,
+            to: destination,
+            maximumByteCount: maximumByteCount
+        )
+    }
+
+    private func copy(
+        relativePath: String,
+        expected: PluginFileArtifact?,
+        to destination: URL,
+        maximumByteCount: Int
+    ) throws {
         let source = try openFile(relativePath: relativePath)
         defer { Darwin.close(source) }
         var before = stat()
@@ -14,12 +37,22 @@ extension ConfinedArtifactReader {
             throw ConfinedArtifactError.ioFailure
         }
         guard before.st_size <= maximumByteCount else { throw ConfinedArtifactError.tooLarge }
+        if let expected, before.st_size != expected.byteCount {
+            throw ConfinedArtifactError.sizeMismatch
+        }
 
         let target = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
         guard target >= 0 else { throw ConfinedArtifactError.ioFailure }
         defer { Darwin.close(target) }
+        var completed = false
+        defer {
+            if !completed {
+                try? FileManager.default.removeItem(at: destination)
+            }
+        }
 
         var total = 0
+        var hasher = SHA256()
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
         while true {
             let count = Darwin.read(source, &buffer, buffer.count)
@@ -30,15 +63,22 @@ extension ConfinedArtifactReader {
             }
             guard total <= maximumByteCount - count else { throw ConfinedArtifactError.tooLarge }
             try writeAll(buffer, count: count, descriptor: target)
+            hasher.update(data: Data(buffer[..<count]))
             total += count
         }
-        guard fsync(target) == 0 else { throw ConfinedArtifactError.ioFailure }
 
         var after = stat()
         guard fstat(source, &after) == 0 else { throw ConfinedArtifactError.ioFailure }
         guard sameIdentityAndRevision(before, after), total == before.st_size else {
             throw ConfinedArtifactError.modifiedDuringRead
         }
+        if let expected {
+            guard total == expected.byteCount else { throw ConfinedArtifactError.sizeMismatch }
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            guard digest == expected.sha256 else { throw ConfinedArtifactError.hashMismatch }
+        }
+        guard fsync(target) == 0 else { throw ConfinedArtifactError.ioFailure }
+        completed = true
     }
 
     private func writeAll(_ buffer: [UInt8], count: Int, descriptor: Int32) throws {
