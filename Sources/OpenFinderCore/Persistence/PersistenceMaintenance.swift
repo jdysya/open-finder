@@ -8,6 +8,7 @@ public actor PersistenceMaintenance {
     let databasePool: DatabasePool
     let artifactRoot: URL
     let fileManager: FileManager
+    private let artifactRootIdentity: PersistenceRootIdentity?
     private let clock: Clock
 
     public init(
@@ -19,6 +20,7 @@ public actor PersistenceMaintenance {
         self.databasePool = databasePool
         self.artifactRoot = artifactRoot.standardizedFileURL
         self.fileManager = fileManager
+        self.artifactRootIdentity = try? PersistenceRootIdentity(root: artifactRoot)
         self.clock = clock
     }
 
@@ -36,6 +38,16 @@ public actor PersistenceMaintenance {
 
     private func run(pinnedArtifactIDs: Set<UUID>) async -> PersistenceMaintenanceReport {
         let now = clock()
+        do {
+            guard let artifactRootIdentity else { throw PersistenceMaintenanceRootError.invalid }
+            try artifactRootIdentity.verify(root: artifactRoot)
+        } catch {
+            return report(issues: [.init(
+                kind: .cleanupFailure,
+                path: artifactRoot.path,
+                detail: "Artifact root is unavailable or was replaced: \(error)"
+            )])
+        }
         do {
             let snapshot = try await loadSnapshot(now: now)
             var issues = snapshot.issues
@@ -84,6 +96,7 @@ public actor PersistenceMaintenance {
             for artifact in snapshot.artifacts.values.sorted(by: { $0.id.uuidString < $1.id.uuidString })
             where remainingLinks[artifact.id]?.isEmpty != false
                 && !protectedIDs.contains(artifact.id)
+                && !snapshot.diagnosticProtectedArtifactIDs.contains(artifact.id)
                 && inspection.healthyIDs.contains(artifact.id) {
                 do {
                     try await removeArtifactRowThenFile(artifact)
@@ -133,15 +146,18 @@ public actor PersistenceMaintenance {
             let tags = try ManagedTagSnapshot.fetchAll(db)
             return Snapshot(
                 artifacts: Dictionary(uniqueKeysWithValues: artifacts.records.map { ($0.id, $0) }),
-                links: Dictionary(grouping: links, by: \.artifactID)
+                links: Dictionary(grouping: links.records, by: \.artifactID)
                     .mapValues { Set($0.map(\.taskID)) },
                 documents: Dictionary(uniqueKeysWithValues: documents.records.map { ($0.id, $0) }),
                 documentRowIDs: documents.rowIDs,
                 tags: tags,
                 taskIDs: try TaskIDSnapshot.fetchAll(db),
-                diagnosticProtectedTaskIDs: Set(documents.issues.compactMap(\.taskID)),
+                diagnosticProtectedArtifactIDs: Set(links.issues.compactMap(\.artifactID)),
+                diagnosticProtectedTaskIDs: Set(
+                    (documents.issues + links.issues).compactMap(\.taskID)
+                ),
                 expiredTasks: tasks,
-                issues: artifacts.issues + documents.issues
+                issues: artifacts.issues + links.issues + documents.issues
             )
         }
     }
@@ -185,9 +201,14 @@ private struct Snapshot: Sendable {
     let documentRowIDs: Set<String>
     let tags: [ManagedTagSnapshot]
     let taskIDs: Set<UUID>
+    let diagnosticProtectedArtifactIDs: Set<UUID>
     let diagnosticProtectedTaskIDs: Set<UUID>
     let expiredTasks: [ExpiredTaskSnapshot]
     let issues: [PersistenceReconciliationIssue]
+}
+
+private enum PersistenceMaintenanceRootError: Error {
+    case invalid
 }
 
 extension PersistenceMaintenance {

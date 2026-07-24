@@ -172,18 +172,35 @@ extension PersistenceMaintenance {
             at: publishedRoot,
             includingPropertiesForKeys: [.isSymbolicLinkKey]
         ) else { return ([], []) }
-        let payloads = enumerator.compactMap { $0 as? URL }
-            .filter { $0.lastPathComponent == "payload" }
+        let files = enumerator.compactMap { $0 as? URL }
             .sorted { $0.path < $1.path }
         var artifactIDs: [UUID] = []
         var issues: [PersistenceReconciliationIssue] = []
-        for payload in payloads {
-            let relativePath = String(payload.path.dropFirst(artifactRoot.path.count + 1))
-            let artifactDirectory = payload.deletingLastPathComponent()
+        for file in files {
+            let values: URLResourceValues
+            do {
+                values = try file.resourceValues(
+                    forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+                )
+            } catch {
+                issues.append(cleanupIssue(path: file.path, error: error))
+                continue
+            }
+            guard values.isDirectory != true else { continue }
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                issues.append(.init(
+                    kind: .corruptArtifactRow,
+                    path: file.path,
+                    detail: "Published artifact is not a confined regular file."
+                ))
+                continue
+            }
+            let relativePath = String(file.path.dropFirst(artifactRoot.path.count + 1))
+            let artifactDirectory = file.deletingLastPathComponent()
             guard let artifactID = UUID(uuidString: artifactDirectory.lastPathComponent) else {
                 issues.append(.init(
                     kind: .corruptArtifactRow,
-                    path: payload.path,
+                    path: file.path,
                     detail: "Published artifact directory has an invalid UUID."
                 ))
                 continue
@@ -191,13 +208,13 @@ extension PersistenceMaintenance {
             guard !knownArtifactIDs.contains(artifactID),
                   !knownRelativePaths.contains(relativePath) else { continue }
             do {
-                try verifyNoSymlink(at: artifactDirectory)
+                try verifyNoSymlink(at: file)
                 try fileManager.removeItem(at: artifactDirectory)
                 artifactIDs.append(artifactID)
             } catch {
                 issues.append(cleanupIssue(
                     artifactID: artifactID,
-                    path: payload.path,
+                    path: file.path,
                     error: error
                 ))
             }
@@ -231,9 +248,7 @@ extension PersistenceMaintenance {
 }
 
 private enum PersistenceMaintenanceError: Error {
-    case digestMismatch
-    case symbolicLink
-    case unconfinedPath
+    case digestMismatch, symbolicLink, unconfinedPath
 }
 
 private struct ArtifactFileRemoval: @unchecked Sendable {

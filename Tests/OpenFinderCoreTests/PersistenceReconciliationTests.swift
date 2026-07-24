@@ -15,26 +15,14 @@ final class PersistenceReconciliationTests: XCTestCase {
         let publishedID = UUID()
         try fixture.insertTask(taskID, status: .running, finishedAt: nil, ordinal: 1)
         try fixture.insertArtifact(
-            unlinkedID,
-            taskID: taskID,
-            finishedAt: Date(timeIntervalSince1970: 2),
-            linkToTask: false
+            unlinkedID, taskID: taskID, finishedAt: Date(timeIntervalSince1970: 2), linkToTask: false
         )
-        let stagedPayload = try writePayload(
-            root: fixture.artifactRoot,
-            relativePath: ".staging/\(taskID.uuidString)/\(stagedID.uuidString)/payload",
-            contents: "staged"
-        )
-        let publishedPayload = try writePayload(
-            root: fixture.artifactRoot,
-            relativePath: "published/\(taskID.uuidString)/\(publishedID.uuidString)/payload",
-            contents: "published"
-        )
-        let maintenance = PersistenceMaintenance(
-            databasePool: fixture.database.databasePool,
-            artifactRoot: fixture.artifactRoot,
-            clock: { Date(timeIntervalSince1970: 10_000) }
-        )
+        let stagedPayload = try writePayload(root: fixture.artifactRoot,
+            relativePath: ".staging/\(taskID.uuidString)/\(stagedID.uuidString)/payload", contents: "staged")
+        let publishedPayload = try writePayload(root: fixture.artifactRoot,
+            relativePath: "published/\(taskID.uuidString)/\(publishedID.uuidString)/report.json", contents: "published")
+        let maintenance = PersistenceMaintenance(databasePool: fixture.database.databasePool,
+            artifactRoot: fixture.artifactRoot, clock: { Date(timeIntervalSince1970: 10_000) })
 
         // When
         let first = await maintenance.runAtStartup()
@@ -51,9 +39,24 @@ final class PersistenceReconciliationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: publishedPayload.path))
         XCTAssertTrue(second.removedArtifactIDs.isEmpty)
         XCTAssertTrue(second.removedStagingPaths.isEmpty)
+        let outsideRoot = fixture.root.appendingPathComponent("outside", isDirectory: true)
+        let sentinelID = UUID()
+        let sentinel = try writePayload(root: outsideRoot,
+            relativePath: "published/\(taskID.uuidString)/\(sentinelID.uuidString)/report.json",
+            contents: "outside-sentinel")
+        let backupRoot = fixture.root.appendingPathComponent("artifacts-backup", isDirectory: true)
+        try FileManager.default.moveItem(at: fixture.artifactRoot, to: backupRoot)
+        try FileManager.default.createSymbolicLink(at: fixture.artifactRoot, withDestinationURL: outsideRoot)
+        let replacedPeriodic = await maintenance.runPeriodically()
+        let symlinkedStartup = await PersistenceMaintenance(databasePool: fixture.database.databasePool,
+            artifactRoot: fixture.artifactRoot).runAtStartup()
+        XCTAssertTrue(replacedPeriodic.issues.contains { $0.kind == .cleanupFailure })
+        XCTAssertTrue(symlinkedStartup.issues.contains { $0.kind == .cleanupFailure })
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "outside-sentinel")
+        XCTAssertTrue(try fixture.taskExists(taskID))
         let pathHash = SHA256.hash(data: Data(stagedPayload.path.utf8))
             .map { String(format: "%02x", $0) }.joined()
-        print("orphan_fixture staging_removed=1 published_removed=1 unlinked_removed=1 repeat_stable=1 path_sha256=\(pathHash)")
+        print("orphan_fixture staging=1 published_named=1 unlinked=1 root_refused=2 sentinel=stable path_sha256=\(pathHash)")
     }
 
     func testOrphanedMediaDocumentAndManagedTagConverge() async throws {
@@ -117,13 +120,16 @@ final class PersistenceReconciliationTests: XCTestCase {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }
         let taskID = UUID()
-        let malformedArtifactID = "not-an-artifact-uuid"
-        let malformedDocumentID = "not-a-document-uuid"
+        let (malformedArtifactID, malformedDocumentID) = ("not-an-artifact-uuid", "not-a-document-uuid")
+        let linkedArtifactID = UUID()
         try fixture.insertTask(
             taskID,
             status: .failed,
             finishedAt: Date(timeIntervalSince1970: 2),
             ordinal: 1
+        )
+        try fixture.insertArtifact(
+            linkedArtifactID, taskID: taskID, finishedAt: Date(timeIntervalSince1970: 2), linkToTask: false
         )
         let artifactPayload = try writePayload(
             root: fixture.artifactRoot,
@@ -154,6 +160,14 @@ final class PersistenceReconciliationTests: XCTestCase {
                 arguments: [malformedDocumentID, taskID.uuidString]
             )
         }
+        try await fixture.database.databasePool.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(
+                sql: "INSERT INTO task_artifacts (task_id, artifact_id, ordinal) VALUES (?, ?, 0)",
+                arguments: ["not-a-task-uuid", linkedArtifactID.uuidString]
+            )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
         let maintenance = PersistenceMaintenance(
             databasePool: fixture.database.databasePool,
             artifactRoot: fixture.artifactRoot,
@@ -165,14 +179,20 @@ final class PersistenceReconciliationTests: XCTestCase {
 
         // Then
         XCTAssertTrue(report.issues.contains { $0.kind == .corruptArtifactRow })
+        XCTAssertTrue(report.issues.contains {
+            $0.kind == .corruptArtifactRow && $0.artifactID == linkedArtifactID && $0.taskID == nil })
         XCTAssertTrue(report.issues.contains { $0.kind == .corruptMediaDocument })
         XCTAssertTrue(FileManager.default.fileExists(atPath: artifactPayload.path))
+        XCTAssertTrue(try fixture.artifactExists(linkedArtifactID))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.url(for: linkedArtifactID, taskID: taskID).path))
         XCTAssertTrue(try fixture.taskExists(taskID))
         try await fixture.database.databasePool.read { db in
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM artifact_records"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM artifact_records"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_artifacts"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_analysis_documents"), 1)
         }
-        print("malformed_fixture artifact_rows_preserved=1 media_rows_preserved=1 issues=2")
+        print("malformed_fixture artifact_rows=2 malformed_links=1 media_rows=1 preserved=true")
     }
 
     func testMissingMediaAssetRemainsDiagnosable() async throws {

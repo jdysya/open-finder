@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 
@@ -41,15 +42,59 @@ struct ArtifactLinkSnapshot: Sendable {
     let artifactID: UUID
     let taskID: UUID
 
-    static func fetchAll(_ db: Database) throws -> [Self] {
-        try Row.fetchAll(db, sql: "SELECT artifact_id, task_id FROM task_artifacts")
-            .compactMap { row in
-                guard
-                    let artifactID = UUID(uuidString: row["artifact_id"]),
-                    let taskID = UUID(uuidString: row["task_id"])
-                else { return nil }
-                return Self(artifactID: artifactID, taskID: taskID)
+    static func fetchAll(_ db: Database) throws -> (
+        records: [Self],
+        issues: [PersistenceReconciliationIssue]
+    ) {
+        let rows = try Row.fetchAll(db, sql: "SELECT artifact_id, task_id FROM task_artifacts")
+        var records: [Self] = []
+        var issues: [PersistenceReconciliationIssue] = []
+        for row in rows {
+            let rawArtifactID: String = row["artifact_id"]
+            let rawTaskID: String = row["task_id"]
+            guard
+                let artifactID = UUID(uuidString: rawArtifactID),
+                let taskID = UUID(uuidString: rawTaskID)
+            else {
+                issues.append(.init(
+                    kind: .corruptArtifactRow,
+                    artifactID: UUID(uuidString: rawArtifactID),
+                    taskID: UUID(uuidString: rawTaskID),
+                    detail: "Artifact link row has invalid UUID metadata."
+                ))
+                continue
             }
+            records.append(Self(artifactID: artifactID, taskID: taskID))
+        }
+        return (records, issues)
+    }
+}
+
+struct PersistenceRootIdentity: Sendable {
+    let device: dev_t
+    let inode: ino_t
+
+    init(root: URL) throws {
+        let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw PersistenceRootError.invalid }
+        defer { Darwin.close(descriptor) }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0, value.st_mode & S_IFMT == S_IFDIR else {
+            throw PersistenceRootError.invalid
+        }
+        device = value.st_dev
+        inode = value.st_ino
+    }
+
+    func verify(root: URL) throws {
+        let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw PersistenceRootError.replaced }
+        defer { Darwin.close(descriptor) }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0,
+              value.st_dev == device, value.st_ino == inode else {
+            throw PersistenceRootError.replaced
+        }
     }
 }
 
@@ -142,4 +187,9 @@ struct ExpiredTaskSnapshot: Sendable {
 private enum PersistenceRecordError: Error {
     case invalidMediaMetadata
     case mediaIdentityMismatch
+}
+
+private enum PersistenceRootError: Error {
+    case invalid
+    case replaced
 }
