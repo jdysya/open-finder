@@ -56,4 +56,32 @@ public enum Location: Hashable, Codable, Sendable {
     public var localURL: URL? {
         if case .local(let path) = self { URL(fileURLWithPath: path) } else { nil }
     }
+
+    public var fileLocation: FileLocationResolution {
+        switch self {
+        case .local(let path):
+            return .resolved(
+                FileLocation(
+                    sourceID: .local,
+                    path: RemotePath(identifier: path, displayPath: path)
+                )
+            )
+        case .webDAV(let accountID, let path):
+            return .resolved(
+                FileLocation(
+                    sourceID: .remote(accountID: accountID, connectorID: .webDAV),
+                    path: RemotePath(identifier: path, displayPath: path)
+                )
+            )
+        case .rclone(let remoteID, _):
+            return .unsupported(.legacyRclone(remoteID: remoteID))
+        case .remote(let remote):
+            return .resolved(
+                FileLocation(
+                    sourceID: .remote(accountID: remote.accountID, connectorID: remote.connectorID),
+                    path: remote.path
+                )
+            )
+        }
+    }
 }
