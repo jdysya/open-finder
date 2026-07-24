@@ -71,7 +71,6 @@ final class AppPluginPersistenceTests: XCTestCase {
         XCTAssertEqual(projection.handlerIdentifier, .unknown)
         XCTAssertNotNil(projection.project(UnknownPluginResult.self))
         XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: projection).identifier, .unknown)
-        XCTAssertNil(app.presentedVideoAnalysis)
     }
 }
 

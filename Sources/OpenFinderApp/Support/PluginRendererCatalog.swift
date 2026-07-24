@@ -41,5 +41,9 @@ struct PluginRendererCatalog: Sendable {
         return entry.descriptor
     }
 
+    func renderer(forSchemaID schemaID: String) -> PluginRendererDescriptor {
+        entries[schemaID]?.descriptor ?? fallback
+    }
+
     static let standard = PluginRendererCatalog(entries: [.mediaAnalysis])
 }

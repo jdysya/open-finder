@@ -89,16 +89,15 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: Binding(
-            get: { app.presentedVideoAnalysis != nil },
-            set: { if !$0 { app.dismissVideoAnalysis() } }
+            get: { app.presentedPluginResult != nil },
+            set: { if !$0 { app.dismissPluginResult() } }
         )) {
-            if let result = app.presentedVideoAnalysis {
-                VideoAnalysisResultView(
-                    result: result,
-                    onApplyTags: { selections in
-                        await app.applySelectedVideoTags(selections, from: result)
-                    },
-                    onDismiss: { app.dismissVideoAnalysis() }
+            if let projection = app.presentedPluginResult {
+                PluginResultView(
+                    projection: projection,
+                    catalog: app.pluginRendererCatalog,
+                    artifactResults: app.artifactResultService,
+                    onDismiss: { app.dismissPluginResult() }
                 )
             }
         }

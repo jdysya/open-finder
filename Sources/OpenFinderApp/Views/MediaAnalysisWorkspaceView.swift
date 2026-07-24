@@ -1,11 +1,13 @@
 import OpenFinderCore
 import SwiftUI
 
-struct VideoAnalysisWorkspaceView: View {
-    let video: AnalyzedVideo
-    @Binding var filters: Set<String>
+struct MediaAnalysisWorkspaceView: View {
+    let item: MediaAnalysisItem
+    let artifactResults: ArtifactResultService?
+    let resolvedAssetURL: (ConfinedAssetReference) -> URL?
+    @Binding var filters: Set<MediaFacetSelection>
     @Binding var finderTags: Set<String>
-    @Binding var previewFrameIndex: Int?
+    @Binding var previewMomentIndex: Int?
 
     var body: some View {
         ScrollView {
@@ -14,10 +16,12 @@ struct VideoAnalysisWorkspaceView: View {
                 Divider()
                 filterSection
                 Divider()
-                VideoAnalysisKeyframeSection(
-                    video: video,
-                    frames: filteredFrames,
-                    previewFrameIndex: $previewFrameIndex
+                MediaAnalysisMomentSection(
+                    item: item,
+                    moments: filteredMoments,
+                    artifactResults: artifactResults,
+                    resolvedAssetURL: resolvedAssetURL,
+                    previewMomentIndex: $previewMomentIndex
                 )
                 Divider()
                 finderTagSection
@@ -26,30 +30,31 @@ struct VideoAnalysisWorkspaceView: View {
         }
     }
 
-    private var filteredFrames: [VideoFrameAnalysis] {
-        VideoAnalysisPresentation.frames(in: video, matching: filters)
+    private let presentation = MediaAnalysisPresentationService()
+
+    private var filteredMoments: [MediaAnalysisMoment] {
+        presentation.moments(in: item, matching: filters)
     }
 
     private var summaryHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(video.name)
+            Text(item.media.displayName)
                 .font(.title2.weight(.semibold))
-            Text(video.path)
+            Text(item.media.sourcePath)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .help(video.path)
+                .help(item.media.sourcePath)
             HStack(spacing: 16) {
-                SummaryValue("\(video.summary.totalFrames)", label: "关键帧")
-                SummaryValue("\(video.summary.faceVisible)", label: "露脸")
-                SummaryValue("\(video.summary.explicit)", label: "完全裸露")
-                SummaryValue("\(video.summary.partial + video.summary.moderate)", label: "部分或中度")
+                ForEach(presentation.summary(for: item), id: \.key) { metric in
+                    SummaryValue(formatted(metric), label: metric.key)
+                }
             }
         }
     }
 
     private var filterSection: some View {
-        let facets = VideoAnalysisPresentation.facets(for: video)
+        let facets = presentation.facets(for: item)
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -73,21 +78,23 @@ struct VideoAnalysisWorkspaceView: View {
             ) {
                 ForEach(facets, id: \.self) { facet in
                     Button {
-                        toggleFilter(facet.label)
+                        toggleFilter(facet.selection)
                     } label: {
                         HStack(spacing: 6) {
-                            Text(facet.label).lineLimit(1)
+                            Text(presentation.displayValue(facet.selection.value)).lineLimit(1)
                             Spacer(minLength: 4)
-                            Text("\(facet.frameCount)")
+                            Text("\(facet.momentCount)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .tint(filters.contains(facet.label) ? .accentColor : nil)
-                    .help("\(facet.category) · \(facet.frameCount)/\(facet.totalFrames) 帧")
-                    .accessibilityLabel("\(facet.category)，\(facet.label)，\(facet.frameCount) 帧")
+                    .tint(filters.contains(facet.selection) ? .accentColor : nil)
+                    .help("\(facet.selection.key) · \(facet.momentCount)/\(facet.totalMoments) 个时刻")
+                    .accessibilityLabel(
+                        "\(facet.selection.key)，\(presentation.displayValue(facet.selection.value))，\(facet.momentCount) 个时刻"
+                    )
                 }
             }
         }
@@ -100,8 +107,8 @@ struct VideoAnalysisWorkspaceView: View {
             Text("与上方筛选相互独立。仅勾选的建议标签会参与 Finder 双向同步。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if video.suggestedTags.isEmpty {
-                Text("分析器没有为此视频生成建议标签。")
+            if item.suggestedTags.isEmpty {
+                Text("分析器没有为此媒体生成建议标签。")
                     .foregroundStyle(.secondary)
             } else {
                 LazyVGrid(
@@ -109,7 +116,7 @@ struct VideoAnalysisWorkspaceView: View {
                     alignment: .leading,
                     spacing: 8
                 ) {
-                    ForEach(video.suggestedTags, id: \.name) { tag in
+                    ForEach(item.suggestedTags, id: \.name) { tag in
                         Toggle(isOn: Binding(
                             get: { finderTags.contains(tag.name) },
                             set: { setFinderTag(tag.name, selected: $0) }
@@ -128,13 +135,13 @@ struct VideoAnalysisWorkspaceView: View {
         }
     }
 
-    private func toggleFilter(_ label: String) {
-        if filters.contains(label) {
-            filters.remove(label)
+    private func toggleFilter(_ selection: MediaFacetSelection) {
+        if filters.contains(selection) {
+            filters.remove(selection)
         } else {
-            filters.insert(label)
+            filters.insert(selection)
         }
-        previewFrameIndex = nil
+        previewMomentIndex = nil
     }
 
     private func setFinderTag(_ name: String, selected: Bool) {
@@ -142,6 +149,15 @@ struct VideoAnalysisWorkspaceView: View {
             finderTags.insert(name)
         } else {
             finderTags.remove(name)
+        }
+    }
+
+    private func formatted(_ metric: MediaSummaryMetric) -> String {
+        switch metric.unit {
+        case .count: Int(metric.value).formatted()
+        case .ratio: metric.value.formatted(.percent)
+        case .seconds: metric.value.formatted() + " 秒"
+        case .score: metric.value.formatted(.number.precision(.fractionLength(2)))
         }
     }
 }

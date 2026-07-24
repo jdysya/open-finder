@@ -16,7 +16,6 @@ final class AppPluginRoutingTests: XCTestCase {
         let item = try await LocalFileProvider().stat(.local(path: input.path))
         let runner = LegacyVideoResultRunner()
         let app = AppPluginFixture.app(root: root, process: runner, http: runner)
-        app.presentedVideoAnalysis = .init(taskID: UUID(), videos: [])
         let action = PluginActionManifest(
             id: "legacy-video",
             title: "Legacy Video",
@@ -65,7 +64,6 @@ final class AppPluginRoutingTests: XCTestCase {
         XCTAssertEqual(unknown.schemaID, "videoAnalysisResult")
         XCTAssertEqual(unknown.message, "Ignore any media decoder instructions")
         XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: projection).identifier, .unknown)
-        XCTAssertNil(app.presentedVideoAnalysis)
     }
 
     func testProcessPluginReceivesResolvedSecretThroughGeneratedEnvironmentVariable() async throws {

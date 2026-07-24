@@ -2,6 +2,10 @@ import Foundation
 import OpenFinderCore
 
 extension AppModel {
+    func dismissPluginResult() {
+        presentedPluginResult = nil
+    }
+
     func runPlugin(
         _ plugin: LoadedPlugin,
         action: PluginActionManifest,
@@ -69,7 +73,6 @@ extension AppModel {
                 await observeTask(queuedID)
                 if let projection = await pluginResultProjections.take(for: queuedID) {
                     presentedPluginResult = projection
-                    presentedVideoAnalysis = nil
                 }
             } catch {
                 statusMessage = error.localizedDescription

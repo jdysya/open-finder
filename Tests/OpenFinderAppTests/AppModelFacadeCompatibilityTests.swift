@@ -231,7 +231,6 @@ private final class FacadeFixture {
             configurationStore: configurationStore,
             keychainStore: InMemoryKeychainStore(),
             taskQueue: taskQueue,
-            videoAnalysisStore: VideoAnalysisResultStore(directory: root.appendingPathComponent("analysis")),
             startAutomatically: false
         )
     }

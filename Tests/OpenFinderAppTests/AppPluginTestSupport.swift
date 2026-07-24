@@ -137,7 +137,6 @@ enum AppPluginFixture {
             configurationStore: JSONConfigStore(url: root.appendingPathComponent("config.json")),
             keychainStore: keychain,
             localPluginCredentialStore: localCredentialStore,
-            videoAnalysisStore: VideoAnalysisResultStore(directory: root.appendingPathComponent("analysis")),
             pluginRunnerRouter: PluginRunnerRouter(processRunner: process, httpRunner: http),
             pluginConnectionChecker: checker,
             pluginWorkspaceMaintenance: workspaceMaintenance,

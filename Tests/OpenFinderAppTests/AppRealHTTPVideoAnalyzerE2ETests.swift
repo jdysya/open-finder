@@ -60,7 +60,6 @@ final class AppRealHTTPVideoAnalyzerE2ETests: XCTestCase {
         XCTAssertEqual(firstProjection.handlerIdentifier, .unknown)
         XCTAssertNotNil(firstProjection.project(UnknownPluginResult.self))
         XCTAssertEqual(PluginRendererCatalog.standard.renderer(for: firstProjection).identifier, .unknown)
-        XCTAssertNil(app.presentedVideoAnalysis)
 
         app.setPluginConfigValue("http://127.0.0.1:9", pluginID: plugin.id, key: "serverURL")
         app.setPluginConfigValue("true", pluginID: plugin.id, key: "useJoyTag")

@@ -106,9 +106,6 @@ private final class ApplicationServiceFixture {
             ),
             keychainStore: InMemoryKeychainStore(),
             taskQueue: taskQueue,
-            videoAnalysisStore: VideoAnalysisResultStore(
-                directory: root.appendingPathComponent("analysis", isDirectory: true)
-            ),
             startAutomatically: false
         )
     }

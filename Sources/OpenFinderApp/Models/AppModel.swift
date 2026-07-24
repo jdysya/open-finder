@@ -9,8 +9,6 @@ enum PaneID: String {
 
 @MainActor
 final class AppModel: ObservableObject {
-    static let videoAnalyzerVersion = "0.1.0"
-
     @Published var leftPane: BrowserPaneModel
     @Published var rightPane: BrowserPaneModel
     @Published var activePane: PaneID = .left
@@ -21,7 +19,6 @@ final class AppModel: ObservableObject {
     @Published var remoteAccounts: [RemoteAccount] = []
     @Published var statusMessage: String = "Ready"
     @Published var pendingTransferOverwrite: PendingTransferOverwrite?
-    @Published var presentedVideoAnalysis: VideoAnalysisResult?
     @Published var presentedPluginResult: PluginResultProjection?
     @Published var pluginConnectionStatuses: [String: PluginConnectionStatus] = [:]
     @Published var durableHandlerReadiness: AppDurableHandlerReadiness = .checking
@@ -37,11 +34,11 @@ final class AppModel: ObservableObject {
     let fileBrowserService: FileBrowserService
     let runtimeConfigurationService: RuntimeConfigurationService
     let pluginManagementService: PluginManagementService
-    let videoAnalysisStore: VideoAnalysisResultStore
     let pluginRunnerRouter: PluginRunnerRouter
     let pluginExecutionCoordinator: PluginExecutionCoordinator
     let pluginWorkspaceMaintenance: PluginWorkspaceMaintenance
     let pluginRendererCatalog: PluginRendererCatalog
+    let artifactResultService: ArtifactResultService?
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     let pluginTaskResolver: AppPluginTaskResolver
     let pluginResultProjections: PluginResultProjectionBox
@@ -61,10 +58,10 @@ final class AppModel: ObservableObject {
         remoteProviderRegistry: RemoteProviderRegistry? = nil,
         taskQueue: TaskQueueService? = nil,
         taskDatabaseURL: URL? = nil,
-        videoAnalysisStore: VideoAnalysisResultStore? = nil,
         pluginRunnerRouter: PluginRunnerRouter? = nil,
         pluginConnectionChecker: (any PluginConnectionChecking)? = nil,
         pluginWorkspaceMaintenance: PluginWorkspaceMaintenance = .live(),
+        artifactResultService: ArtifactResultService? = nil,
         pluginResultHandlers: [PluginResultHandler] = [
             PluginResultHandlerRegistry.mediaAnalysis
         ],
@@ -145,9 +142,6 @@ final class AppModel: ObservableObject {
                 revision: location.connectorID.rawValue
             )
         }
-        self.videoAnalysisStore = videoAnalysisStore ?? VideoAnalysisResultStore(
-            directory: supportDirectory.appendingPathComponent("video-analysis", isDirectory: true)
-        )
         let pluginCredentialResolver = pluginService.credentialResolver
         let configuredRunner: PluginRunnerRouter
         if let pluginRunnerRouter {
@@ -178,6 +172,17 @@ final class AppModel: ObservableObject {
         )
         self.pluginExecutionCoordinator = coordinator
         self.pluginWorkspaceMaintenance = pluginWorkspaceMaintenance
+        if let artifactResultService {
+            self.artifactResultService = artifactResultService
+        } else {
+            let metadata = InMemoryArtifactMetadataBackend()
+            let artifactRoot = supportDirectory.appendingPathComponent("artifacts", isDirectory: true)
+            if let store = try? ArtifactStore(root: artifactRoot, metadata: metadata) {
+                self.artifactResultService = ArtifactResultService(store: store, metadata: metadata)
+            } else {
+                self.artifactResultService = nil
+            }
+        }
         let taskResolver = AppPluginTaskResolver()
         pluginTaskResolver = taskResolver
         let resultProjections = PluginResultProjectionBox()
