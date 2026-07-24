@@ -20,9 +20,7 @@ extension AppModel {
                 let currentLocation = pane.location
                 let paneID = pane.id.rawValue
                 let resultBox = PluginResultProjectionBox()
-                let legacyAnalysisBox = VideoAnalysisResultBox()
                 let coordinator = pluginExecutionCoordinator
-                let analysisStore = videoAnalysisStore
                 let configurationValues = configuration.pluginConfigurationValues[plugin.id] ?? [:]
                 let secretReferences = configuredPluginSecretReferences(for: plugin.manifest)
                 let queuedID = try await taskQueue.enqueue(.init(
@@ -65,13 +63,6 @@ extension AppModel {
                         },
                         publish: { projection in
                             await resultBox.store(projection)
-                            if let analysis = try await Self.legacyVideoAnalysis(
-                                projection: projection,
-                                execution: plugin.manifest.execution,
-                                store: analysisStore
-                            ) {
-                                await legacyAnalysisBox.store(analysis)
-                            }
                         },
                         cleanupWarning: {
                             await context.appendLog(
@@ -86,13 +77,7 @@ extension AppModel {
                 await observeTask(queuedID)
                 if let projection = await resultBox.value {
                     presentedPluginResult = projection
-                }
-                if let analysis = await legacyAnalysisBox.value {
-                    await cacheVideoAnalysis(
-                        analysis,
-                        analyzerVersion: plugin.manifest.version
-                    )
-                    presentedVideoAnalysis = analysis
+                    presentedVideoAnalysis = nil
                 }
             } catch {
                 statusMessage = error.localizedDescription
@@ -100,36 +85,4 @@ extension AppModel {
         }
     }
 
-    nonisolated private static func legacyVideoAnalysis(
-        projection: PluginResultProjection,
-        execution: PluginExecution,
-        store: VideoAnalysisResultStore
-    ) async throws -> VideoAnalysisResult? {
-        guard let unknown = projection.project(UnknownPluginResult.self),
-              unknown.schemaID == "videoAnalysisResult" else {
-            return nil
-        }
-        let events: [PluginOutputEvent] = [.result(
-            status: "success",
-            message: unknown.message,
-            clipboard: nil,
-            artifacts: unknown.artifacts
-        )]
-        switch execution {
-        case .http:
-            let result = try VideoAnalysisPluginResultDecoder.decode(
-                from: events,
-                expectedTaskID: unknown.taskID,
-                expectedOutputDirectory: unknown.outputDirectory
-            )
-            let reader = try ConfinedArtifactReader(root: unknown.outputDirectory)
-            return try await store.persistConfinedAssets(in: result, from: reader)
-        case .process:
-            let result = try VideoAnalysisPluginResultDecoder.decode(
-                from: events,
-                expectedTaskID: unknown.taskID
-            )
-            return try await store.persistAssets(in: result)
-        }
-    }
 }
