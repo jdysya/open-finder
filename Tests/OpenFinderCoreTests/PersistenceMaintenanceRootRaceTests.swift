@@ -4,7 +4,7 @@ import XCTest
 @testable import OpenFinderCore
 
 final class PersistenceMaintenanceRootRaceTests: XCTestCase {
-    func testRootReplacementDuringEnumerationCannotReachOutsideTree() async throws {
+    func testRootReplacementCannotRedirectCleanupOutsidePinnedDirectory() async throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }
         let taskID = UUID()
