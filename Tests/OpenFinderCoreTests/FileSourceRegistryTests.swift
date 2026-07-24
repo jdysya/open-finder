@@ -163,6 +163,64 @@ final class FileSourceRegistryTests: XCTestCase {
         print("LEASE localPreserved=true ownedNamespaceRemoved=true siblingPreserved=true idempotent=true")
     }
 
+    func testCancelledMaterializationCleansItsNamespaceWhenProviderFinishesNormally() async throws {
+        let provider = CancellationIgnoringRemoteProvider()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenFinderRegistryCancellation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localFile = root.appendingPathComponent("local.txt")
+        try Data("local".utf8).write(to: localFile)
+        let registry = FileSourceRegistry(
+            remoteProviderRegistry: RemoteProviderRegistry { _, _ in provider },
+            materializationRoot: root
+        )
+        let stableLease = try await registry.materialize(
+            remoteLocation(identifier: "stable", name: "stable.txt"),
+            revision: "r1"
+        )
+        let stableNamespace = try XCTUnwrap(stableLease.ownedNamespaceURL)
+        let cancelledLocation = remoteLocation(
+            identifier: "cancelled",
+            name: "cancelled.txt"
+        )
+
+        let cancelled = Task {
+            try await registry.materialize(
+                cancelledLocation,
+                revision: "r1"
+            )
+        }
+        await provider.waitUntilCancelledDownloadStarts()
+        cancelled.cancel()
+        await provider.finishCancelledDownload()
+
+        do {
+            _ = try await cancelled.value
+            XCTFail("A cancelled materialization must not return a live lease")
+        } catch is CancellationError {}
+
+        let remainingDirectories = try FileManager.default
+            .contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            )
+            .filter {
+                try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+            }
+        XCTAssertEqual(
+            remainingDirectories.map { $0.resolvingSymlinksInPath() },
+            [stableNamespace.resolvingSymlinksInPath()]
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stableLease.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: localFile.path))
+        try stableLease.release()
+        print(
+            "CANCELLATION noLeaseReturned=true cancelledNamespaceRemoved=true " +
+            "stableLeasePreserved=true localPreserved=true"
+        )
+    }
+
     private func makeRegistry(factory: FileSourceProviderFactory) -> FileSourceRegistry {
         FileSourceRegistry(
             localProvider: LocalFileProvider(),
@@ -170,6 +228,14 @@ final class FileSourceRegistryTests: XCTestCase {
                 await factory.make(accountID: accountID, revision: revision)
             }
         )
+    }
+
+    private func remoteLocation(identifier: String, name: String) -> Location {
+        .remote(.init(
+            accountID: kodboxAccountID,
+            connectorID: .kodbox,
+            path: .init(identifier: identifier, displayPath: "/\(name)")
+        ))
     }
 }
 
@@ -211,6 +277,61 @@ private actor FileSourceTestRemoteProvider: RemoteProvider {
 
     func download(item: RemotePath, to localURL: URL) async throws -> TaskID {
         try Data(identity.utf8).write(to: localURL)
+        return UUID()
+    }
+}
+
+private actor CancellationIgnoringRemoteProvider: RemoteProvider {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilCancelledDownloadStarts() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func finishCancelledDownload() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func list(directory: RemotePath) async throws -> RemoteDirectoryListing {
+        .init(
+            current: directory,
+            parent: nil,
+            items: [],
+            capabilities: .init(isReadable: true, isWritable: true)
+        )
+    }
+
+    func createDirectory(in parent: RemotePath, named name: String) async throws {}
+    func delete(item: RemotePath) async throws {}
+    func move(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+    func copy(item: RemotePath, to destination: RemotePath, named name: String) async throws {}
+
+    func upload(localURL: URL, to parent: RemotePath, named name: String) async throws -> TaskID {
+        UUID()
+    }
+
+    func download(item: RemotePath, to localURL: URL) async throws -> TaskID {
+        if item.identifier == "cancelled" {
+            started = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            if !released {
+                await withCheckedContinuation { continuation in
+                    releaseWaiters.append(continuation)
+                }
+            }
+        }
+        try Data(item.identifier.utf8).write(to: localURL)
         return UUID()
     }
 }

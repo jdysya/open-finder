@@ -222,6 +222,7 @@ public actor FileSourceRegistry {
                     item: resolved.location.path,
                     to: destination
                 )
+                try Task.checkCancellation()
                 return MaterializationLease(
                     url: destination,
                     ownedNamespaceURL: namespace
