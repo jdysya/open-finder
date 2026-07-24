@@ -29,50 +29,24 @@ final class AppModel: ObservableObject {
     @Published var pluginConnectionStatuses: [String: PluginConnectionStatus] = [:]
     @Published var configuration = AppConfiguration() {
         didSet {
-            localPluginCredentialStore.replace(pluginSecrets: configuration.localPluginSecrets)
-            if configurationPersistenceIsDeferred {
-                configurationSaveWasDeferred = true
-            } else {
-                saveConfiguration()
-            }
-            let python3Path = configuration.python3Path
-            let nodePath = configuration.nodePath
-            let maxConcurrentTasks = configuration.maxConcurrentTasks
-            let previousRuntimeUpdate = configurationRuntimeUpdateTask
-            let taskQueue = taskQueue
-            let processRunner = configurableProcessRunner
-            configurationRuntimeUpdateTask = Task {
-                await previousRuntimeUpdate?.value
-                await taskQueue.updateMaxConcurrentTasks(maxConcurrentTasks)
-                if let processRunner {
-                    await processRunner.update(python3Path: python3Path, nodePath: nodePath)
-                }
-            }
+            runtimeConfigurationService.publish(configuration)
+            pluginManagementService.publish(configuration: configuration)
         }
     }
 
     let taskQueue: TaskQueueService
     let remoteDirectory: RemoteAccountDirectory
-    let keychainStore: KeychainStore
-    let localPluginCredentialStore: LocalPluginCredentialStore
-    let pluginCredentialResolver: PluginCredentialResolver
-    let configurationStore: any AppConfigurationStore
-    let pluginRegistry = PluginRegistry()
+    let runtimeConfigurationService: RuntimeConfigurationService
+    let pluginManagementService: PluginManagementService
     let remoteConnectorRegistry: RemoteConnectorRegistry
     let remoteProviderRegistry: RemoteProviderRegistry
     let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
     let videoAnalysisStore: VideoAnalysisResultStore
     let pluginRunnerRouter: PluginRunnerRouter
-    let pluginConnectionChecker: any PluginConnectionChecking
     let pluginExecutionCoordinator: PluginExecutionCoordinator
     let pluginWorkspaceMaintenance: PluginWorkspaceMaintenance
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
     var taskPollingTask: Task<Void, Never>?
-    var configurationSaveTask: Task<Void, Never>?
-    var configurationRuntimeUpdateTask: Task<Void, Never>?
-    let configurationPersistenceGate = ConfigurationPersistenceGate()
-    var configurationPersistenceIsDeferred = false
-    var configurationSaveWasDeferred = false
     var didLoadInitialState = false
 
     init(
@@ -100,17 +74,28 @@ final class AppModel: ObservableObject {
         let keychainStore = keychainStore ?? MacKeychainStore()
         let localPluginCredentialStore = localPluginCredentialStore ?? LocalPluginCredentialStore()
         self.remoteDirectory = remoteDirectory
-        self.keychainStore = keychainStore
-        self.localPluginCredentialStore = localPluginCredentialStore
-        self.configurationStore = configurationStore
         self.remoteConnectorRegistry = remoteConnectorRegistry
+        let configuredTaskQueue = taskQueue ?? TaskQueueService(maxConcurrentTasks: 2)
+        self.taskQueue = configuredTaskQueue
+        let configurationService = RuntimeConfigurationService(
+            store: configurationStore,
+            taskQueue: configuredTaskQueue
+        )
+        self.runtimeConfigurationService = configurationService
+        let pluginService = PluginManagementService(
+            configurationService: configurationService,
+            keychainStore: keychainStore,
+            localCredentialStore: localPluginCredentialStore,
+            connectionChecker: pluginConnectionChecker
+        )
+        self.pluginManagementService = pluginService
         let configuredProviderRegistry = remoteProviderRegistry ?? RemoteProviderRegistry(
             connectorRegistry: remoteConnectorRegistry,
             account: { accountID in
                 guard let accountID = UUID(uuidString: accountID) else { return nil }
                 return remoteDirectory.account(id: accountID)
             },
-            credentialStore: keychainStore
+            credentialStore: pluginService.credentialStore
         )
         self.remoteProviderRegistry = configuredProviderRegistry
         let fileSourceRegistry = FileSourceRegistry(
@@ -126,12 +111,7 @@ final class AppModel: ObservableObject {
         self.videoAnalysisStore = videoAnalysisStore ?? VideoAnalysisResultStore(
             directory: supportDirectory.appendingPathComponent("video-analysis", isDirectory: true)
         )
-        self.taskQueue = taskQueue ?? TaskQueueService(maxConcurrentTasks: 2)
-        let pluginCredentialResolver = PluginCredentialResolver(
-            keychainStore: keychainStore,
-            localStore: localPluginCredentialStore
-        )
-        self.pluginCredentialResolver = pluginCredentialResolver
+        let pluginCredentialResolver = pluginService.credentialResolver
         let configuredRunner: PluginRunnerRouter
         if let pluginRunnerRouter {
             configuredRunner = pluginRunnerRouter
@@ -145,9 +125,8 @@ final class AppModel: ObservableObject {
             configurableProcessRunner = processRunner
         }
         self.pluginRunnerRouter = configuredRunner
-        let configuredConnectionChecker = pluginConnectionChecker
-            ?? HTTPPluginConnectionProbe(credentialResolver: pluginCredentialResolver)
-        self.pluginConnectionChecker = configuredConnectionChecker
+        configurationService.attach(processRunner: configurableProcessRunner)
+        let configuredConnectionChecker = pluginService.connectionChecking
         self.pluginExecutionCoordinator = PluginExecutionCoordinator(
             runner: configuredRunner,
             connectionChecker: configuredConnectionChecker,

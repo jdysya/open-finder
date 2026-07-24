@@ -21,7 +21,6 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(configuration.python3Path, "/usr/bin/python3")
         XCTAssertEqual(configuration.pluginConfigurationValues, [:])
         XCTAssertEqual(configuration.localPluginSecrets, [:])
-        XCTAssertFalse(configuration.videoAnalyzerLegacyServerTokenCleared)
     }
 
     func testLocalPluginSecretsRoundTripAndClearOutsideGenericConfiguration() async throws {

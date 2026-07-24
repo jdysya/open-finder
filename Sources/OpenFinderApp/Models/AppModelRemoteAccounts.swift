@@ -46,7 +46,7 @@ extension AppModel {
                 allowInsecureHTTP: allowInsecureHTTP
             )
             if !password.isEmpty {
-                try keychainStore.setSecret(password, for: secretRef)
+                try pluginManagementService.setStoredSecret(password, for: secretRef)
             }
             remoteDirectory.save(account)
             remoteAccounts = remoteDirectory.all()
@@ -65,7 +65,7 @@ extension AppModel {
             await remoteProviderRegistry.invalidate(accountID: account.id.uuidString)
             do {
                 if let ref = account.secretKeychainRef {
-                    try keychainStore.deleteSecret(for: ref)
+                    try pluginManagementService.deleteStoredSecret(for: ref)
                 }
                 remoteDirectory.remove(id: account.id)
                 remoteAccounts = remoteDirectory.all()

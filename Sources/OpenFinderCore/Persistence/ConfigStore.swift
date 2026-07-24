@@ -11,7 +11,6 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
     public var nodePath: String?
     public var pluginConfigurationValues: [String: [String: String]]
     public var localPluginSecrets: [String: [String: String]]
-    public var videoAnalyzerLegacyServerTokenCleared: Bool
 
     public init(
         defaultShowHiddenFiles: Bool = false,
@@ -20,8 +19,7 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
         python3Path: String? = nil,
         nodePath: String? = nil,
         pluginConfigurationValues: [String: [String: String]] = [:],
-        localPluginSecrets: [String: [String: String]] = [:],
-        videoAnalyzerLegacyServerTokenCleared: Bool = false
+        localPluginSecrets: [String: [String: String]] = [:]
     ) {
         self.defaultShowHiddenFiles = defaultShowHiddenFiles
         self.confirmBeforePermanentDelete = confirmBeforePermanentDelete
@@ -30,7 +28,6 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
         self.nodePath = nodePath
         self.pluginConfigurationValues = pluginConfigurationValues
         self.localPluginSecrets = localPluginSecrets
-        self.videoAnalyzerLegacyServerTokenCleared = videoAnalyzerLegacyServerTokenCleared
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -41,7 +38,6 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
         case nodePath
         case pluginConfigurationValues
         case localPluginSecrets
-        case videoAnalyzerLegacyServerTokenCleared
     }
 
     public init(from decoder: Decoder) throws {
@@ -53,11 +49,7 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
             python3Path: try container.decodeIfPresent(String.self, forKey: .python3Path),
             nodePath: try container.decodeIfPresent(String.self, forKey: .nodePath),
             pluginConfigurationValues: try container.decodeIfPresent([String: [String: String]].self, forKey: .pluginConfigurationValues) ?? [:],
-            localPluginSecrets: try container.decodeIfPresent([String: [String: String]].self, forKey: .localPluginSecrets) ?? [:],
-            videoAnalyzerLegacyServerTokenCleared: try container.decodeIfPresent(
-                Bool.self,
-                forKey: .videoAnalyzerLegacyServerTokenCleared
-            ) ?? false
+            localPluginSecrets: try container.decodeIfPresent([String: [String: String]].self, forKey: .localPluginSecrets) ?? [:]
         )
     }
 
@@ -70,10 +62,6 @@ public struct AppConfiguration: Codable, Hashable, Sendable {
         try container.encodeIfPresent(nodePath, forKey: .nodePath)
         try container.encode(pluginConfigurationValues, forKey: .pluginConfigurationValues)
         try container.encode(localPluginSecrets, forKey: .localPluginSecrets)
-        try container.encode(
-            videoAnalyzerLegacyServerTokenCleared,
-            forKey: .videoAnalyzerLegacyServerTokenCleared
-        )
     }
 }
 
