@@ -8,7 +8,7 @@ public actor PersistenceMaintenance {
     let databasePool: DatabasePool
     let artifactRoot: URL
     let fileManager: FileManager
-    private let artifactRootIdentity: PersistenceRootIdentity?
+    let rootHandle: PersistenceRootHandle?
     private let clock: Clock
 
     public init(
@@ -20,7 +20,7 @@ public actor PersistenceMaintenance {
         self.databasePool = databasePool
         self.artifactRoot = artifactRoot.standardizedFileURL
         self.fileManager = fileManager
-        self.artifactRootIdentity = try? PersistenceRootIdentity(root: artifactRoot)
+        self.rootHandle = try? PersistenceRootHandle(root: artifactRoot)
         self.clock = clock
     }
 
@@ -39,8 +39,8 @@ public actor PersistenceMaintenance {
     private func run(pinnedArtifactIDs: Set<UUID>) async -> PersistenceMaintenanceReport {
         let now = clock()
         do {
-            guard let artifactRootIdentity else { throw PersistenceMaintenanceRootError.invalid }
-            try artifactRootIdentity.verify(root: artifactRoot)
+            guard let rootHandle else { throw PersistenceMaintenanceRootError.invalid }
+            try rootHandle.verifyPath(artifactRoot)
         } catch {
             return report(issues: [.init(
                 kind: .cleanupFailure,

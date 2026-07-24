@@ -8,39 +8,26 @@ extension PersistenceMaintenance {
         var healthyIDs: Set<UUID> = []
         var issues: [PersistenceReconciliationIssue] = []
         for artifact in artifacts.values.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
-            let url: URL
             do {
-                url = try confinedArtifactURL(relativePath: artifact.relativePath)
-            } catch {
-                issues.append(.init(
-                    kind: .corruptArtifactRow,
-                    artifactID: artifact.id,
-                    path: artifact.relativePath,
-                    detail: "Artifact path is not confined: \(error)"
-                ))
-                continue
-            }
-            guard fileManager.fileExists(atPath: url.path) else {
-                issues.append(.init(
-                    kind: .missingArtifactFile,
-                    artifactID: artifact.id,
-                    path: url.path,
-                    detail: "Artifact metadata references a missing file."
-                ))
-                continue
-            }
-            do {
-                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+                let data = try rootHandle.read(relativePath: artifact.relativePath)
                 let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 guard data.count == artifact.byteCount, digest == artifact.sha256 else {
                     throw PersistenceMaintenanceError.digestMismatch
                 }
                 healthyIDs.insert(artifact.id)
+            } catch let error as POSIXError where error.code == .ENOENT {
+                issues.append(.init(
+                    kind: .missingArtifactFile,
+                    artifactID: artifact.id,
+                    path: logicalURL(relativePath: artifact.relativePath).path,
+                    detail: "Artifact metadata references a missing file."
+                ))
             } catch {
                 issues.append(.init(
                     kind: .corruptArtifactFile,
                     artifactID: artifact.id,
-                    path: url.path,
+                    path: artifact.relativePath,
                     detail: "Artifact verification failed: \(error)"
                 ))
             }
@@ -106,8 +93,14 @@ extension PersistenceMaintenance {
     }
 
     func removeArtifactRowThenFile(_ artifact: ArtifactSnapshot) async throws {
-        let url = try confinedArtifactURL(relativePath: artifact.relativePath)
-        let removal = ArtifactFileRemoval(fileManager: fileManager, url: url)
+        guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+        try rootHandle.verifyPath(artifactRoot)
+        let removal = ArtifactFileRemoval(
+            rootHandle: rootHandle,
+            logicalRoot: artifactRoot,
+            relativePath: artifact.relativePath,
+            gate: fileManager as? PersistenceArtifactRemovalGate
+        )
         try await databasePool.write { db in
             try db.execute(
                 sql: "DELETE FROM artifact_records WHERE artifact_id = ?",
@@ -129,33 +122,49 @@ extension PersistenceMaintenance {
     func removeOrphanedStaging(
         knownArtifactIDs: Set<UUID>
     ) -> (paths: [String], issues: [PersistenceReconciliationIssue]) {
-        let stagingRoot = artifactRoot.appendingPathComponent(".staging", isDirectory: true)
-        guard let enumerator = fileManager.enumerator(at: stagingRoot, includingPropertiesForKeys: nil) else {
+        let entries: [PersistenceRootEntry]
+        do {
+            guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+            entries = try rootHandle.entries(relativeDirectory: ".staging")
+            try rootHandle.verifyPath(artifactRoot)
+        } catch let error as POSIXError where error.code == .ENOENT {
+            do {
+                guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+                try rootHandle.verifyPath(artifactRoot)
+            } catch {
+                return ([], [cleanupIssue(path: artifactRoot.path, error: error)])
+            }
             return ([], [])
+        } catch {
+            return ([], [cleanupIssue(path: artifactRoot.path, error: error)])
         }
-        let payloads = enumerator.compactMap { $0 as? URL }
-            .filter { $0.lastPathComponent == "payload" }
+        let payloads = entries.filter {
+            $0.isRegularFile && NSString(string: $0.relativePath).lastPathComponent == "payload"
+        }
         var paths: [String] = []
         var issues: [PersistenceReconciliationIssue] = []
         for payload in payloads {
-            let artifactDirectory = payload.deletingLastPathComponent()
-            guard let artifactID = UUID(uuidString: artifactDirectory.lastPathComponent) else {
+            let artifactDirectory = NSString(string: payload.relativePath).deletingLastPathComponent
+            let payloadURL = logicalURL(relativePath: payload.relativePath)
+            guard let artifactID = UUID(uuidString: NSString(string: artifactDirectory).lastPathComponent) else {
                 issues.append(.init(
                     kind: .corruptArtifactRow,
-                    path: payload.path,
+                    path: payloadURL.path,
                     detail: "Staging artifact directory has an invalid UUID."
                 ))
                 continue
             }
             guard !knownArtifactIDs.contains(artifactID) else { continue }
             do {
-                try verifyNoSymlink(at: artifactDirectory)
-                try fileManager.removeItem(at: artifactDirectory)
-                paths.append(payload.path)
+                guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+                try rootHandle.verifyPath(artifactRoot)
+                try rootHandle.removeTree(relativePath: artifactDirectory)
+                try rootHandle.verifyPath(artifactRoot)
+                paths.append(payloadURL.path)
             } catch {
                 issues.append(cleanupIssue(
                     artifactID: artifactID,
-                    path: payload.path,
+                    path: payloadURL.path,
                     error: error
                 ))
             }
@@ -167,54 +176,56 @@ extension PersistenceMaintenance {
         knownArtifactIDs: Set<UUID>,
         knownRelativePaths: Set<String>
     ) -> (artifactIDs: [UUID], issues: [PersistenceReconciliationIssue]) {
-        let publishedRoot = artifactRoot.appendingPathComponent("published", isDirectory: true)
-        guard let enumerator = fileManager.enumerator(
-            at: publishedRoot,
-            includingPropertiesForKeys: [.isSymbolicLinkKey]
-        ) else { return ([], []) }
-        let files = enumerator.compactMap { $0 as? URL }
-            .sorted { $0.path < $1.path }
+        let files: [PersistenceRootEntry]
+        do {
+            guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+            files = try rootHandle.entries(relativeDirectory: "published")
+            try rootHandle.verifyPath(artifactRoot)
+        } catch let error as POSIXError where error.code == .ENOENT {
+            do {
+                guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+                try rootHandle.verifyPath(artifactRoot)
+            } catch {
+                return ([], [cleanupIssue(path: artifactRoot.path, error: error)])
+            }
+            return ([], [])
+        } catch {
+            return ([], [cleanupIssue(path: artifactRoot.path, error: error)])
+        }
         var artifactIDs: [UUID] = []
         var issues: [PersistenceReconciliationIssue] = []
         for file in files {
-            let values: URLResourceValues
-            do {
-                values = try file.resourceValues(
-                    forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-                )
-            } catch {
-                issues.append(cleanupIssue(path: file.path, error: error))
-                continue
-            }
-            guard values.isDirectory != true else { continue }
-            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            guard !file.isDirectory else { continue }
+            let fileURL = logicalURL(relativePath: file.relativePath)
+            guard file.isRegularFile, !file.isSymbolicLink else {
                 issues.append(.init(
                     kind: .corruptArtifactRow,
-                    path: file.path,
+                    path: fileURL.path,
                     detail: "Published artifact is not a confined regular file."
                 ))
                 continue
             }
-            let relativePath = String(file.path.dropFirst(artifactRoot.path.count + 1))
-            let artifactDirectory = file.deletingLastPathComponent()
-            guard let artifactID = UUID(uuidString: artifactDirectory.lastPathComponent) else {
+            let artifactDirectory = NSString(string: file.relativePath).deletingLastPathComponent
+            guard let artifactID = UUID(uuidString: NSString(string: artifactDirectory).lastPathComponent) else {
                 issues.append(.init(
                     kind: .corruptArtifactRow,
-                    path: file.path,
+                    path: fileURL.path,
                     detail: "Published artifact directory has an invalid UUID."
                 ))
                 continue
             }
             guard !knownArtifactIDs.contains(artifactID),
-                  !knownRelativePaths.contains(relativePath) else { continue }
+                  !knownRelativePaths.contains(file.relativePath) else { continue }
             do {
-                try verifyNoSymlink(at: file)
-                try fileManager.removeItem(at: artifactDirectory)
+                guard let rootHandle else { throw PersistenceMaintenanceError.rootUnavailable }
+                try rootHandle.verifyPath(artifactRoot)
+                try rootHandle.removeTree(relativePath: artifactDirectory)
+                try rootHandle.verifyPath(artifactRoot)
                 artifactIDs.append(artifactID)
             } catch {
                 issues.append(cleanupIssue(
                     artifactID: artifactID,
-                    path: file.path,
+                    path: fileURL.path,
                     error: error
                 ))
             }
@@ -222,41 +233,30 @@ extension PersistenceMaintenance {
         return (artifactIDs, issues)
     }
 
-    private func confinedArtifactURL(relativePath: String) throws -> URL {
-        guard !relativePath.isEmpty, !NSString(string: relativePath).isAbsolutePath else {
-            throw PersistenceMaintenanceError.unconfinedPath
-        }
-        let url = artifactRoot.appendingPathComponent(relativePath).standardizedFileURL
-        guard url.path.hasPrefix(artifactRoot.path + "/") else {
-            throw PersistenceMaintenanceError.unconfinedPath
-        }
-        try verifyNoSymlink(at: url)
-        return url
-    }
-
-    private func verifyNoSymlink(at url: URL) throws {
-        let relative = String(url.path.dropFirst(artifactRoot.path.count))
-        var candidate = artifactRoot
-        for component in NSString(string: relative).pathComponents where component != "/" {
-            candidate.appendPathComponent(component)
-            guard fileManager.fileExists(atPath: candidate.path) else { continue }
-            if try candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
-                throw PersistenceMaintenanceError.symbolicLink
-            }
-        }
+    private func logicalURL(relativePath: String) -> URL {
+        artifactRoot.appendingPathComponent(relativePath).standardizedFileURL
     }
 }
 
 private enum PersistenceMaintenanceError: Error {
-    case digestMismatch, symbolicLink, unconfinedPath
+    case digestMismatch, rootUnavailable
+}
+
+protocol PersistenceArtifactRemovalGate {
+    func beforeArtifactRemoval(at url: URL) throws
 }
 
 private struct ArtifactFileRemoval: @unchecked Sendable {
-    let fileManager: FileManager
-    let url: URL
+    let rootHandle: PersistenceRootHandle
+    let logicalRoot: URL
+    let relativePath: String
+    let gate: PersistenceArtifactRemovalGate?
 
     func perform() throws {
-        try fileManager.removeItem(at: url)
-        try? fileManager.removeItem(at: url.deletingLastPathComponent())
+        let url = logicalRoot.appendingPathComponent(relativePath)
+        try gate?.beforeArtifactRemoval(at: url)
+        try rootHandle.verifyPath(logicalRoot)
+        try rootHandle.removeFileAndEmptyParent(relativePath: relativePath)
+        try rootHandle.verifyPath(logicalRoot)
     }
 }

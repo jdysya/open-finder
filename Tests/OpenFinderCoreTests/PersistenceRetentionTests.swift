@@ -251,7 +251,7 @@ final class PersistenceFixture {
     }
 }
 
-private final class FailOnceFileManager: FileManager, @unchecked Sendable {
+private final class FailOnceFileManager: FileManager, PersistenceArtifactRemovalGate, @unchecked Sendable {
     private let targetPath: String
     private var failsNextRemoval = true
 
@@ -260,11 +260,10 @@ private final class FailOnceFileManager: FileManager, @unchecked Sendable {
         super.init()
     }
 
-    override func removeItem(at URL: URL) throws {
+    func beforeArtifactRemoval(at URL: URL) throws {
         if URL.path == targetPath, failsNextRemoval {
             failsNextRemoval = false
             throw CocoaError(.fileWriteUnknown)
         }
-        try super.removeItem(at: URL)
     }
 }
