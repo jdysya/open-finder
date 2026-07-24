@@ -1,0 +1,191 @@
+import Foundation
+import GRDB
+
+public enum TaskStoreMode: Sendable {
+    case shadowWrite
+    case durable
+}
+
+public enum GRDBTaskStoreError: Error, Equatable {
+    case descriptorRecordMismatch
+    case queueOrdinalOutOfRange
+}
+
+public final class GRDBTaskStore: TaskStore, Sendable {
+    private let databasePool: DatabasePool
+    private let mode: TaskStoreMode
+
+    public init(database: AppDatabase, mode: TaskStoreMode) {
+        databasePool = database.databasePool
+        self.mode = mode
+    }
+
+    public func enqueue(
+        descriptor: TaskDescriptorEnvelope,
+        record: TaskRecord
+    ) async throws {
+        guard descriptor.taskID == record.id, descriptor == record.descriptor else {
+            throw GRDBTaskStoreError.descriptorRecordMismatch
+        }
+        guard descriptor.queueOrdinal <= UInt64(Int64.max) else {
+            throw GRDBTaskStoreError.queueOrdinalOutOfRange
+        }
+        let descriptorPayload = try JSONEncoder().encode(descriptor.redactedPayload)
+        let kindPayload = try JSONEncoder().encode(record.kind)
+        let progressDetail = try record.progressDetail.map { try JSONEncoder().encode($0) }
+
+        try await write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO task_descriptors (
+                        task_id, schema_version, handler_id, payload_version,
+                        redacted_payload, root_task_id, parent_task_id, attempt,
+                        resource_key, idempotency_key, queue_ordinal, created_at
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    descriptor.taskID.uuidString,
+                    descriptor.handlerID,
+                    descriptor.payloadVersion,
+                    descriptorPayload,
+                    descriptor.lineage.rootTaskID.uuidString,
+                    descriptor.lineage.parentTaskID?.uuidString,
+                    descriptor.lineage.attempt,
+                    descriptor.resourceKey,
+                    descriptor.idempotencyKey,
+                    Int64(descriptor.queueOrdinal),
+                    record.createdAt.timeIntervalSince1970
+                ]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO task_records (
+                        task_id, record_version, kind_payload, title, status,
+                        status_reason, progress, progress_detail, created_at,
+                        started_at, finished_at, input_summary, result_summary,
+                        error_message, log_file_path, retry_count, clipboard_text,
+                        effects_committed_at
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                arguments: [
+                    record.id.uuidString,
+                    kindPayload,
+                    record.title,
+                    record.status.rawValue,
+                    record.reasonCode?.rawValue,
+                    record.progress,
+                    progressDetail,
+                    record.createdAt.timeIntervalSince1970,
+                    record.startedAt?.timeIntervalSince1970,
+                    record.finishedAt?.timeIntervalSince1970,
+                    record.inputSummary,
+                    record.resultSummary,
+                    record.errorMessage,
+                    record.logFilePath,
+                    record.retryCount,
+                    record.clipboardText
+                ]
+            )
+        }
+    }
+
+    public func update(
+        record: TaskRecord,
+        effectsCommitted: Bool
+    ) async throws {
+        let kindPayload = try JSONEncoder().encode(record.kind)
+        let progressDetail = try record.progressDetail.map { try JSONEncoder().encode($0) }
+        let committedAt = Date().timeIntervalSince1970
+
+        try await write { db in
+            try db.execute(
+                sql: """
+                    UPDATE task_records
+                    SET kind_payload = ?, title = ?, status = ?, status_reason = ?,
+                        progress = ?, progress_detail = ?, created_at = ?,
+                        started_at = ?, finished_at = ?, input_summary = ?,
+                        result_summary = ?, error_message = ?, log_file_path = ?,
+                        retry_count = ?, clipboard_text = ?,
+                        effects_committed_at = CASE
+                            WHEN ? THEN COALESCE(effects_committed_at, ?)
+                            ELSE effects_committed_at
+                        END
+                    WHERE task_id = ?
+                    """,
+                arguments: [
+                    kindPayload,
+                    record.title,
+                    record.status.rawValue,
+                    record.reasonCode?.rawValue,
+                    record.progress,
+                    progressDetail,
+                    record.createdAt.timeIntervalSince1970,
+                    record.startedAt?.timeIntervalSince1970,
+                    record.finishedAt?.timeIntervalSince1970,
+                    record.inputSummary,
+                    record.resultSummary,
+                    record.errorMessage,
+                    record.logFilePath,
+                    record.retryCount,
+                    record.clipboardText,
+                    effectsCommitted,
+                    committedAt,
+                    record.id.uuidString
+                ]
+            )
+        }
+    }
+
+    public func append(log: TaskLogLine) async throws {
+        try await write { db in
+            let sequence = try Int64.fetchOne(
+                db,
+                sql: """
+                    SELECT COALESCE(MAX(sequence), -1) + 1
+                    FROM task_logs WHERE task_id = ?
+                    """,
+                arguments: [log.taskID.uuidString]
+            ) ?? 0
+            try db.execute(
+                sql: """
+                    INSERT INTO task_logs (task_id, sequence, logged_at, level, message)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    log.taskID.uuidString,
+                    sequence,
+                    log.date.timeIntervalSince1970,
+                    log.level,
+                    log.message
+                ]
+            )
+        }
+    }
+
+    public func link(artifactID: UUID, to taskID: UUID, ordinal: Int) async throws {
+        try await write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO task_artifacts (task_id, artifact_id, ordinal, linked_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                arguments: [
+                    taskID.uuidString,
+                    artifactID.uuidString,
+                    ordinal,
+                    Date().timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
+    private func write(
+        _ updates: @escaping @Sendable (Database) throws -> Void
+    ) async throws {
+        do {
+            try await databasePool.write(updates)
+        } catch {
+            guard mode == .shadowWrite else { throw error }
+        }
+    }
+}
