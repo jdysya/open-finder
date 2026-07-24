@@ -5,7 +5,7 @@ import SwiftUI
 struct MediaAnalysisMomentSection: View {
     let item: MediaAnalysisItem
     let moments: [MediaAnalysisMoment]
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
     @Binding var previewMomentIndex: Int?
 
@@ -34,7 +34,7 @@ struct MediaAnalysisMomentSection: View {
                     ForEach(moments, id: \.index) { moment in
                         MediaAnalysisMomentCard(
                             moment: moment,
-                            artifactResults: artifactResults,
+                            artifactURL: artifactURL,
                             resolvedAssetURL: resolvedAssetURL
                         ) {
                             previewMomentIndex = moment.index
@@ -48,7 +48,7 @@ struct MediaAnalysisMomentSection: View {
 
 private struct MediaAnalysisMomentCard: View {
     let moment: MediaAnalysisMoment
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
     let action: () -> Void
 
@@ -57,7 +57,7 @@ private struct MediaAnalysisMomentCard: View {
             VStack(alignment: .leading, spacing: 7) {
                 MediaAnalysisAssetImage(
                     reference: moment.assets.first,
-                    artifactResults: artifactResults,
+                    artifactURL: artifactURL,
                     resolvedAssetURL: resolvedAssetURL
                 )
                     .frame(maxWidth: .infinity)
@@ -95,7 +95,7 @@ private struct MediaAnalysisMomentCard: View {
 struct MediaAnalysisMomentPreviewView: View {
     let moment: MediaAnalysisMoment
     let moments: [MediaAnalysisMoment]
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
     @Binding var previewMomentIndex: Int?
 
@@ -107,7 +107,7 @@ struct MediaAnalysisMomentPreviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             MediaAnalysisAssetImage(
                 reference: moment.assets.first,
-                artifactResults: artifactResults,
+                artifactURL: artifactURL,
                 resolvedAssetURL: resolvedAssetURL
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -156,7 +156,7 @@ struct MediaAnalysisMomentPreviewView: View {
 
 private struct MediaAnalysisAssetImage: View {
     let reference: ConfinedAssetReference?
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
 
     @State private var image: NSImage?
@@ -183,9 +183,7 @@ private struct MediaAnalysisAssetImage: View {
                 image = NSImage(contentsOf: url)
                 return
             }
-            guard let artifactResults,
-                  let url = try? await artifactResults.fileURL(for: reference.artifactID)
-            else { return }
+            guard let url = await artifactURL(reference.artifactID) else { return }
             image = NSImage(contentsOf: url)
         }
     }

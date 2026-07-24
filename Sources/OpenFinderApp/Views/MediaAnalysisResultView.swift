@@ -3,8 +3,10 @@ import SwiftUI
 
 struct MediaAnalysisResultView: View {
     let document: MediaAnalysisDocument
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
+    let onAction: @MainActor (PresentedPluginResultAction) async
+        -> PresentedPluginResultActionOutcome
     let onDismiss: () -> Void
 
     @State private var selectedMediaID: String?
@@ -17,13 +19,18 @@ struct MediaAnalysisResultView: View {
 
     init(
         document: MediaAnalysisDocument,
-        artifactResults: ArtifactResultService? = nil,
+        artifactURL: @escaping @Sendable (UUID) async -> URL? = { _ in nil },
         resolvedAssetURL: @escaping (ConfinedAssetReference) -> URL? = { _ in nil },
+        onAction: @escaping @MainActor (PresentedPluginResultAction) async
+            -> PresentedPluginResultActionOutcome = { _ in
+                .init(message: "", managedTagsByMedia: [:])
+            },
         onDismiss: @escaping () -> Void
     ) {
         self.document = document
-        self.artifactResults = artifactResults
+        self.artifactURL = artifactURL
         self.resolvedAssetURL = resolvedAssetURL
+        self.onAction = onAction
         self.onDismiss = onDismiss
         _selectedMediaID = State(initialValue: document.items.first?.media.stableID)
         _managedTagsByMedia = State(initialValue: Dictionary(
@@ -77,7 +84,7 @@ struct MediaAnalysisResultView: View {
                 MediaAnalysisMomentPreviewView(
                     moment: moment,
                     moments: filteredMoments(for: item),
-                    artifactResults: artifactResults,
+                    artifactURL: artifactURL,
                     resolvedAssetURL: resolvedAssetURL,
                     previewMomentIndex: $previewMomentIndex
                 )
@@ -91,7 +98,7 @@ struct MediaAnalysisResultView: View {
             VStack(spacing: 0) {
                 MediaAnalysisWorkspaceView(
                     item: item,
-                    artifactResults: artifactResults,
+                    artifactURL: artifactURL,
                     resolvedAssetURL: resolvedAssetURL,
                     filters: filtersBinding(for: item.media.stableID),
                     finderTags: finderTagsBinding(for: item.media.stableID),
@@ -130,7 +137,13 @@ struct MediaAnalysisResultView: View {
             Button("应用 Finder 标签选择") {
                 Task {
                     isApplying = true
-                    message = await applySelectedTags()
+                    let outcome = await onAction(.applyMediaAnalysisTags(
+                        document: document,
+                        selections: tagSelections,
+                        managedTagsByMedia: managedTagsByMedia
+                    ))
+                    message = outcome.message
+                    managedTagsByMedia = outcome.managedTagsByMedia
                     isApplying = false
                 }
             }
@@ -192,38 +205,4 @@ struct MediaAnalysisResultView: View {
         )
     }
 
-    private func applySelectedTags() async -> String {
-        let provider = LocalFileProvider()
-        let ledger = MediaAnalysisTagLedgerService()
-        let selections = Dictionary(
-            uniqueKeysWithValues: tagSelections.map { ($0.stableMediaID, $0.selectedNames) }
-        )
-        var applied = 0
-        var failures: [String] = []
-        for item in document.items {
-            do {
-                let file = try await provider.stat(.local(path: item.media.sourcePath))
-                let currentLedger = ManagedTagLedger(mediaEntries: managedTagsByMedia.map {
-                    .init(stableMediaID: $0.key, tagNames: $0.value)
-                })
-                let update = ledger.update(
-                    ledger: currentLedger,
-                    item: item,
-                    currentTags: file.tags,
-                    selectedNames: selections[item.media.stableID, default: []]
-                )
-                let outcome = try await provider.apply(update.changes, to: [file])
-                if let failure = outcome.failures.first {
-                    failures.append("\(item.media.displayName): \(failure.message)")
-                } else {
-                    managedTagsByMedia[item.media.stableID] = update.nextManagedTagNames
-                    applied += 1
-                }
-            } catch {
-                failures.append("\(item.media.displayName): \(error.localizedDescription)")
-            }
-        }
-        if failures.isEmpty { return "已将所选标签应用到 \(applied) 个媒体文件。" }
-        return "已更新 \(applied) 个媒体文件。\(failures.joined(separator: " "))"
-    }
 }

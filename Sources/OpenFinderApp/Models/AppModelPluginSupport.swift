@@ -3,19 +3,9 @@ import OpenFinderCore
 
 extension AppModel {
     func loadPlugins() {
-        let projectPlugins = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("ExamplePlugins", isDirectory: true)
-        let bundledPlugins = Bundle.main.resourceURL?
-            .appendingPathComponent("BuiltinPlugins", isDirectory: true)
-        let appSupportPlugins = Self.applicationSupportDirectory()
-            .appendingPathComponent("Plugins", isDirectory: true)
-        let locations: [(URL, PluginSource)] = [
-            (projectPlugins, .development),
-            (appSupportPlugins, .user)
-        ] + (bundledPlugins.map { [($0, .builtIn)] } ?? [])
-        let catalog = pluginManagementService.scan(locations: locations)
+        let catalog = services.scanPlugins()
         loadedPlugins = catalog.loaded
-        Task { await pluginTaskResolver.register(catalog.loaded) }
+        Task { await services.registerPlugins(catalog.loaded) }
         pluginLoadDiagnostics = catalog.diagnostics
         statusMessage = catalog.diagnostics.isEmpty
             ? "Loaded \(catalog.loaded.count) plugins"
@@ -23,9 +13,7 @@ extension AppModel {
     }
 
     func pluginActions(for items: [FileItem]) -> [(LoadedPlugin, PluginActionManifest)] {
-        loadedPlugins.flatMap { plugin in
-            PluginMatcher.actions(in: plugin.manifest, matching: items).map { (plugin, $0) }
-        }
+        services.pluginActions(in: loadedPlugins, for: items)
     }
 
     func pluginConnectionStatus(for plugin: LoadedPlugin) -> PluginConnectionStatus? {
@@ -38,7 +26,7 @@ extension AppModel {
             state: .connecting,
             guidance: "Checking the local plugin service…"
         )
-        let status = await pluginManagementService.checkConnection(
+        let status = await services.checkPluginConnection(
             plugin,
             configuration: configuration
         )
@@ -64,7 +52,7 @@ extension AppModel {
 
     func pluginSecretConfigured(pluginID: String, key: String) -> Bool {
         let manifest = loadedPlugins.first(where: { $0.id == pluginID })?.manifest
-        return pluginManagementService.isSecretConfigured(
+        return services.pluginSecretConfigured(
             pluginID: pluginID,
             key: key,
             manifest: manifest
@@ -76,17 +64,16 @@ extension AppModel {
         if let manifest = loadedPlugins.first(where: { $0.id == pluginID })?.manifest {
             return await setPluginSecret(secret, for: manifest, key: key)
         }
-        return await applyPluginSecretResult(await pluginManagementService.setSecret(
+        return await applyPluginSecretResult(await services.setPluginSecret(
             secret,
             pluginID: pluginID,
-            key: key,
-            storage: .keychain
+            key: key
         ))
     }
 
     @discardableResult
     func setPluginSecret(_ secret: String, for manifest: PluginManifest, key: String) async -> Bool {
-        await applyPluginSecretResult(await pluginManagementService.setSecret(
+        await applyPluginSecretResult(await services.setPluginSecret(
             secret,
             manifest: manifest,
             key: key
@@ -94,7 +81,7 @@ extension AppModel {
     }
 
     func configuredPluginSecretReferences(for manifest: PluginManifest) -> [String: String] {
-        pluginManagementService.configuredSecretReferences(for: manifest)
+        services.configuredPluginSecretReferences(for: manifest)
     }
 
     private func applyPluginSecretResult(_ result: PluginSecretMutationResult) async -> Bool {

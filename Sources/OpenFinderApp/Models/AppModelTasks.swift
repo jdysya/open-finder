@@ -5,14 +5,14 @@ import OpenFinderCore
 extension AppModel {
     @discardableResult
     func refreshTasks() async -> Bool {
-        let projection = await taskApplicationService.projection()
+        let projection = await services.taskProjection()
         publishTaskProjection(projection)
         return projection.hasActiveTasks
     }
 
     func cancelTask(_ id: UUID) {
         Task {
-            let projection = await taskApplicationService.cancel(id)
+            let projection = await services.cancelTask(id)
             statusMessage = "Cancelled task \(id.uuidString.prefix(8))"
             publishTaskProjection(projection)
         }
@@ -21,7 +21,7 @@ extension AppModel {
     func retryTask(_ id: UUID) {
         Task {
             do {
-                let (retryID, projection) = try await taskApplicationService.retry(id)
+                let (retryID, projection) = try await services.retryTask(id)
                 statusMessage = "Retried task \(retryID.uuidString.prefix(8))"
                 publishTaskProjection(projection)
                 await observeTask(retryID)
@@ -41,14 +41,14 @@ extension AppModel {
     }
 
     func startTaskPolling() {
-        taskApplicationService.startPolling { [weak self] projection in
+        services.startTaskObservation { [weak self] projection in
             self?.publishTaskProjection(projection)
         }
     }
 
     func observeTask(_ id: UUID) async {
         do {
-            let (record, projection) = try await taskApplicationService.waitForTerminalStatus(
+            let (record, projection) = try await services.awaitTask(
                 id,
                 timeout: 86_400
             )

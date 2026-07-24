@@ -95,8 +95,9 @@ struct ContentView: View {
             if let projection = app.presentedPluginResult {
                 PluginResultView(
                     projection: projection,
-                    catalog: app.pluginRendererCatalog,
-                    artifactResults: app.artifactResultService,
+                    renderer: app.renderer(for: projection),
+                    artifactURL: { await app.resolvePresentedPluginResultArtifact($0) },
+                    onAction: { await app.performPresentedPluginResultAction($0) },
                     onDismiss: { app.dismissPluginResult() }
                 )
             }

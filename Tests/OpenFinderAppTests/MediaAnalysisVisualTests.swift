@@ -98,8 +98,8 @@ final class MediaAnalysisVisualTests: XCTestCase {
         try render(
             PluginResultView(
                 projection: media,
-                catalog: .standard,
-                artifactResults: artifactResults,
+                renderer: PluginRendererCatalog.standard.renderer(for: media),
+                artifactURL: { _ in resolvedAssetURL },
                 resolvedAssetURL: { _ in resolvedAssetURL },
                 onDismiss: {}
             ),
@@ -111,7 +111,7 @@ final class MediaAnalysisVisualTests: XCTestCase {
             MediaAnalysisMomentPreviewView(
                 moment: item.moments[0],
                 moments: item.moments,
-                artifactResults: artifactResults,
+                artifactURL: { _ in resolvedAssetURL },
                 resolvedAssetURL: { _ in resolvedAssetURL },
                 previewMomentIndex: Binding(
                     get: { previewIndex },
@@ -124,7 +124,7 @@ final class MediaAnalysisVisualTests: XCTestCase {
         try render(
             PluginResultView(
                 projection: unknown,
-                catalog: .standard,
+                renderer: PluginRendererCatalog.standard.renderer(for: unknown),
                 onDismiss: {}
             ),
             to: unknownURL,
@@ -155,7 +155,9 @@ final class MediaAnalysisVisualTests: XCTestCase {
                     handlerIdentifier: .mediaAnalysis,
                     value: managedDocument
                 ),
-                catalog: .standard,
+                renderer: PluginRendererCatalog.standard.renderer(
+                    forSchemaID: MediaAnalysisDocument.schemaIdentifier
+                ),
                 resolvedAssetURL: { _ in resolvedAssetURL },
                 onDismiss: {}
             ),

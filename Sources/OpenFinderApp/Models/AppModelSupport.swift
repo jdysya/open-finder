@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import OpenFinderCore
 
@@ -6,7 +5,7 @@ extension AppModel {
     func loadInitialState() async {
         guard !didLoadInitialState else { return }
         didLoadInitialState = true
-        if let loadedConfiguration = try? await runtimeConfigurationService.load() {
+        if let loadedConfiguration = try? await services.loadConfiguration() {
             configuration = loadedConfiguration
         }
         leftPane.showHiddenFiles = configuration.defaultShowHiddenFiles
@@ -14,7 +13,7 @@ extension AppModel {
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
-        remoteAccounts = remoteAccountService.accounts()
+        remoteAccounts = services.remoteAccounts()
         await refreshTasks()
     }
 
@@ -31,18 +30,14 @@ extension AppModel {
     }
 
     func saveConfiguration() {
-        runtimeConfigurationService.saveCurrent()
+        services.saveConfiguration()
     }
 
     func flushConfigurationSaves() async {
-        await runtimeConfigurationService.flush()
+        await services.flushConfigurationSaves()
     }
 
     static func applicationSupportDirectory() -> URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-        return base.appendingPathComponent("OpenFinder", isDirectory: true)
+        ApplicationServices.applicationSupportDirectory()
     }
 }

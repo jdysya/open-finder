@@ -3,7 +3,7 @@ import SwiftUI
 
 struct MediaAnalysisWorkspaceView: View {
     let item: MediaAnalysisItem
-    let artifactResults: ArtifactResultService?
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
     @Binding var filters: Set<MediaFacetSelection>
     @Binding var finderTags: Set<String>
@@ -19,7 +19,7 @@ struct MediaAnalysisWorkspaceView: View {
                 MediaAnalysisMomentSection(
                     item: item,
                     moments: filteredMoments,
-                    artifactResults: artifactResults,
+                    artifactURL: artifactURL,
                     resolvedAssetURL: resolvedAssetURL,
                     previewMomentIndex: $previewMomentIndex
                 )

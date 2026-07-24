@@ -2,7 +2,7 @@ import Foundation
 import OpenFinderCore
 
 extension AppModel {
-    var remoteConnectors: [RemoteConnector] { remoteAccountService.connectors }
+    var remoteConnectors: [RemoteConnector] { services.remoteConnectors }
 
     func addWebDAVAccount(
         name: String,
@@ -30,7 +30,7 @@ extension AppModel {
         allowInsecureHTTP: Bool
     ) {
         do {
-            let mutation = try remoteAccountService.addAccount(
+            let mutation = try services.addRemoteAccount(
                 connectorID: connectorID,
                 name: name,
                 endpoint: endpoint,
@@ -52,7 +52,7 @@ extension AppModel {
     func removeRemoteAccount(_ account: RemoteAccount) {
         Task {
             do {
-                let mutation = try await remoteAccountService.removeAccount(account)
+                let mutation = try await services.removeRemoteAccount(account)
                 remoteAccounts = mutation.accounts
                 statusMessage = mutation.statusMessage
             } catch {
@@ -68,7 +68,7 @@ extension AppModel {
     func openRemoteAccountInActivePane(_ account: RemoteAccount) {
         Task {
             do {
-                await activeBrowser.navigate(to: try remoteAccountService.rootLocation(for: account))
+                await activeBrowser.navigate(to: try services.remoteRoot(for: account))
             } catch {
                 statusMessage = error.localizedDescription
             }

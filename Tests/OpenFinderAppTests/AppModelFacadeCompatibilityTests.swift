@@ -6,6 +6,55 @@ import XCTest
 
 @MainActor
 final class AppModelFacadeCompatibilityTests: XCTestCase {
+    func testGenericPresentationFacadeAndExistingAppSurface() async throws {
+        let fixture = try FacadeFixture()
+        defer { fixture.cleanup() }
+        let app = fixture.makeApp()
+        let taskID = UUID()
+        let projection = PluginResultProjection(
+            resultSchemaID: "fixture.generic.v1",
+            handlerIdentifier: .unknown,
+            value: UnknownPluginResult(
+                schemaID: "fixture.generic.v1",
+                taskID: taskID,
+                outputDirectory: fixture.root,
+                artifacts: [],
+                message: "fixture"
+            )
+        )
+
+        app.presentPluginResult(projection)
+
+        XCTAssertEqual(app.presentedPluginResult?.resultSchemaID, "fixture.generic.v1")
+        XCTAssertEqual(
+            app.renderer(for: projection).identifier,
+            PluginRendererIdentifier.unknown
+        )
+        XCTAssertEqual(app.leftPane.id, .left)
+        XCTAssertEqual(app.rightPane.id, .right)
+        XCTAssertTrue(app.activeBrowser === app.leftPane)
+
+        let actionOutcome = await app.performPresentedPluginResultAction(
+            .applyMediaAnalysisTags(
+                document: .init(
+                    documentID: UUID(),
+                    taskID: taskID,
+                    items: [],
+                    suggestedTags: [],
+                    actions: [],
+                    managedTagLedger: .init(mediaEntries: []),
+                    createdAt: Date(timeIntervalSince1970: 0)
+                ),
+                selections: [],
+                managedTagsByMedia: [:]
+            )
+        )
+        XCTAssertEqual(actionOutcome.message, "已将所选标签应用到 0 个媒体文件。")
+
+        app.dismissPresentedPluginResult()
+        XCTAssertNil(app.presentedPluginResult)
+    }
+
     func testPublishedSurfaceWithMediaPresentationException() async throws {
         let fixture = try FacadeFixture()
         defer { fixture.cleanup() }

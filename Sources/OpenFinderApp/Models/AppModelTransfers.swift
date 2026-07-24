@@ -27,7 +27,7 @@ extension AppModel {
                     path: urls[0].deletingLastPathComponent().path
                 )
                 let title = "Copy dropped \(items.count) item(s)"
-                let queuedID = try await fileBrowserService.submitTransfer(
+                let queuedID = try await services.submitTransfer(
                     items,
                     source: sourceLocation,
                     destination: destinationLocation,
@@ -76,7 +76,7 @@ extension AppModel {
             )
             return
         }
-        enqueueTransfer(
+        submitTransfer(
             selected,
             source: sourceLocation,
             destination: destinationLocation,
@@ -96,7 +96,7 @@ extension AppModel {
     ) {
         guard let pending = confirmedPending ?? pendingTransferOverwrite else { return }
         pendingTransferOverwrite = nil
-        enqueueTransfer(
+        submitTransfer(
             pending.items,
             source: pending.source,
             destination: pending.destination,
@@ -111,7 +111,7 @@ extension AppModel {
         pendingTransferOverwrite = nil
     }
 
-    private func enqueueTransfer(
+    private func submitTransfer(
         _ selected: [FileItem],
         source sourceLocation: Location,
         destination destinationLocation: Location,
@@ -126,7 +126,7 @@ extension AppModel {
                 let title = move
                     ? "Move \(selected.count) item(s)"
                     : "Copy \(selected.count) item(s)"
-                let queuedID = try await fileBrowserService.submitTransfer(
+                let queuedID = try await services.submitTransfer(
                     selected,
                     source: sourceLocation,
                     destination: destinationLocation,

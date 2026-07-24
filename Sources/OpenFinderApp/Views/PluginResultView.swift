@@ -3,34 +3,42 @@ import SwiftUI
 
 struct PluginResultView: View {
     let projection: PluginResultProjection
-    let catalog: PluginRendererCatalog
-    let artifactResults: ArtifactResultService?
+    let renderer: PluginRendererDescriptor
+    let artifactURL: @Sendable (UUID) async -> URL?
     let resolvedAssetURL: (ConfinedAssetReference) -> URL?
+    let onAction: @MainActor (PresentedPluginResultAction) async
+        -> PresentedPluginResultActionOutcome
     let onDismiss: () -> Void
 
     init(
         projection: PluginResultProjection,
-        catalog: PluginRendererCatalog,
-        artifactResults: ArtifactResultService? = nil,
+        renderer: PluginRendererDescriptor,
+        artifactURL: @escaping @Sendable (UUID) async -> URL? = { _ in nil },
         resolvedAssetURL: @escaping (ConfinedAssetReference) -> URL? = { _ in nil },
+        onAction: @escaping @MainActor (PresentedPluginResultAction) async
+            -> PresentedPluginResultActionOutcome = { _ in
+                .init(message: "", managedTagsByMedia: [:])
+            },
         onDismiss: @escaping () -> Void
     ) {
         self.projection = projection
-        self.catalog = catalog
-        self.artifactResults = artifactResults
+        self.renderer = renderer
+        self.artifactURL = artifactURL
         self.resolvedAssetURL = resolvedAssetURL
+        self.onAction = onAction
         self.onDismiss = onDismiss
     }
 
     var body: some View {
         Group {
-            switch catalog.renderer(for: projection).identifier {
+            switch renderer.identifier {
             case .mediaAnalysis:
                 if let document = projection.project(MediaAnalysisDocument.self) {
                     MediaAnalysisResultView(
                         document: document,
-                        artifactResults: artifactResults,
+                        artifactURL: artifactURL,
                         resolvedAssetURL: resolvedAssetURL,
+                        onAction: onAction,
                         onDismiss: onDismiss
                     )
                 } else {
