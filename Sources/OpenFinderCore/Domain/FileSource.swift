@@ -106,6 +106,10 @@ public struct FileSourceCapabilities: Codable, Hashable, Sendable {
                 : .unsupported(.operationUnsupported(sourceID: sourceID, capability: capability))
         }
     }
+
+    public var supportedIDs: Set<FileCapability> {
+        Set(FileCapability.allCases.filter { self[$0].isSupported })
+    }
 }
 
 public struct FileListingCapabilities: Codable, Hashable, Sendable {
