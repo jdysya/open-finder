@@ -3,7 +3,7 @@ import XCTest
 @testable import OpenFinderCore
 
 final class TransferMoveTaskHandlerTests: XCTestCase {
-    func testNeverStartedQueuedMoveExecutesThroughRegisteredHandler() async throws {
+    func testQueuedMoveCanStartAfterRecovery() async throws {
         // Given
         let fixture = try MoveHandlerFixture()
         defer { fixture.cleanup() }
@@ -26,6 +26,14 @@ final class TransferMoveTaskHandlerTests: XCTestCase {
             lineage: .init(rootTaskID: taskID),
             queueOrdinal: 1
         )
+        XCTAssertEqual(
+            TransferMoveRecoveryClassifier.classify(
+                descriptor: descriptor,
+                persistedStatus: .queued,
+                startedAt: nil
+            ),
+            .executableQueued
+        )
         let fileSources = FileSourceRegistry(
             localProvider: provider,
             remoteProviderRegistry: RemoteProviderRegistry { accountID, revision in
@@ -40,13 +48,14 @@ final class TransferMoveTaskHandlerTests: XCTestCase {
             TransferMoveTaskHandler(fileSources: fileSources).taskHandler
         )
         let queue = TaskQueueService(maxConcurrentTasks: 1, handlerRegistry: registry)
+        let descriptorData = try JSONEncoder().encode(descriptor)
 
         // When
-        let queuedID = try await queue.enqueue(.init(
-            kind: .localMove,
-            title: "Durable local move",
-            descriptor: descriptor
-        ))
+        let queuedID = try await queue.recoverPersistedTask(
+            .init(kind: .localMove, title: "Recovered durable local move"),
+            descriptorData: descriptorData,
+            persisted: .init(status: .queued, startedAt: nil)
+        )
         let terminal = try await queue.waitForTerminalStatus(queuedID, timeout: 2)
 
         // Then
