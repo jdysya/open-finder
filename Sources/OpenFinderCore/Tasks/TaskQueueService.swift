@@ -25,6 +25,10 @@ public struct TaskRequest: Sendable {
         self.descriptor = descriptor
         self.operation = operation
     }
+
+    var isDurable: Bool {
+        descriptor != nil && operation == nil
+    }
 }
 
 public actor TaskExecutionContext {
@@ -61,7 +65,9 @@ public actor TaskExecutionContext {
 
 public actor TaskQueueService {
     private var queue: [UUID] = []
+    private var reservedTaskIDs: Set<UUID> = []
     private var running: [UUID: Task<Void, Never>] = [:]
+    private var starting: Set<UUID> = []
     private var records: [UUID: TaskRecord] = [:]
     private var requests: [UUID: TaskRequest] = [:]
     private var logStorage: [UUID: [TaskLogLine]] = [:]
@@ -70,41 +76,57 @@ public actor TaskQueueService {
     private var runningResourceKeys: Set<String> = []
     private var maxConcurrentTasks: Int
     private let handlerRegistry: TaskHandlerRegistry?
+    private let store: (any TaskStore)?
 
     public init(
         maxConcurrentTasks: Int = 2,
-        handlerRegistry: TaskHandlerRegistry? = nil
+        handlerRegistry: TaskHandlerRegistry? = nil,
+        store: (any TaskStore)? = nil
     ) {
         self.maxConcurrentTasks = max(1, maxConcurrentTasks)
         self.handlerRegistry = handlerRegistry
+        self.store = store
     }
 
-    public func updateMaxConcurrentTasks(_ value: Int) {
+    public func updateMaxConcurrentTasks(_ value: Int) async {
         maxConcurrentTasks = max(1, value)
-        startNextIfPossible()
+        await startNextIfPossible()
     }
 
     public func currentMaxConcurrentTasks() -> Int { maxConcurrentTasks }
 
     @discardableResult
     public func enqueue(_ request: TaskRequest) async throws -> UUID {
+        try await enqueue(request, persist: request.isDurable)
+    }
+
+    private func enqueue(_ request: TaskRequest, persist: Bool) async throws -> UUID {
         let id = request.descriptor?.taskID ?? UUID()
-        requests[id] = request
-        records[id] = TaskRecord(
+        guard records[id] == nil, !reservedTaskIDs.contains(id) else {
+            throw OpenFinderError.operationFailed("Task \(id) is already enqueued")
+        }
+        reservedTaskIDs.insert(id)
+        defer { reservedTaskIDs.remove(id) }
+        let record = TaskRecord(
             id: id,
             kind: request.kind,
             title: request.title,
             inputSummary: request.inputSummary,
             descriptor: request.descriptor
         )
+        if persist, let descriptor = request.descriptor, let store {
+            try await store.enqueue(descriptor: descriptor, record: record)
+        }
+        requests[id] = request
+        records[id] = record
         logStorage[id] = []
         if handlerRegistry == nil,
            case .unavailable(let reasonCode) = request.descriptor?.availability {
-            finish(id, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
+            await finish(id, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
             return id
         }
         queue.append(id)
-        startNextIfPossible()
+        await startNextIfPossible()
         return id
     }
 
@@ -133,6 +155,7 @@ public actor TaskQueueService {
         do {
             descriptor = try JSONDecoder().decode(TaskDescriptorEnvelope.self, from: descriptorData)
         } catch {
+            guard records[fallbackID] == nil else { return fallbackID }
             records[fallbackID] = TaskRecord(
                 id: fallbackID,
                 kind: request.kind,
@@ -140,7 +163,7 @@ public actor TaskQueueService {
                 inputSummary: request.inputSummary
             )
             logStorage[fallbackID] = []
-            finish(
+            await finish(
                 fallbackID,
                 status: .unavailable,
                 result: nil,
@@ -154,11 +177,13 @@ public actor TaskQueueService {
             title: request.title,
             inputSummary: request.inputSummary,
             resourceKey: request.resourceKey,
-            descriptor: descriptor,
-            operation: request.operation
+            descriptor: descriptor
         )
+        if records[descriptor.taskID] != nil {
+            return descriptor.taskID
+        }
         guard !persisted.isQueuedAndNeverStarted else {
-            return try await enqueue(recoveredRequest)
+            return try await enqueue(recoveredRequest, persist: false)
         }
 
         requests[descriptor.taskID] = recoveredRequest
@@ -173,6 +198,7 @@ public actor TaskQueueService {
         record.markInterrupted()
         records[descriptor.taskID] = record
         logStorage[descriptor.taskID] = []
+        await persistRecord(descriptor.taskID)
         return descriptor.taskID
     }
 
@@ -189,13 +215,20 @@ public actor TaskQueueService {
         if let index = queue.firstIndex(of: id) {
             cancellationRequests.insert(id)
             queue.remove(at: index)
-            finish(id, status: .cancelled, result: nil, error: nil)
+            await finish(id, status: .cancelled, result: nil, error: nil)
+            cancellationRequests.remove(id)
+            return
+        }
+        if starting.contains(id) {
+            guard !effectsCommittedTasks.contains(id) else { return }
+            cancellationRequests.insert(id)
+            await setStatus(.cancelling, for: id)
             return
         }
         if let runningTask = running[id] {
             guard !effectsCommittedTasks.contains(id) else { return }
             cancellationRequests.insert(id)
-            records[id]?.status = .cancelling
+            await setStatus(.cancelling, for: id)
             runningTask.cancel()
         }
     }
@@ -205,12 +238,15 @@ public actor TaskQueueService {
         guard let original = requests[id], let oldRecord = records[id] else {
             throw OpenFinderError.itemNotFound(id.uuidString)
         }
+        guard oldRecord.status.isTerminal else {
+            throw OpenFinderError.operationFailed("Only terminal tasks can be retried")
+        }
         let retryID = UUID()
         let retryDescriptor = original.descriptor?.retried(
             taskID: retryID,
-            queueOrdinal: (original.descriptor?.queueOrdinal ?? 0) &+ 1
+            queueOrdinal: nextQueueOrdinal()
         )
-        requests[retryID] = TaskRequest(
+        let retryRequest = TaskRequest(
             kind: original.kind,
             title: original.title,
             inputSummary: original.inputSummary,
@@ -218,7 +254,7 @@ public actor TaskQueueService {
             descriptor: retryDescriptor,
             operation: original.operation
         )
-        records[retryID] = TaskRecord(
+        let retryRecord = TaskRecord(
             id: retryID,
             kind: original.kind,
             title: original.title,
@@ -226,37 +262,48 @@ public actor TaskQueueService {
             retryCount: oldRecord.retryCount + 1,
             descriptor: retryDescriptor
         )
+        if retryRequest.isDurable, let retryDescriptor, let store {
+            try await store.enqueue(descriptor: retryDescriptor, record: retryRecord)
+        }
+        requests[retryID] = retryRequest
+        records[retryID] = retryRecord
         logStorage[retryID] = []
         if handlerRegistry == nil,
            case .unavailable(let reasonCode) = retryDescriptor?.availability {
-            finish(retryID, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
+            await finish(retryID, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
             return retryID
         }
         queue.append(retryID)
-        startNextIfPossible()
+        await startNextIfPossible()
         return retryID
     }
 
-    public func appendLog(_ id: UUID, _ message: String, level: String = "info") {
+    public func appendLog(_ id: UUID, _ message: String, level: String = "info") async {
         guard records[id]?.status.isTerminal == false else { return }
-        logStorage[id, default: []].append(.init(taskID: id, level: level, message: message))
+        let line = TaskLogLine(taskID: id, level: level, message: message)
+        if requests[id]?.isDurable == true, let store {
+            try? await store.append(log: line)
+        }
+        logStorage[id, default: []].append(line)
     }
 
-    public func updateProgress(_ id: UUID, _ progress: Double?, message: String? = nil) {
+    public func updateProgress(_ id: UUID, _ progress: Double?, message: String? = nil) async {
         guard records[id]?.status.isTerminal == false else { return }
         records[id]?.progress = progress
-        if let message { appendLog(id, message) }
+        await persistRecord(id)
+        if let message { await appendLog(id, message) }
     }
 
-    public func updateProgress(_ id: UUID, _ snapshot: TaskProgressSnapshot) {
+    public func updateProgress(_ id: UUID, _ snapshot: TaskProgressSnapshot) async {
         guard records[id]?.status.isTerminal == false else { return }
         let previousPhase = records[id]?.progressDetail?.phase
         records[id]?.progress = snapshot.fraction
         records[id]?.progressDetail = snapshot
+        await persistRecord(id)
         if let phase = snapshot.phase, phase != previousPhase {
-            appendLog(id, [phase, snapshot.detail].compactMap { $0 }.joined(separator: ": "))
+            await appendLog(id, [phase, snapshot.detail].compactMap { $0 }.joined(separator: ": "))
         } else if snapshot.phase == nil, let detail = snapshot.detail, !detail.isEmpty {
-            appendLog(id, detail)
+            await appendLog(id, detail)
         }
     }
 
@@ -264,7 +311,7 @@ public actor TaskQueueService {
         cancellationRequests.contains(id) || Task.isCancelled
     }
 
-    func markEffectsCommitted(_ id: UUID) throws {
+    func markEffectsCommitted(_ id: UUID) async throws {
         guard
             records[id]?.status.isTerminal == false,
             !cancellationRequests.contains(id),
@@ -273,6 +320,7 @@ public actor TaskQueueService {
             throw CancellationError()
         }
         effectsCommittedTasks.insert(id)
+        await persistRecord(id)
     }
 
     public func waitForTerminalStatus(_ id: UUID, timeout: TimeInterval) async throws -> TaskRecord {
@@ -284,8 +332,8 @@ public actor TaskQueueService {
         throw OpenFinderError.timeout("Timed out waiting for task \(id)")
     }
 
-    private func startNextIfPossible() {
-        while running.count < maxConcurrentTasks {
+    private func startNextIfPossible() async {
+        while running.count + starting.count < maxConcurrentTasks {
             guard let index = queue.firstIndex(where: { id in
                 guard let key = requests[id]?.resourceKey else { return true }
                 return !runningResourceKeys.contains(key)
@@ -297,6 +345,17 @@ public actor TaskQueueService {
             }
             records[id]?.status = .running
             records[id]?.startedAt = Date()
+            starting.insert(id)
+            await persistRecord(id)
+            starting.remove(id)
+            if cancellationRequests.contains(id) {
+                if let resourceKey = request.resourceKey {
+                    runningResourceKeys.remove(resourceKey)
+                }
+                await finish(id, status: .cancelled, result: nil, error: nil)
+                cancellationRequests.remove(id)
+                continue
+            }
             let handle = Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
                 await self.run(id: id, request: request)
@@ -332,16 +391,16 @@ public actor TaskQueueService {
             await events.complete()
             if (cancellationRequests.contains(id) || Task.isCancelled)
                 && !effectsCommittedTasks.contains(id) {
-                finish(id, status: .cancelled, result: nil, error: nil)
+                await finish(id, status: .cancelled, result: nil, error: nil)
             } else {
-                finish(id, status: .succeeded, result: result, error: nil)
+                await finish(id, status: .succeeded, result: result, error: nil)
             }
         } catch is CancellationError {
             await events.complete()
-            finish(id, status: .cancelled, result: nil, error: nil)
+            await finish(id, status: .cancelled, result: nil, error: nil)
         } catch let error as TaskHandlerRegistryError {
             await events.complete()
-            finish(
+            await finish(
                 id,
                 status: .unavailable,
                 result: nil,
@@ -350,7 +409,12 @@ public actor TaskQueueService {
             )
         } catch {
             await events.complete()
-            finish(id, status: cancellationRequests.contains(id) ? .cancelled : .failed, result: nil, error: error)
+            await finish(
+                id,
+                status: cancellationRequests.contains(id) ? .cancelled : .failed,
+                result: nil,
+                error: error
+            )
         }
         if let resourceKey = request.resourceKey {
             runningResourceKeys.remove(resourceKey)
@@ -358,19 +422,19 @@ public actor TaskQueueService {
         running[id] = nil
         cancellationRequests.remove(id)
         effectsCommittedTasks.remove(id)
-        startNextIfPossible()
+        await startNextIfPossible()
     }
 
-    private func consume(_ event: TaskEvent, for id: UUID) -> Bool {
+    private func consume(_ event: TaskEvent, for id: UUID) async -> Bool {
         guard records[id]?.status.isTerminal == false else { return false }
         switch event {
         case .progress(let snapshot):
-            updateProgress(id, snapshot)
+            await updateProgress(id, snapshot)
         case .log(let message, let level):
-            appendLog(id, message, level: level)
+            await appendLog(id, message, level: level)
         case .status(let status):
             guard !status.isTerminal else { return false }
-            records[id]?.status = status
+            await setStatus(status, for: id)
         }
         return true
     }
@@ -390,8 +454,12 @@ public actor TaskQueueService {
         result: TaskResult?,
         error: Error?,
         reasonCode: TaskStatusReasonCode? = nil
-    ) {
+    ) async {
         guard records[id]?.status.isTerminal == false else { return }
+        if let error {
+            records[id]?.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            await appendLog(id, records[id]?.errorMessage ?? "Task failed", level: "error")
+        }
         records[id]?.status = status
         records[id]?.finishedAt = Date()
         records[id]?.reasonCode = reasonCode
@@ -400,13 +468,29 @@ public actor TaskQueueService {
             records[id]?.resultSummary = result.summary
             records[id]?.clipboardText = result.clipboard
         }
-        if let error {
-            records[id]?.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            logStorage[id, default: []].append(.init(
-                taskID: id,
-                level: "error",
-                message: records[id]?.errorMessage ?? "Task failed"
-            ))
-        }
+        await persistRecord(id)
+    }
+
+    private func setStatus(_ status: TaskStatus, for id: UUID) async {
+        guard records[id]?.status.isTerminal == false else { return }
+        records[id]?.status = status
+        await persistRecord(id)
+    }
+
+    private func persistRecord(_ id: UUID) async {
+        guard
+            requests[id]?.isDurable == true,
+            let record = records[id],
+            let store
+        else { return }
+        try? await store.update(
+            record: record,
+            effectsCommitted: effectsCommittedTasks.contains(id)
+        )
+    }
+
+    private func nextQueueOrdinal() -> UInt64 {
+        let maximum = requests.values.compactMap(\.descriptor?.queueOrdinal).max() ?? 0
+        return maximum &+ 1
     }
 }
