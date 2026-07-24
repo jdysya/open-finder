@@ -2,17 +2,17 @@ import Foundation
 import OpenFinderCore
 import SwiftUI
 
+enum PaneID: String {
+    case left
+    case right
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let videoAnalyzerPluginID = "dev.openfinder.plugins.video-analyzer"
     static let videoAnalyzerActionID = "analyze-video"
     static let videoAnalyzerResourceKey = "video-analysis"
     static let videoAnalyzerVersion = "0.1.0"
-
-    enum PaneID: String {
-        case left
-        case right
-    }
 
     @Published var leftPane: BrowserPaneModel
     @Published var rightPane: BrowserPaneModel
@@ -177,8 +177,8 @@ struct PendingTransferOverwrite: Identifiable {
     let destination: Location
     let move: Bool
     let conflicts: [TransferConflict]
-    let sourcePaneID: AppModel.PaneID
-    let destinationPaneID: AppModel.PaneID
+    let sourcePaneID: PaneID
+    let destinationPaneID: PaneID
 
     var message: String {
         let names = conflicts.prefix(5).map(\.itemName).joined(separator: ", ")

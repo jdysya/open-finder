@@ -75,7 +75,10 @@ private struct KeyframeCard: View {
         .buttonStyle(.plain)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
-        .accessibilityLabel("\(VideoAnalysisFormatting.timestamp(frame.timestamp))，\(frame.summary)")
+        .accessibilityLabel(MediaPresentationSemantics.frameAccessibilityLabel(
+            timestamp: VideoAnalysisFormatting.timestamp(frame.timestamp),
+            summary: frame.summary
+        ))
     }
 }
 
@@ -108,7 +111,7 @@ struct KeyframePreviewView: View {
                 Spacer()
                 Text(VideoAnalysisFormatting.timestamp(frame.timestamp))
                     .font(.headline.monospacedDigit())
-                Button("关闭") { previewFrameIndex = nil }
+                Button(MediaPresentationSemantics.closeTitle) { previewFrameIndex = nil }
                     .keyboardShortcut(.cancelAction)
             }
             Text(frame.summary)
@@ -121,10 +124,14 @@ struct KeyframePreviewView: View {
     }
 
     private func movePreview(by offset: Int) {
-        guard let current = frames.firstIndex(where: { $0.index == previewFrameIndex }) else { return }
-        let destination = current + offset
-        guard frames.indices.contains(destination) else { return }
-        previewFrameIndex = frames[destination].index
+        guard let destination = MediaPresentationSemantics.previewIndex(
+            from: previewFrameIndex,
+            offset: offset,
+            available: frames.map(\.index)
+        ) else {
+            return
+        }
+        previewFrameIndex = destination
     }
 }
 

@@ -37,6 +37,10 @@ struct VideoAnalysisResultView: View {
                     }
                     .tag(video.path)
                     .accessibilityElement(children: .combine)
+                    .accessibilityLabel(MediaPresentationSemantics.mediaAccessibilityLabel(
+                        name: video.name,
+                        keyframeCount: video.frames.count
+                    ))
                 }
             }
             .navigationTitle("视频")
@@ -55,7 +59,7 @@ struct VideoAnalysisResultView: View {
                 }
                 .navigationTitle(video.name)
             } else {
-                ContentUnavailableView("没有分析结果", systemImage: "film")
+                ContentUnavailableView(MediaPresentationSemantics.emptyTitle, systemImage: "film")
             }
         }
         .frame(minWidth: 960, idealWidth: 1120, minHeight: 640, idealHeight: 760)
@@ -79,7 +83,11 @@ struct VideoAnalysisResultView: View {
     }
 
     private var selectedVideo: AnalyzedVideo? {
-        result.videos.first { $0.path == selectedVideoPath } ?? result.videos.first
+        let path = MediaPresentationSemantics.selectedPath(
+            in: result.videos.map(\.path),
+            requested: selectedVideoPath
+        )
+        return result.videos.first { $0.path == path }
     }
 
     private var footer: some View {
@@ -94,7 +102,7 @@ struct VideoAnalysisResultView: View {
             Text("已选择 \(finderTagCount) 个 Finder 标签")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button("关闭", action: onDismiss)
+            Button(MediaPresentationSemantics.closeTitle, action: onDismiss)
                 .keyboardShortcut(.cancelAction)
             Button("应用 Finder 标签选择") {
                 Task {

@@ -176,6 +176,8 @@ struct TaskQueueView: View {
         case .succeeded: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
         case .cancelled: Image(systemName: "minus.circle.fill").foregroundStyle(.orange)
+        case .interrupted: Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+        case .unavailable: Image(systemName: "questionmark.circle.fill").foregroundStyle(.secondary)
         }
     }
 }

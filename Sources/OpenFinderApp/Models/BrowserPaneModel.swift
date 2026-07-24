@@ -16,7 +16,7 @@ struct BrowserPaneListing {
 
 @MainActor
 final class BrowserPaneModel: ObservableObject, Identifiable {
-    let id: AppModel.PaneID
+    let id: PaneID
     @Published var location: Location {
         didSet {
             guard location != oldValue else { return }
@@ -52,7 +52,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     var isRestoringTagEditorSelection = false
 
     init(
-        id: AppModel.PaneID,
+        id: PaneID,
         location: Location,
         remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider
     ) {

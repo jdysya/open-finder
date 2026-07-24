@@ -1,6 +1,38 @@
 import OpenFinderCore
 import SwiftUI
 
+enum MediaPresentationSemantics {
+    static let emptyTitle = "没有分析结果"
+    static let closeTitle = "关闭"
+
+    static func selectedPath(in paths: [String], requested: String?) -> String? {
+        paths.first { $0 == requested } ?? paths.first
+    }
+
+    static func previewIndex(
+        from current: Int?,
+        offset: Int,
+        available indices: [Int]
+    ) -> Int? {
+        guard let current,
+              let position = indices.firstIndex(of: current)
+        else {
+            return nil
+        }
+        let destination = position + offset
+        guard indices.indices.contains(destination) else { return nil }
+        return indices[destination]
+    }
+
+    static func mediaAccessibilityLabel(name: String, keyframeCount: Int) -> String {
+        "\(name)，\(keyframeCount) 个关键帧"
+    }
+
+    static func frameAccessibilityLabel(timestamp: String, summary: String) -> String {
+        "\(timestamp)，\(summary)"
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var app: AppModel
 

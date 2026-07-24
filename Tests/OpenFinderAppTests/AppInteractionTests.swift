@@ -1471,7 +1471,7 @@ final class AppInteractionTests: XCTestCase {
         XCTAssertEqual(mutationsAfterDirectCall, mutationsBeforeDirectCall)
     }
 
-    func testDelayedRemoteListingCannotOverwriteCurrentRemoteParent() async throws {
+    func testStalePaneRefreshDoesNotReplaceCurrentLocation() async throws {
         let accountID = UUID()
         let directoryA = RemotePath(identifier: "a", displayPath: "/A")
         let directoryB = RemotePath(identifier: "b", displayPath: "/B")
@@ -1511,6 +1511,7 @@ final class AppInteractionTests: XCTestCase {
         await pane.navigate(to: locationB)
         await provider.resumeList()
         await staleRefresh.value
+        XCTAssertEqual(pane.location, locationB)
         pane.goUp()
 
         let parentBLocation = Location.remote(.init(accountID: accountID, connectorID: .kodbox, path: parentB))
