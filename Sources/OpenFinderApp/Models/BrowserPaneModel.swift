@@ -60,7 +60,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     let providerRevisionResolver: @Sendable (Location) async -> String
     var directorySizeCache: [String: Int64] = [:]
     var directorySizeTasks: [String: Task<Void, Never>] = [:]
-    let remoteMaterializationDirectory: URL
+    var materializationLeases: [MaterializationLease] = []
     var tagEditorSession: TagEditorSession?
     var tagEditorGeneration: UInt64 = 0
     var locationGeneration: UInt64 = 0
@@ -110,13 +110,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 }
             )
         }
-        remoteMaterializationDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("OpenFinderRemoteFiles-\(UUID().uuidString)", isDirectory: true)
     }
 
     deinit {
         for task in directorySizeTasks.values { task.cancel() }
-        try? FileManager.default.removeItem(at: remoteMaterializationDirectory)
+        for lease in materializationLeases { try? lease.release() }
     }
 
     var visibleItems: [FileItem] {

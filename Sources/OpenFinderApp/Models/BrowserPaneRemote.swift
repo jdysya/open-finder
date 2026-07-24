@@ -31,18 +31,12 @@ extension BrowserPaneModel {
                 operation: .quickLook
             )
         }
-        try FileManager.default.createDirectory(
-            at: remoteMaterializationDirectory,
-            withIntermediateDirectories: true
+        let lease = try await fileSourceRegistry.materialize(
+            item.location,
+            revision: adapter.revision
         )
-        let name = try safeRemoteFileName(item.name)
-        let destination = remoteMaterializationDirectory
-            .appendingPathComponent(name, isDirectory: false)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        _ = try await adapter.provider.download(item: source.location.path, to: destination)
-        return destination
+        materializationLeases.append(lease)
+        return lease.url
     }
 
     func downloadRemoteFile(_ item: FileItem, to destination: URL) async throws {

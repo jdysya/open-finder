@@ -71,21 +71,6 @@ final class AppModelFacadeCompatibilityTests: XCTestCase {
         try await waitUntil { await cancellation.wasCancelled() }
     }
 
-    func testPaneMaterializationCleanupIsIdempotentAcrossRepeatedRelease() throws {
-        let fixture = try FacadeFixture()
-        defer { fixture.cleanup() }
-        var pane: BrowserPaneModel? = fixture.makeApp().leftPane
-        let directory = try XCTUnwrap(pane?.remoteMaterializationDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("fixture".utf8).write(to: directory.appendingPathComponent("materialized"))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
-
-        pane = nil
-        pane = nil
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
-    }
-
     func testCurrentMediaSurfaceKeepsTwoVideoSelectionSummaryAndAndFacets() {
         let result = Self.mediaResult
         XCTAssertEqual(result.videos.map(\.name), ["First.mov", "Second.mov"])

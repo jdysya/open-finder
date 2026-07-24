@@ -87,7 +87,7 @@ public final class MaterializationLease: @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
 
-    init(url: URL, ownedNamespaceURL: URL?) {
+    public init(url: URL, ownedNamespaceURL: URL?) {
         self.url = url
         self.ownedNamespaceURL = ownedNamespaceURL
     }
@@ -117,7 +117,7 @@ public final class MaterializationLease: @unchecked Sendable {
 public actor FileSourceRegistry {
     private let localAdapter: LocalFileSourceAdapter
     private let remoteProviderRegistry: RemoteProviderRegistry
-    private let materializationRoot: URL
+    private let materializationService: MaterializationService
 
     public init(
         localProvider: LocalFileProvider = LocalFileProvider(),
@@ -127,7 +127,7 @@ public actor FileSourceRegistry {
     ) {
         localAdapter = LocalFileSourceAdapter(provider: localProvider)
         self.remoteProviderRegistry = remoteProviderRegistry
-        self.materializationRoot = materializationRoot
+        materializationService = MaterializationService(root: materializationRoot)
     }
 
     public func resolve(
@@ -200,51 +200,13 @@ public actor FileSourceRegistry {
                 ownedNamespaceURL: nil
             )
         case .remote(let adapter):
-            let fileName = try safeMaterializedFileName(
-                resolved.location.path.displayPath
-            )
-            try FileManager.default.createDirectory(
-                at: materializationRoot,
-                withIntermediateDirectories: true
-            )
-            let namespace = materializationRoot
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: namespace,
-                withIntermediateDirectories: false
-            )
-            let destination = namespace.appendingPathComponent(
-                fileName,
-                isDirectory: false
-            )
-            do {
-                _ = try await adapter.provider.download(
-                    item: resolved.location.path,
-                    to: destination
-                )
-                try Task.checkCancellation()
-                return MaterializationLease(
-                    url: destination,
-                    ownedNamespaceURL: namespace
-                )
-            } catch {
-                try? FileManager.default.removeItem(at: namespace)
-                throw error
-            }
-        }
-    }
-
-    private func safeMaterializedFileName(_ displayPath: String) throws -> String {
-        let name = URL(fileURLWithPath: displayPath).lastPathComponent
-        guard !name.isEmpty,
-              name != ".",
-              name != "..",
-              !name.contains("\\")
-        else {
-            throw OpenFinderError.operationFailed(
-                "Remote file has an unsafe materialization name"
+            return try await materializationService.materialize(
+                .init(
+                    sourceID: resolved.location.sourceID,
+                    path: resolved.location.path
+                ),
+                provider: adapter.provider
             )
         }
-        return name
     }
 }
