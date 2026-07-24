@@ -8,7 +8,7 @@ public enum AppDatabaseError: Error, Equatable {
 }
 
 public final class AppDatabase {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
     public let databasePool: DatabasePool
 
     public convenience init(
@@ -65,6 +65,11 @@ public final class AppDatabase {
         if upToSchemaVersion >= 2 {
             migrator.registerMigration("openfinder.002.artifact-media-storage") { db in
                 try db.execute(sql: Self.artifactMediaStorageMigration)
+            }
+        }
+        if upToSchemaVersion >= 3 {
+            migrator.registerMigration("openfinder.003.task-lineage-foreign-keys") { db in
+                try db.execute(sql: Self.taskLineageForeignKeysMigration)
             }
         }
         return migrator

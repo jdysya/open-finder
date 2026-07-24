@@ -15,7 +15,7 @@ final class AppDatabaseMigrationTests: XCTestCase {
 
         let fresh = try AppDatabase(url: freshURL)
         try fresh.databasePool.read { db in
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT schema_version FROM app_schema_metadata"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT schema_version FROM app_schema_metadata"), 3)
             XCTAssertEqual(Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'")), expectedTables)
             for (table, requiredColumns) in expectedColumns {
                 XCTAssertTrue(
@@ -36,7 +36,7 @@ final class AppDatabaseMigrationTests: XCTestCase {
 
         let incremental = try AppDatabase(url: incrementalURL)
         try incremental.databasePool.read { db in
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT schema_version FROM app_schema_metadata"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT schema_version FROM app_schema_metadata"), 3)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT title FROM task_records WHERE task_id = ?", arguments: [taskID]), "preserved")
             XCTAssertTrue(try db.tableExists("artifact_records"))
             XCTAssertTrue(try db.tableExists("media_managed_tags"))
@@ -46,10 +46,115 @@ final class AppDatabaseMigrationTests: XCTestCase {
         let reopened = try AppDatabase(url: incrementalURL)
         try reopened.databasePool.read { db in
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_records"), 1)
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations"), 3)
         }
         try reopened.databasePool.close()
-        print("migration_observable fresh=2 incremental=1->2 task_rows=1 repeat_open=stable")
+        print("migration_observable fresh=3 incremental=1->3 task_rows=1 repeat_open=stable")
+    }
+
+    func testV2ToV3PreservesLineageIndexesAndDependents() throws {
+        let url = makeDatabaseURL()
+        defer { removeDatabase(at: url) }
+
+        let queue = try DatabaseQueue(path: url.path)
+        try AppDatabase.applicationMigrator(upToSchemaVersion: 2).migrate(queue)
+        try queue.write { db in
+            try insertTaskFixture(db)
+            let retryTaskID = "44444444-4444-4444-4444-444444444444"
+            try insertRetryDescriptor(
+                db,
+                taskID: retryTaskID,
+                rootTaskID: taskID,
+                parentTaskID: taskID,
+                queueOrdinal: 8
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO task_records (
+                        task_id, record_version, kind_payload, title, status, created_at,
+                        input_summary, retry_count
+                    ) VALUES (?, 1, X'7B7D', 'retry', 'succeeded', 1, '', 1)
+                    """,
+                arguments: [retryTaskID]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO task_logs (task_id, sequence, logged_at, level, message)
+                    VALUES (?, 0, 1, 'info', 'preserved')
+                    """,
+                arguments: [retryTaskID]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO artifact_records (
+                        artifact_id, record_version, schema_id, state, relative_path,
+                        media_type, byte_count, sha256, staged_at, finished_at,
+                        reconciliation_state
+                    ) VALUES ('artifact-v2', 1, 'mediaAnalysis.v1', 'committed',
+                        'analysis/result.json', 'application/json', 2, ?, 1, 2, 'stable')
+                    """,
+                arguments: [String(repeating: "a", count: 64)]
+            )
+            try db.execute(
+                sql: "INSERT INTO task_artifacts (task_id, artifact_id, ordinal) VALUES (?, 'artifact-v2', 0)",
+                arguments: [retryTaskID]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO media_analysis_documents (
+                        document_id, task_id, schema_id, schema_version, payload,
+                        created_at, reconciliation_state
+                    ) VALUES ('document-v2', ?, 'mediaAnalysis.v1', 1, X'7B7D', 2, 'stable')
+                    """,
+                arguments: [retryTaskID]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO media_managed_tags (
+                        document_id, stable_media_id, source_path, display_name,
+                        tag_name, ordinal, managed_at, reconciliation_state
+                    ) VALUES ('document-v2', 'media-v2', '/video.mp4', 'video.mp4',
+                        'analyzed', 0, 2, 'stable')
+                    """
+            )
+        }
+        try queue.close()
+
+        let appDatabase = try AppDatabase(url: url)
+        try appDatabase.databasePool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT schema_version FROM app_schema_metadata"), 3)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_descriptors"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_records"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_logs"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_artifacts"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_analysis_documents"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_managed_tags"), 1)
+
+            let lineageForeignKeys = try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(task_descriptors)")
+            XCTAssertEqual(lineageForeignKeys.count, 2)
+            XCTAssertEqual(
+                Set(lineageForeignKeys.compactMap { $0["from"] as String? }),
+                ["root_task_id", "parent_task_id"]
+            )
+            XCTAssertEqual(
+                Set(lineageForeignKeys.compactMap { $0["table"] as String? }),
+                ["task_descriptors"]
+            )
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+
+            let indexes = Set(try String.fetchAll(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task_descriptors'"
+            ))
+            XCTAssertTrue(indexes.isSuperset(of: [
+                "idx_task_descriptors_queue_ordinal",
+                "idx_task_descriptors_lineage",
+                "idx_task_descriptors_parent",
+                "idx_task_descriptors_idempotency"
+            ]))
+        }
+        try appDatabase.databasePool.close()
+        print("v3_observable lineage_foreign_keys=2 dependent_rows=5 foreign_key_check=0 indexes=preserved")
     }
 
     func testSchemaConstraintsForeignKeysAndIndexes() throws {
@@ -96,6 +201,42 @@ final class AppDatabaseMigrationTests: XCTestCase {
         }
         try appDatabase.databasePool.close()
         print("schema_observable foreign_keys=2 required_indexes=7 malformed_rows=rejected")
+    }
+
+    func testRejectsDescriptorWithMissingLineageRoot() throws {
+        let url = makeDatabaseURL()
+        defer { removeDatabase(at: url) }
+        let appDatabase = try AppDatabase(url: url)
+
+        try appDatabase.databasePool.write { db in
+            try insertTaskFixture(db)
+            XCTAssertThrowsError(try insertRetryDescriptor(
+                db,
+                taskID: "22222222-2222-2222-2222-222222222222",
+                rootTaskID: "missing-root",
+                parentTaskID: taskID,
+                queueOrdinal: 8
+            ))
+        }
+        try appDatabase.databasePool.close()
+    }
+
+    func testRejectsDescriptorWithMissingLineageParent() throws {
+        let url = makeDatabaseURL()
+        defer { removeDatabase(at: url) }
+        let appDatabase = try AppDatabase(url: url)
+
+        try appDatabase.databasePool.write { db in
+            try insertTaskFixture(db)
+            XCTAssertThrowsError(try insertRetryDescriptor(
+                db,
+                taskID: "33333333-3333-3333-3333-333333333333",
+                rootTaskID: taskID,
+                parentTaskID: "missing-parent",
+                queueOrdinal: 8
+            ))
+        }
+        try appDatabase.databasePool.close()
     }
 
     func testFutureAndCorruptDatabasesFailReadOnlyAndPreserveBytes() throws {
@@ -211,6 +352,24 @@ final class AppDatabaseMigrationTests: XCTestCase {
                 ) VALUES (?, 1, X'7B7D', 'preserved', 'queued', 0, '', 0)
                 """,
             arguments: [taskID]
+        )
+    }
+
+    private func insertRetryDescriptor(
+        _ db: Database,
+        taskID retryTaskID: String,
+        rootTaskID: String,
+        parentTaskID: String,
+        queueOrdinal: Int
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO task_descriptors (
+                    task_id, schema_version, handler_id, payload_version, redacted_payload,
+                    root_task_id, parent_task_id, attempt, queue_ordinal, created_at
+                ) VALUES (?, 1, 'plugin.execute.v1', 1, X'7B7D', ?, ?, 2, ?, 0)
+                """,
+            arguments: [retryTaskID, rootTaskID, parentTaskID, queueOrdinal]
         )
     }
 

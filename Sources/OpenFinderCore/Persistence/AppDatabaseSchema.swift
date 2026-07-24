@@ -198,4 +198,55 @@ extension AppDatabase {
         SET schema_version = 2, migrated_at = unixepoch()
         WHERE singleton = 1;
         """
+
+    static let taskLineageForeignKeysMigration = """
+        CREATE TABLE task_descriptors_v3 (
+            task_id TEXT NOT NULL PRIMARY KEY,
+            schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+            handler_id TEXT NOT NULL CHECK (handler_id <> ''),
+            payload_version INTEGER NOT NULL CHECK (payload_version >= 1),
+            redacted_payload BLOB NOT NULL,
+            root_task_id TEXT NOT NULL
+                REFERENCES task_descriptors(task_id) ON DELETE RESTRICT,
+            parent_task_id TEXT
+                REFERENCES task_descriptors(task_id) ON DELETE RESTRICT,
+            attempt INTEGER NOT NULL CHECK (attempt >= 1),
+            resource_key TEXT,
+            idempotency_key TEXT,
+            queue_ordinal INTEGER NOT NULL UNIQUE CHECK (queue_ordinal >= 0),
+            created_at REAL NOT NULL,
+            CHECK (
+                (attempt = 1 AND parent_task_id IS NULL AND root_task_id = task_id)
+                OR (attempt > 1 AND parent_task_id IS NOT NULL AND parent_task_id <> task_id)
+            )
+        ) STRICT;
+
+        INSERT INTO task_descriptors_v3 (
+            task_id, schema_version, handler_id, payload_version, redacted_payload,
+            root_task_id, parent_task_id, attempt, resource_key, idempotency_key,
+            queue_ordinal, created_at
+        )
+        SELECT
+            task_id, schema_version, handler_id, payload_version, redacted_payload,
+            root_task_id, parent_task_id, attempt, resource_key, idempotency_key,
+            queue_ordinal, created_at
+        FROM task_descriptors;
+
+        DROP TABLE task_descriptors;
+        ALTER TABLE task_descriptors_v3 RENAME TO task_descriptors;
+
+        CREATE UNIQUE INDEX idx_task_descriptors_queue_ordinal
+            ON task_descriptors(queue_ordinal);
+        CREATE INDEX idx_task_descriptors_lineage
+            ON task_descriptors(root_task_id, attempt);
+        CREATE INDEX idx_task_descriptors_parent
+            ON task_descriptors(parent_task_id);
+        CREATE INDEX idx_task_descriptors_idempotency
+            ON task_descriptors(idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+
+        UPDATE app_schema_metadata
+        SET schema_version = 3, migrated_at = unixepoch()
+        WHERE singleton = 1;
+        """
 }
