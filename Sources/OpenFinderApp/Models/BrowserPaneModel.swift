@@ -55,8 +55,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var historyIndex: Int = 0
 
     let provider = LocalFileProvider()
-    let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
-    let fileSourceRegistry: FileSourceRegistry
+    let fileBrowserService: FileBrowserService
     let providerRevisionResolver: @Sendable (Location) async -> String
     var directorySizeCache: [String: Int64] = [:]
     var directorySizeTasks: [String: Task<Void, Never>] = [:]
@@ -72,6 +71,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         location: Location,
         remoteProviderResolver: @escaping @Sendable (RemoteLocation) async throws -> any RemoteProvider,
         fileSourceRegistry: FileSourceRegistry? = nil,
+        fileBrowserService: FileBrowserService? = nil,
         providerRevisionResolver: @escaping @Sendable (Location) async -> String = {
             switch $0.fileLocation {
             case .resolved(let location):
@@ -89,12 +89,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         self.id = id
         self.location = location
         history = [location]
-        self.remoteProviderResolver = remoteProviderResolver
         self.providerRevisionResolver = providerRevisionResolver
-        if let fileSourceRegistry {
-            self.fileSourceRegistry = fileSourceRegistry
+        if let fileBrowserService {
+            self.fileBrowserService = fileBrowserService
         } else {
-            self.fileSourceRegistry = FileSourceRegistry(
+            let registry = fileSourceRegistry ?? FileSourceRegistry(
                 remoteProviderRegistry: RemoteProviderRegistry { accountID, revision in
                     guard let accountID = UUID(uuidString: accountID) else {
                         throw RemoteProviderRegistry.UnsupportedProviderError(
@@ -109,6 +108,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     ))
                 }
             )
+            self.fileBrowserService = FileBrowserService(fileSourceRegistry: registry)
         }
     }
 

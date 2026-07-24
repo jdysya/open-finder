@@ -4,19 +4,10 @@ import OpenFinderCore
 extension BrowserPaneModel {
     func listItems(at location: Location) async throws -> BrowserPaneListing {
         let revision = await providerRevisionResolver(location)
-        let source = try await fileSourceRegistry.resolve(location, revision: revision)
-        let listing = try await source.list(options: .init(
+        return try await fileBrowserService.listing(
+            at: location,
             showHiddenFiles: showHiddenFiles,
-            sort: .name(ascending: true)
-        ))
-        return .init(
-            locationCapabilities: source.capabilities,
-            listingCapabilities: listing.capabilities,
-            providerRevision: listing.providerRevision == "local"
-                ? revision
-                : listing.providerRevision,
-            items: sortItems(listing.items),
-            parentLocation: listing.parent
+            revision: revision
         )
     }
 
@@ -59,15 +50,6 @@ extension BrowserPaneModel {
             directorySizeText[id] = FileSizeFormatter.openFinderString(fromByteCount: size)
         } else {
             directorySizeText[id] = "—"
-        }
-    }
-
-    private func sortItems(_ items: [FileItem]) -> [FileItem] {
-        items.sorted { lhs, rhs in
-            if lhs.isDirectory != rhs.isDirectory {
-                return lhs.isDirectory && !rhs.isDirectory
-            }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 

@@ -5,34 +5,25 @@ import OpenFinderCore
 extension AppModel {
     @discardableResult
     func refreshTasks() async -> Bool {
-        let records = await taskQueue.history().sorted { $0.createdAt > $1.createdAt }
-        var logs: [UUID: [TaskLogLine]] = [:]
-        for record in records {
-            logs[record.id] = await taskQueue.logs(for: record.id)
-        }
-        if taskRecords != records {
-            taskRecords = records
-        }
-        if taskLogs != logs {
-            taskLogs = logs
-        }
-        return records.contains { !$0.status.isTerminal }
+        let projection = await taskApplicationService.projection()
+        publishTaskProjection(projection)
+        return projection.hasActiveTasks
     }
 
     func cancelTask(_ id: UUID) {
         Task {
-            await taskQueue.cancel(id)
+            let projection = await taskApplicationService.cancel(id)
             statusMessage = "Cancelled task \(id.uuidString.prefix(8))"
-            await refreshTasks()
+            publishTaskProjection(projection)
         }
     }
 
     func retryTask(_ id: UUID) {
         Task {
             do {
-                let retryID = try await taskQueue.retry(id)
+                let (retryID, projection) = try await taskApplicationService.retry(id)
                 statusMessage = "Retried task \(retryID.uuidString.prefix(8))"
-                await refreshTasks()
+                publishTaskProjection(projection)
                 await observeTask(retryID)
             } catch {
                 statusMessage = error.localizedDescription
@@ -50,27 +41,34 @@ extension AppModel {
     }
 
     func startTaskPolling() {
-        taskPollingTask?.cancel()
-        taskPollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let hasActiveTasks = await self?.refreshTasks() ?? false
-                let interval: UInt64 = hasActiveTasks ? 250_000_000 : 1_000_000_000
-                try? await Task.sleep(nanoseconds: interval)
-            }
+        taskApplicationService.startPolling { [weak self] projection in
+            self?.publishTaskProjection(projection)
         }
     }
 
     func observeTask(_ id: UUID) async {
         do {
-            let record = try await taskQueue.waitForTerminalStatus(id, timeout: 86_400)
+            let (record, projection) = try await taskApplicationService.waitForTerminalStatus(
+                id,
+                timeout: 86_400
+            )
             if let clipboard = record.clipboardText {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(clipboard, forType: .string)
             }
-            await refreshTasks()
+            publishTaskProjection(projection)
         } catch {
             statusMessage = error.localizedDescription
             await refreshTasks()
+        }
+    }
+
+    private func publishTaskProjection(_ projection: TaskApplicationProjection) {
+        if taskRecords != projection.records {
+            taskRecords = projection.records
+        }
+        if taskLogs != projection.logs {
+            taskLogs = projection.logs
         }
     }
 }

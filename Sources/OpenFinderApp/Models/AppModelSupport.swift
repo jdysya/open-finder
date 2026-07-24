@@ -14,7 +14,7 @@ extension AppModel {
         await leftPane.refresh()
         await rightPane.refresh()
         loadPlugins()
-        remoteAccounts = remoteDirectory.all()
+        remoteAccounts = remoteAccountService.accounts()
         await refreshTasks()
     }
 

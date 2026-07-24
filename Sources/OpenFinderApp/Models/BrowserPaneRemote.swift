@@ -10,7 +10,7 @@ extension BrowserPaneModel {
                 operation: .quickLook
             )
         }
-        let lease = try await fileSourceRegistry.materialize(
+        let lease = try await fileBrowserService.materialize(
             item.location,
             revision: source.adapter.providerRevision
         )

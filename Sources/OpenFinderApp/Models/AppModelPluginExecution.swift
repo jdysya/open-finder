@@ -17,12 +17,12 @@ extension AppModel {
                         return
                     }
                 }
-                let currentLocation = try pane.fileSourceRegistry.normalizedLocation(
+                let currentLocation = try pane.fileBrowserService.normalizedLocation(
                     pane.location
                 )
                 let normalizedInputs = try items.map { item in
                     PluginTaskInputSnapshot(
-                        location: try pane.fileSourceRegistry.normalizedLocation(item.location),
+                        location: try pane.fileBrowserService.normalizedLocation(item.location),
                         identity: .init(item)
                     )
                 }
@@ -58,9 +58,9 @@ extension AppModel {
                     resourceKey: resourceKey,
                     idempotencyKey: try envelope.idempotencyKey(),
                     lineage: .init(rootTaskID: taskID),
-                    queueOrdinal: await taskQueue.reserveQueueOrdinal()
+                    queueOrdinal: await taskApplicationService.reserveQueueOrdinal()
                 )
-                let queuedID = try await taskQueue.enqueue(.init(
+                let queuedID = try await taskApplicationService.enqueue(.init(
                     kind: .plugin(pluginID: plugin.id, actionID: action.id),
                     title: "\(plugin.manifest.name): \(action.title)",
                     descriptor: descriptor
@@ -78,14 +78,8 @@ extension AppModel {
     }
 
     func requireDurableHandlerReadiness() async throws {
-        guard let result = await durableReadinessTask?.value else {
-            throw AppDurableHandlerCompositionError.missingTaskHandler(.init(
-                handlerID: DurableTaskHandlerID.pluginExecute.rawValue,
-                payloadVersion: 1
-            ))
-        }
         do {
-            try result.get()
+            try await taskApplicationService.requireReadiness()
             durableHandlerReadiness = .ready
         } catch {
             durableHandlerReadiness = .unavailable(error.localizedDescription)

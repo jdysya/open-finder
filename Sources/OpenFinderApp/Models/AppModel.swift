@@ -32,14 +32,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    let taskQueue: TaskQueueService
-    let remoteDirectory: RemoteAccountDirectory
+    let taskApplicationService: TaskApplicationService
+    let remoteAccountService: RemoteAccountService
+    let fileBrowserService: FileBrowserService
     let runtimeConfigurationService: RuntimeConfigurationService
     let pluginManagementService: PluginManagementService
-    let remoteConnectorRegistry: RemoteConnectorRegistry
-    let remoteProviderRegistry: RemoteProviderRegistry
-    let fileSourceRegistry: FileSourceRegistry
-    let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
     let videoAnalysisStore: VideoAnalysisResultStore
     let pluginRunnerRouter: PluginRunnerRouter
     let pluginExecutionCoordinator: PluginExecutionCoordinator
@@ -51,8 +48,9 @@ final class AppModel: ObservableObject {
     let recoveryTaskStore: (any TaskStore)?
     let taskDatabaseOpenError: (any Error)?
     var durableReadinessTask: Task<Result<Void, any Error>, Never>?
-    var taskPollingTask: Task<Void, Never>?
     var didLoadInitialState = false
+
+    var taskQueue: TaskQueueService { taskApplicationService.queue }
 
     init(
         remoteDirectory: RemoteAccountDirectory? = nil,
@@ -83,8 +81,6 @@ final class AppModel: ObservableObject {
         )
         let keychainStore = keychainStore ?? MacKeychainStore()
         let localPluginCredentialStore = localPluginCredentialStore ?? LocalPluginCredentialStore()
-        self.remoteDirectory = remoteDirectory
-        self.remoteConnectorRegistry = remoteConnectorRegistry
         var openedTaskStore: (any TaskStore)?
         var taskDatabaseOpenError: (any Error)?
         if let taskDatabaseURL {
@@ -107,7 +103,8 @@ final class AppModel: ObservableObject {
             maxConcurrentTasks: 2,
             store: openedTaskStore
         )
-        self.taskQueue = configuredTaskQueue
+        let taskService = TaskApplicationService(queue: configuredTaskQueue)
+        taskApplicationService = taskService
         let configurationService = RuntimeConfigurationService(
             store: configurationStore,
             taskQueue: configuredTaskQueue
@@ -128,18 +125,26 @@ final class AppModel: ObservableObject {
             },
             credentialStore: pluginService.credentialStore
         )
-        self.remoteProviderRegistry = configuredProviderRegistry
         let fileSourceRegistry = FileSourceRegistry(
             remoteProviderRegistry: configuredProviderRegistry
         )
-        self.fileSourceRegistry = fileSourceRegistry
+        remoteAccountService = RemoteAccountService(
+            directory: remoteDirectory,
+            connectorRegistry: remoteConnectorRegistry,
+            providerRegistry: configuredProviderRegistry,
+            keychainStore: keychainStore
+        )
+        let browserService = FileBrowserService(
+            fileSourceRegistry: fileSourceRegistry,
+            taskService: taskService
+        )
+        self.fileBrowserService = browserService
         let resolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider = { location in
             try await configuredProviderRegistry.resolve(
                 accountID: location.accountID.uuidString,
                 revision: location.connectorID.rawValue
             )
         }
-        remoteProviderResolver = resolver
         self.videoAnalysisStore = videoAnalysisStore ?? VideoAnalysisResultStore(
             directory: supportDirectory.appendingPathComponent("video-analysis", isDirectory: true)
         )
@@ -182,13 +187,15 @@ final class AppModel: ObservableObject {
             id: .left,
             location: .local(path: home.path),
             remoteProviderResolver: resolver,
-            fileSourceRegistry: fileSourceRegistry
+            fileSourceRegistry: fileSourceRegistry,
+            fileBrowserService: browserService
         )
         rightPane = BrowserPaneModel(
             id: .right,
             location: .local(path: home.appendingPathComponent("Downloads", isDirectory: true).path),
             remoteProviderResolver: resolver,
-            fileSourceRegistry: fileSourceRegistry
+            fileSourceRegistry: fileSourceRegistry,
+            fileBrowserService: browserService
         )
         let transferCoordinator = TransferCoordinator()
         let registrations = [
@@ -250,18 +257,16 @@ final class AppModel: ObservableObject {
                 }
                 let composition = try compositionResult.get()
                 let registry = try await composition.makeTaskHandlerRegistry()
-                try await configuredTaskQueue.installHandlerRegistry(registry)
+                try await self.taskApplicationService.installHandlerRegistry(registry)
                 if let store = self.recoveryTaskStore {
-                    try await store.interruptActiveTasks(at: Date())
-                    let persistedTasks = try await store.loadPersistedTasks()
-                    try await configuredTaskQueue.restorePersistedHistory(persistedTasks)
+                    try await self.taskApplicationService.recoverPersistedTasks(from: store)
                 }
                 await self.refreshTasks()
                 if startAutomatically {
                     await self.loadInitialState()
                     await self.pluginTaskResolver.register(self.loadedPlugins)
                 }
-                await configuredTaskQueue.resumeRecoveredTasks()
+                await self.taskApplicationService.resumeRecoveredTasks()
                 self.durableHandlerReadiness = .ready
                 if startAutomatically {
                     self.startTaskPolling()
@@ -276,6 +281,7 @@ final class AppModel: ObservableObject {
                 return .failure(error)
             }
         }
+        taskService.attachReadinessTask(durableReadinessTask!)
     }
 
     var activeBrowser: BrowserPaneModel { activePane == .left ? leftPane : rightPane }

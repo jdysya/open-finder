@@ -205,7 +205,7 @@ extension BrowserPaneModel {
         } else {
             revision = await providerRevisionResolver(requestedLocation)
         }
-        return try await fileSourceRegistry.resolve(requestedLocation, revision: revision)
+        return try await fileBrowserService.resolve(requestedLocation, revision: revision)
     }
 
     func createFolder() {
