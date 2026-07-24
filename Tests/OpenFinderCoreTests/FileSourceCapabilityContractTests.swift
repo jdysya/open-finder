@@ -8,65 +8,50 @@ final class FileSourceCapabilityContractTests: XCTestCase {
     private let kodboxAccount = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
 
     func testProviderAndRelationalMatrix() {
-        let local = FileSourceID.local
-        let webDAV = FileSourceID.remote(accountID: webDAVAccount, connectorID: .webDAV)
-        let kodbox = FileSourceID.remote(accountID: kodboxAccount, connectorID: .kodbox)
+        let sources = sourceCases
+        for source in sources {
+            let capabilities = FileSourceCapabilities(sourceID: source.id)
+            for capability in FileCapability.allCases {
+                XCTAssertEqual(
+                    capabilities[capability],
+                    source.expectedUnsupported[capability]
+                        .map(FileCapabilitySupport.unsupported) ?? .supported,
+                    "\(source.name) \(capability)"
+                )
+            }
+        }
 
-        assertSupported(
-            FileSourceCapabilities(sourceID: local),
-            [.list, .read, .create, .delete, .copy, .move, .tags, .materialize, .atomicPublish]
-        )
-        assertSupported(
-            FileSourceCapabilities(sourceID: webDAV),
-            [.list, .read, .create, .delete, .copy, .move, .materialize]
-        )
-        assertSupported(
-            FileSourceCapabilities(sourceID: kodbox),
-            [.list, .read, .create, .delete, .copy, .move, .tags, .materialize]
-        )
-        XCTAssertEqual(
-            FileSourceCapabilities(sourceID: webDAV)[.tags],
-            .unsupported(.operationUnsupported(sourceID: webDAV, capability: .tags))
-        )
-        XCTAssertEqual(
-            FileSourceCapabilities(sourceID: webDAV)[.atomicPublish],
-            .unsupported(.operationUnsupported(sourceID: webDAV, capability: .atomicPublish))
-        )
-        XCTAssertEqual(
-            FileSourceCapabilities(sourceID: kodbox)[.atomicPublish],
-            .unsupported(.operationUnsupported(sourceID: kodbox, capability: .atomicPublish))
-        )
+        var relationalCells = 0
+        for source in sources {
+            for destination in sources {
+                for overwriteExisting in [false, true] {
+                    let relation = FileRelationalCapabilities(
+                        source: source.id,
+                        destination: destination.id,
+                        overwriteExisting: overwriteExisting
+                    )
+                    for capability in [FileCapability.copy, .move] {
+                        let expected: FileCapabilitySupport
+                        if source.id != destination.id {
+                            expected = .unsupported(.crossSource)
+                        } else if overwriteExisting && destination.id.isRemote {
+                            expected = .unsupported(.remoteOverwrite)
+                        } else {
+                            expected = .supported
+                        }
+                        XCTAssertEqual(
+                            relation[capability],
+                            expected,
+                            "\(source.name) -> \(destination.name) \(capability) overwrite=\(overwriteExisting)"
+                        )
+                        relationalCells += 1
+                    }
+                }
+            }
+        }
 
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: webDAV, destination: webDAV).copy,
-            .supported
-        )
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: webDAV, destination: webDAV).move,
-            .supported
-        )
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: kodbox, destination: kodbox).copy,
-            .supported
-        )
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: kodbox, destination: kodbox).move,
-            .supported
-        )
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: webDAV, destination: webDAV, overwriteExisting: true).copy,
-            .unsupported(.remoteOverwrite)
-        )
-        XCTAssertEqual(
-            FileRelationalCapabilities(source: local, destination: local, overwriteExisting: true).copy,
-            .supported
-        )
-
-        printMatrix("Local", capabilities: FileSourceCapabilities(sourceID: local))
-        printMatrix("WebDAV", capabilities: FileSourceCapabilities(sourceID: webDAV))
-        printMatrix("Kodbox", capabilities: FileSourceCapabilities(sourceID: kodbox))
-        print("RELATION WebDAV same-account copy=supported move=supported overwrite=remoteOverwrite")
-        print("RELATION Kodbox same-account copy=supported move=supported")
+        XCTAssertEqual(relationalCells, 100)
+        print("MATRIX providerCells=\(sources.count * FileCapability.allCases.count) relationalCells=\(relationalCells) exactTypedOutcomes=true")
     }
 
     func testUnsupportedRcloneAndCrossAccountRemainTyped() {
@@ -151,27 +136,61 @@ final class FileSourceCapabilityContractTests: XCTestCase {
         )
     }
 
-    private func assertSupported(
-        _ capabilities: FileSourceCapabilities,
-        _ expected: Set<FileCapability>,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        for capability in FileCapability.allCases {
-            XCTAssertEqual(
-                capabilities[capability].isSupported,
-                expected.contains(capability),
-                "\(capabilities.sourceID) \(capability)",
-                file: file,
-                line: line
-            )
+    func testAdapterPreflightAndUIConsumeTheSameTypedReason() {
+        let rcloneID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        let expected = FileCapabilityUnsupportedReason.legacyRclone(remoteID: rcloneID)
+        guard case .unsupported(let adapterReason) = Location
+            .rclone(remoteID: rcloneID, path: "archive:")
+            .fileLocation
+        else {
+            return XCTFail("Expected typed adapter rejection")
         }
+
+        let consumers = FileCapabilityReasonConsumerProbe(adapterReason)
+
+        XCTAssertEqual(consumers.adapter, expected)
+        XCTAssertEqual(consumers.preflight, expected)
+        XCTAssertEqual(consumers.userInterface, expected)
     }
 
-    private func printMatrix(_ name: String, capabilities: FileSourceCapabilities) {
-        let values = FileCapability.allCases.map {
-            "\($0.rawValue)=\(capabilities[$0].isSupported ? "supported" : "unsupported")"
-        }
-        print("MATRIX \(name) \(values.joined(separator: " "))")
+    private var sourceCases: [SourceCase] {
+        let webDAV = FileSourceID.remote(accountID: webDAVAccount, connectorID: .webDAV)
+        let otherWebDAV = FileSourceID.remote(accountID: otherWebDAVAccount, connectorID: .webDAV)
+        let kodbox = FileSourceID.remote(accountID: webDAVAccount, connectorID: .kodbox)
+        let otherKodbox = FileSourceID.remote(accountID: kodboxAccount, connectorID: .kodbox)
+        return [
+            SourceCase(name: "Local", id: .local, expectedUnsupported: [:]),
+            webDAVCase(name: "WebDAV-A", id: webDAV),
+            webDAVCase(name: "WebDAV-B", id: otherWebDAV),
+            kodboxCase(name: "Kodbox-A", id: kodbox),
+            kodboxCase(name: "Kodbox-B", id: otherKodbox)
+        ]
     }
+
+    private func webDAVCase(name: String, id: FileSourceID) -> SourceCase {
+        SourceCase(
+            name: name,
+            id: id,
+            expectedUnsupported: [
+                .tags: .operationUnsupported(sourceID: id, capability: .tags),
+                .atomicPublish: .operationUnsupported(sourceID: id, capability: .atomicPublish)
+            ]
+        )
+    }
+
+    private func kodboxCase(name: String, id: FileSourceID) -> SourceCase {
+        SourceCase(
+            name: name,
+            id: id,
+            expectedUnsupported: [
+                .atomicPublish: .operationUnsupported(sourceID: id, capability: .atomicPublish)
+            ]
+        )
+    }
+}
+
+private struct SourceCase {
+    let name: String
+    let id: FileSourceID
+    let expectedUnsupported: [FileCapability: FileCapabilityUnsupportedReason]
 }

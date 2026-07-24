@@ -80,6 +80,18 @@ public enum FileCapabilitySupport: Codable, Hashable, Sendable {
     }
 }
 
+public struct FileCapabilityReasonConsumerProbe: Codable, Hashable, Sendable {
+    public let reason: FileCapabilityUnsupportedReason
+
+    public init(_ reason: FileCapabilityUnsupportedReason) {
+        self.reason = reason
+    }
+
+    public var adapter: FileCapabilityUnsupportedReason { reason }
+    public var preflight: FileCapabilityUnsupportedReason { reason }
+    public var userInterface: FileCapabilityUnsupportedReason { reason }
+}
+
 public struct FileSourceCapabilities: Codable, Hashable, Sendable {
     public let sourceID: FileSourceID
 
@@ -228,6 +240,17 @@ public struct FileRelationalCapabilities: Codable, Hashable, Sendable {
             destination: destination,
             overwriteExisting: overwriteExisting
         )
+    }
+
+    public subscript(capability: FileCapability) -> FileCapabilitySupport? {
+        switch capability {
+        case .copy:
+            copy
+        case .move:
+            move
+        case .list, .read, .create, .delete, .tags, .materialize, .atomicPublish:
+            nil
+        }
     }
 
     private static func resolve(
