@@ -66,6 +66,12 @@ extension BrowserPaneModel {
     }
 
     func open(_ item: FileItem) {
+        do {
+            try requireCapability(.open, items: [item])
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         if item.isDirectory {
             Task { await navigate(to: item.location) }
         } else if let url = item.localURL {

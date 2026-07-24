@@ -32,6 +32,7 @@ struct FileTableRepresentable: NSViewRepresentable {
     var onDropFileURLs: ([URL]) -> Void
     var remoteFileDownloader: @Sendable (FileItem, URL) async throws -> Void
     var pluginActionsForSelection: ([FileItem]) -> [(LoadedPlugin, PluginActionManifest)]
+    var presentationForAction: (FileTableAction, [FileItem]) -> FileCapabilityPresentationState?
     var onAction: (FileTableAction, [FileItem]) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -236,11 +237,9 @@ struct FileTableRepresentable: NSViewRepresentable {
             let selected = selectedItems(tableView: tableView)
             guard !selected.isEmpty else { return nil }
             let menu = NSMenu()
-            addItem("Open", action: #selector(open(_:)), to: menu)
-            addItem("Quick Look", action: #selector(quickLook(_:)), to: menu)
-            if FileTableTagActionAvailability.commonEditableScope(for: selected) != nil {
-                addItem("标签…", action: #selector(editTags(_:)), to: menu)
-            }
+            addActionItem("Open", selector: #selector(open(_:)), action: .open, items: selected, to: menu)
+            addActionItem("Quick Look", selector: #selector(quickLook(_:)), action: .quickLook, items: selected, to: menu)
+            addActionItem("标签…", selector: #selector(editTags(_:)), action: .editTags, items: selected, to: menu)
             let pluginActions = parent.pluginActionsForSelection(selected)
             if !pluginActions.isEmpty {
                 menu.addItem(.separator())
@@ -256,16 +255,37 @@ struct FileTableRepresentable: NSViewRepresentable {
                 menu.addItem(parentItem)
             }
             menu.addItem(.separator())
-            addItem("Rename…", action: #selector(rename(_:)), to: menu).isEnabled = selected.count == 1
+            addActionItem("Rename…", selector: #selector(rename(_:)), action: .rename, items: selected, to: menu)
             let deleteTitle = selected.contains { item in if case .local = item.location { return false }; return true } ? "Delete…" : "Move to Trash"
-            addItem(deleteTitle, action: #selector(trash(_:)), to: menu)
+            addActionItem(deleteTitle, selector: #selector(trash(_:)), action: .trash, items: selected, to: menu)
             menu.addItem(.separator())
             addItem("Copy to Other Pane", action: #selector(copyToOtherPane(_:)), to: menu)
             addItem("Move to Other Pane", action: #selector(moveToOtherPane(_:)), to: menu)
             menu.addItem(.separator())
-            addItem("Reveal in Finder", action: #selector(reveal(_:)), to: menu)
-            addItem("Open in Terminal", action: #selector(terminal(_:)), to: menu)
+            addActionItem("Reveal in Finder", selector: #selector(reveal(_:)), action: .revealInFinder, items: selected, to: menu)
+            addActionItem("Open in Terminal", selector: #selector(terminal(_:)), action: .openInTerminal, items: selected, to: menu)
             return menu
+        }
+
+        @discardableResult
+        private func addActionItem(
+            _ title: String,
+            selector: Selector,
+            action: FileTableAction,
+            items: [FileItem],
+            to menu: NSMenu
+        ) -> NSMenuItem {
+            let menuItem = addItem(title, action: selector, to: menu)
+            if let presentation = parent.presentationForAction(action, items) {
+                switch presentation {
+                case .enabled:
+                    break
+                case .disabled(let reason):
+                    menuItem.isEnabled = false
+                    menuItem.toolTip = reason.localizedDescription
+                }
+            }
+            return menuItem
         }
 
         @discardableResult

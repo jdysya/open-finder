@@ -36,8 +36,25 @@ public enum FileCapability: String, Codable, CaseIterable, Hashable, Sendable {
     case atomicPublish
 }
 
+public enum FileSourceOperation: String, Codable, CaseIterable, Hashable, Sendable {
+    case createFile
+    case createFolder
+    case rename
+    case delete
+    case trash
+    case editTags
+    case revealInFinder
+    case quickLook
+    case open
+    case openInTerminal
+}
+
 public enum FileCapabilityUnsupportedReason: Error, Codable, Hashable, Sendable {
     case operationUnsupported(sourceID: FileSourceID, capability: FileCapability)
+    case operationUnavailable(sourceID: FileSourceID, operation: FileSourceOperation)
+    case selectionRequired(operation: FileSourceOperation)
+    case singleSelectionRequired(operation: FileSourceOperation)
+    case tagScopeUnavailable
     case unknownSource(connectorID: RemoteConnectorID)
     case legacyRclone(remoteID: UUID)
     case crossSource
@@ -51,6 +68,14 @@ extension FileCapabilityUnsupportedReason: LocalizedError {
         switch self {
         case .operationUnsupported(let sourceID, let capability):
             "\(capability.rawValue) is unsupported for \(sourceID)"
+        case .operationUnavailable(let sourceID, let operation):
+            "\(operation.rawValue) is unavailable for \(sourceID)"
+        case .selectionRequired(let operation):
+            "\(operation.rawValue) requires a selection"
+        case .singleSelectionRequired(let operation):
+            "\(operation.rawValue) requires exactly one selected item"
+        case .tagScopeUnavailable:
+            "The selected items do not share an editable tag scope"
         case .unknownSource(let connectorID):
             "Unknown file source: \(connectorID.rawValue)"
         case .legacyRclone:

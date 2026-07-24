@@ -26,6 +26,7 @@ struct FilePaneView: View {
                     try await pane.downloadRemoteFile(item, to: destination)
                 },
                 pluginActionsForSelection: { app.pluginActions(for: $0) },
+                presentationForAction: actionPresentation,
                 onAction: handleTableAction
             )
             .background(.regularMaterial)
@@ -211,5 +212,38 @@ struct FilePaneView: View {
         case .plugin(let plugin, let action):
             app.runPlugin(plugin, action: action, items: items, pane: pane)
         }
+    }
+
+    private func actionPresentation(
+        _ action: FileTableAction,
+        _ items: [FileItem]
+    ) -> FileCapabilityPresentationState? {
+        let operation: FileSourceOperation
+        switch action {
+        case .open:
+            operation = .open
+        case .editTags:
+            operation = .editTags
+        case .rename:
+            operation = .rename
+        case .trash:
+            operation = items.allSatisfy {
+                if case .local = $0.location { true } else { false }
+            } ? .trash : .delete
+        case .revealInFinder:
+            operation = .revealInFinder
+        case .openInTerminal:
+            operation = .openInTerminal
+        case .quickLook:
+            operation = .quickLook
+        case .createFile:
+            operation = .createFile
+        case .createFolder:
+            operation = .createFolder
+        case .copyToOtherPane, .moveToOtherPane, .goBack, .goForward, .goUp,
+             .refresh, .toggleHidden, .selectAll, .plugin:
+            return nil
+        }
+        return pane.capabilityPresentationState(for: operation, items: items)
     }
 }

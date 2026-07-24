@@ -4,6 +4,12 @@ import OpenFinderCore
 extension BrowserPaneModel {
     func prepareTagEditor() async -> TagEditorContext? {
         let selected = selectedItems
+        do {
+            try requireCapability(.editTags, items: selected)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
         guard let scope = FileTableTagActionAvailability.commonEditableScope(for: selected) else {
             return nil
         }
@@ -67,6 +73,13 @@ extension BrowserPaneModel {
             return
         }
 
+        do {
+            try requireCapability(.editTags, items: session.context.selectedItems)
+        } catch {
+            session.context.completeApply(nil, errorMessage: error.localizedDescription)
+            errorMessage = error.localizedDescription
+            return
+        }
         session.context.begin(.applyingChanges)
         let result: TagApplyResult?
         let operationError: String?
@@ -104,6 +117,13 @@ extension BrowserPaneModel {
             return false
         }
 
+        do {
+            try requireCapability(.editTags, items: session.context.selectedItems)
+        } catch {
+            session.context.completeCatalogMutation(errorMessage: error.localizedDescription)
+            errorMessage = error.localizedDescription
+            return false
+        }
         session.context.begin(.mutatingCatalog)
         let catalog: FileTagCatalog?
         let operationError: String?

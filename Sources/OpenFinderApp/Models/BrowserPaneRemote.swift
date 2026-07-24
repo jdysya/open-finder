@@ -24,8 +24,13 @@ extension BrowserPaneModel {
     }
 
     func materializeRemoteFile(_ item: FileItem) async throws -> URL {
-        let remoteLocation = try remoteLocation(for: item.location)
-        let remote = try await remoteProvider(for: remoteLocation)
+        let source = try await resolvedFileSource(for: item.location)
+        guard case .remote(let adapter) = source.adapter else {
+            throw FileCapabilityUnsupportedReason.operationUnavailable(
+                sourceID: source.location.sourceID,
+                operation: .quickLook
+            )
+        }
         try FileManager.default.createDirectory(
             at: remoteMaterializationDirectory,
             withIntermediateDirectories: true
@@ -36,7 +41,7 @@ extension BrowserPaneModel {
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
-        _ = try await remote.download(item: remoteLocation.path, to: destination)
+        _ = try await adapter.provider.download(item: source.location.path, to: destination)
         return destination
     }
 

@@ -3,15 +3,12 @@ import OpenFinderCore
 
 extension BrowserPaneModel {
     func tagProvider(for location: Location) async throws -> (any TagProvider)? {
-        switch location {
-        case .local:
-            return provider
-        case .webDAV, .remote:
-            let remoteLocation = try remoteLocation(for: location)
-            let remote = try await remoteProvider(for: remoteLocation)
-            return remote as? any TagProvider
-        case .rclone:
-            return nil
+        let source = try await resolvedFileSource(for: location)
+        switch source.adapter {
+        case .local(let adapter):
+            return adapter.provider
+        case .remote(let adapter):
+            return adapter.provider as? any TagProvider
         }
     }
 
