@@ -2,13 +2,13 @@ import Foundation
 
 public typealias TaskOperation = @Sendable (TaskExecutionContext) async throws -> TaskResult
 
-public struct TaskRequest: @unchecked Sendable {
+public struct TaskRequest: Sendable {
     public let kind: TaskKind
     public let title: String
     public let inputSummary: String
     public let resourceKey: String?
     public let descriptor: TaskDescriptorEnvelope?
-    public let operation: TaskOperation
+    public let operation: TaskOperation?
 
     public init(
         kind: TaskKind,
@@ -16,7 +16,7 @@ public struct TaskRequest: @unchecked Sendable {
         inputSummary: String = "",
         resourceKey: String? = nil,
         descriptor: TaskDescriptorEnvelope? = nil,
-        operation: @escaping TaskOperation
+        operation: TaskOperation? = nil
     ) {
         self.kind = kind
         self.title = title
@@ -53,6 +53,10 @@ public actor TaskExecutionContext {
     public func appendLog(_ message: String, level: String = "info") async {
         await queue.appendLog(taskID, message, level: level)
     }
+
+    public func markEffectsCommitted() async throws {
+        try await queue.markEffectsCommitted(taskID)
+    }
 }
 
 public actor TaskQueueService {
@@ -62,11 +66,17 @@ public actor TaskQueueService {
     private var requests: [UUID: TaskRequest] = [:]
     private var logStorage: [UUID: [TaskLogLine]] = [:]
     private var cancellationRequests: Set<UUID> = []
+    private var effectsCommittedTasks: Set<UUID> = []
     private var runningResourceKeys: Set<String> = []
     private var maxConcurrentTasks: Int
+    private let handlerRegistry: TaskHandlerRegistry?
 
-    public init(maxConcurrentTasks: Int = 2) {
+    public init(
+        maxConcurrentTasks: Int = 2,
+        handlerRegistry: TaskHandlerRegistry? = nil
+    ) {
         self.maxConcurrentTasks = max(1, maxConcurrentTasks)
+        self.handlerRegistry = handlerRegistry
     }
 
     public func updateMaxConcurrentTasks(_ value: Int) {
@@ -88,7 +98,8 @@ public actor TaskQueueService {
             descriptor: request.descriptor
         )
         logStorage[id] = []
-        if case .unavailable(let reasonCode) = request.descriptor?.availability {
+        if handlerRegistry == nil,
+           case .unavailable(let reasonCode) = request.descriptor?.availability {
             finish(id, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
             return id
         }
@@ -143,13 +154,15 @@ public actor TaskQueueService {
 
     public func cancel(_ id: UUID) async {
         guard let record = records[id], !record.status.isTerminal else { return }
-        cancellationRequests.insert(id)
         if let index = queue.firstIndex(of: id) {
+            cancellationRequests.insert(id)
             queue.remove(at: index)
             finish(id, status: .cancelled, result: nil, error: nil)
             return
         }
         if let runningTask = running[id] {
+            guard !effectsCommittedTasks.contains(id) else { return }
+            cancellationRequests.insert(id)
             records[id]?.status = .cancelling
             runningTask.cancel()
         }
@@ -182,7 +195,8 @@ public actor TaskQueueService {
             descriptor: retryDescriptor
         )
         logStorage[retryID] = []
-        if case .unavailable(let reasonCode) = retryDescriptor?.availability {
+        if handlerRegistry == nil,
+           case .unavailable(let reasonCode) = retryDescriptor?.availability {
             finish(retryID, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
             return retryID
         }
@@ -218,6 +232,17 @@ public actor TaskQueueService {
         cancellationRequests.contains(id) || Task.isCancelled
     }
 
+    func markEffectsCommitted(_ id: UUID) throws {
+        guard
+            records[id]?.status.isTerminal == false,
+            !cancellationRequests.contains(id),
+            !Task.isCancelled
+        else {
+            throw CancellationError()
+        }
+        effectsCommittedTasks.insert(id)
+    }
+
     public func waitForTerminalStatus(_ id: UUID, timeout: TimeInterval) async throws -> TaskRecord {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -250,16 +275,49 @@ public actor TaskQueueService {
 
     private func run(id: UUID, request: TaskRequest) async {
         let context = TaskExecutionContext(taskID: id, queue: self)
+        let events = TaskEventSink(
+            consume: { [weak self] event in
+                guard let self else { return false }
+                return await self.consume(event, for: id)
+            },
+            commitEffects: { [weak self] in
+                guard let self else { throw CancellationError() }
+                try await self.markEffectsCommitted(id)
+            }
+        )
         do {
-            let result = try await request.operation(context)
-            if cancellationRequests.contains(id) || Task.isCancelled {
+            let result: TaskResult
+            if let descriptor = request.descriptor, let handlerRegistry {
+                result = try await handlerRegistry.execute(descriptor: descriptor, events: events)
+            } else if let operation = request.operation {
+                result = try await operation(context)
+            } else {
+                throw TaskHandlerRegistryError.unknownHandler(
+                    handlerID: request.descriptor?.handlerID ?? "",
+                    payloadVersion: request.descriptor?.payloadVersion ?? 0
+                )
+            }
+            await events.complete()
+            if (cancellationRequests.contains(id) || Task.isCancelled)
+                && !effectsCommittedTasks.contains(id) {
                 finish(id, status: .cancelled, result: nil, error: nil)
             } else {
                 finish(id, status: .succeeded, result: result, error: nil)
             }
         } catch is CancellationError {
+            await events.complete()
             finish(id, status: .cancelled, result: nil, error: nil)
+        } catch let error as TaskHandlerRegistryError {
+            await events.complete()
+            finish(
+                id,
+                status: .unavailable,
+                result: nil,
+                error: nil,
+                reasonCode: registryReason(for: error)
+            )
         } catch {
+            await events.complete()
             finish(id, status: cancellationRequests.contains(id) ? .cancelled : .failed, result: nil, error: error)
         }
         if let resourceKey = request.resourceKey {
@@ -267,7 +325,34 @@ public actor TaskQueueService {
         }
         running[id] = nil
         cancellationRequests.remove(id)
+        effectsCommittedTasks.remove(id)
         startNextIfPossible()
+    }
+
+    private func consume(_ event: TaskEvent, for id: UUID) -> Bool {
+        guard records[id]?.status.isTerminal == false else { return false }
+        switch event {
+        case .progress(let snapshot):
+            updateProgress(id, snapshot)
+        case .log(let message, let level):
+            appendLog(id, message, level: level)
+        case .status(let status):
+            if status.isTerminal {
+                finish(id, status: status, result: nil, error: nil)
+            } else {
+                records[id]?.status = status
+            }
+        }
+        return true
+    }
+
+    private func registryReason(for error: TaskHandlerRegistryError) -> TaskStatusReasonCode {
+        switch error {
+        case .duplicateRegistration:
+            .handlerUnavailable
+        case .unknownHandler(_, let payloadVersion):
+            payloadVersion == 1 ? .unknownHandler : .unsupportedPayloadVersion
+        }
     }
 
     private func finish(

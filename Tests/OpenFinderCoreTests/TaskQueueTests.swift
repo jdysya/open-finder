@@ -274,6 +274,33 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(record.status, .succeeded)
     }
 
+    func testDelayedProgressCannotMutateTerminalRecord() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let delayed = DelayedProgressProbe()
+        let id = try await queue.enqueue(.init(kind: .localCopy, title: "Late progress") { context in
+            Task {
+                await delayed.wait()
+                await context.updateProgress(0.5, "too late")
+                await delayed.markSent()
+            }
+            return .success(summary: "done", clipboard: nil)
+        })
+
+        let terminal = try await queue.waitForTerminalStatus(id, timeout: 2)
+        await delayed.release()
+        await delayed.waitUntilSent()
+        let afterDelayedProgress = await queue.record(for: id)
+        let logs = await queue.logs(for: id)
+
+        XCTAssertEqual(terminal.status, .succeeded)
+        XCTAssertEqual(afterDelayedProgress, terminal)
+        XCTAssertTrue(logs.isEmpty)
+        print(
+            "LATE_EVENT_OBSERVABLE terminal=\(terminal.status.rawValue) " +
+            "progress=\(afterDelayedProgress?.progress ?? -1) logs=\(logs.count)"
+        )
+    }
+
 }
 
 private actor AttemptCounter {
@@ -320,5 +347,34 @@ private actor AnalysisResourceGate {
     func releaseNext() {
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().resume()
+    }
+}
+
+private actor DelayedProgressProbe {
+    private var released = false
+    private var sent = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var sentWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+
+    func markSent() {
+        sent = true
+        sentWaiters.forEach { $0.resume() }
+        sentWaiters.removeAll()
+    }
+
+    func waitUntilSent() async {
+        guard !sent else { return }
+        await withCheckedContinuation { sentWaiters.append($0) }
     }
 }
