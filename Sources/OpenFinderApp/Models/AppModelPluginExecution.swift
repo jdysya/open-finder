@@ -48,7 +48,7 @@ extension AppModel {
                 let descriptor = try envelope.makeDescriptor(
                     taskID: taskID,
                     resourceKey: resourceKey,
-                    idempotencyKey: "plugin:\(plugin.id):\(action.id):\(taskID.uuidString)",
+                    idempotencyKey: try envelope.idempotencyKey(),
                     lineage: .init(rootTaskID: taskID),
                     queueOrdinal: await taskQueue.reserveQueueOrdinal()
                 )

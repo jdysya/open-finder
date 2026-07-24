@@ -174,6 +174,9 @@ public actor TaskQueueService {
     }
 
     private func enqueue(_ request: TaskRequest, persist: Bool) async throws -> UUID {
+        if let activeDuplicateID = activeDuplicateID(for: request) {
+            return activeDuplicateID
+        }
         let id = request.descriptor?.taskID ?? UUID()
         guard records[id] == nil, !reservedTaskIDs.contains(id) else {
             throw OpenFinderError.operationFailed("Task \(id) is already enqueued")
@@ -316,6 +319,9 @@ public actor TaskQueueService {
         }
         guard oldRecord.status.isTerminal else {
             throw OpenFinderError.operationFailed("Only terminal tasks can be retried")
+        }
+        if let activeDuplicateID = activeDuplicateID(for: original) {
+            return activeDuplicateID
         }
         let retryID = UUID()
         let retryDescriptor = original.descriptor?.retried(
@@ -498,6 +504,15 @@ public actor TaskQueueService {
                 error: nil,
                 reasonCode: registryReason(for: error)
             )
+        } catch let intervention as TransferIntervention {
+            await events.complete()
+            await finish(
+                id,
+                status: .failed,
+                result: nil,
+                error: intervention,
+                reasonCode: .init(intervention: intervention.reason)
+            )
         } catch {
             await events.complete()
             await finish(
@@ -537,6 +552,24 @@ public actor TaskQueueService {
         case .unknownHandler(_, let payloadVersion):
             payloadVersion == 1 ? .unknownHandler : .unsupportedPayloadVersion
         }
+    }
+
+    private func activeDuplicateID(for request: TaskRequest) -> UUID? {
+        guard let descriptor = request.descriptor,
+              let idempotencyKey = descriptor.idempotencyKey
+        else {
+            return nil
+        }
+        return requests.first { id, existingRequest in
+            guard records[id]?.status.isTerminal == false,
+                  let existing = existingRequest.descriptor
+            else {
+                return false
+            }
+            return existing.handlerID == descriptor.handlerID
+                && existing.payloadVersion == descriptor.payloadVersion
+                && existing.idempotencyKey == idempotencyKey
+        }?.key
     }
 
     private func unavailableRecoveryReason(

@@ -84,6 +84,42 @@ public enum TaskStatusReasonCode: String, Codable, Hashable, Sendable {
     case unsupportedPayloadVersion
     case malformedPayload
     case handlerUnavailable
+    case alreadyCopied
+    case alreadyMoved
+    case missingSource
+    case destinationConflict
+    case sourceChanged
+    case requestChanged
+    case operationInProgress
+}
+
+public extension TaskStatusReasonCode {
+    init(intervention: TransferInterventionReason) {
+        switch intervention {
+        case .alreadyCopied: self = .alreadyCopied
+        case .alreadyMoved: self = .alreadyMoved
+        case .missingSource: self = .missingSource
+        case .destinationConflict: self = .destinationConflict
+        case .sourceChanged: self = .sourceChanged
+        case .requestChanged: self = .requestChanged
+        case .operationInProgress: self = .operationInProgress
+        }
+    }
+
+    var interventionMessage: String? {
+        switch self {
+        case .alreadyCopied: "The item was already copied. Review the destination before retrying."
+        case .alreadyMoved: "The item was already moved. Review the source and destination before retrying."
+        case .missingSource: "The source item is missing. Restore or reselect it before retrying."
+        case .destinationConflict: "The destination changed. Resolve the conflict before retrying."
+        case .sourceChanged: "The source item changed. Reconfirm the transfer before retrying."
+        case .requestChanged: "The transfer request changed. Create a new transfer after reviewing it."
+        case .operationInProgress: "Another transfer is already operating on this item."
+        case .recoveryInterrupted, .unknownHandler, .unsupportedPayloadVersion,
+             .malformedPayload, .handlerUnavailable:
+            nil
+        }
+    }
 }
 
 public enum DurableTaskHandlerID: String, CaseIterable, Codable, Hashable, Sendable {

@@ -78,6 +78,15 @@ public struct TransferTaskEnvelope: Codable, Hashable, Sendable {
         )
     }
 
+    public func idempotencyKey(for handlerID: DurableTaskHandlerID) throws -> String {
+        guard handlerID == .transferCopy || handlerID == .transferMove else {
+            throw TransferTaskEnvelopeError.unsupportedHandler(handlerID)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return "\(handlerID.rawValue):\(try encoder.encode(self).base64EncodedString())"
+    }
+
     public static func decode(
         from descriptor: TaskDescriptorEnvelope
     ) throws -> TransferTaskEnvelope {

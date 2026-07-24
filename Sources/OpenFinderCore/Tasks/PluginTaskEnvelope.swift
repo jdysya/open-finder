@@ -241,6 +241,13 @@ public struct PluginTaskEnvelope: Codable, Hashable, Sendable {
         )
     }
 
+    public func idempotencyKey() throws -> String {
+        try validated()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return "plugin:\(try encoder.encode(self).base64EncodedString())"
+    }
+
     public static func decode(from descriptor: TaskDescriptorEnvelope) throws -> Self {
         guard descriptor.handlerID == DurableTaskHandlerID.pluginExecute.rawValue else {
             throw PluginTaskEnvelopeError.unsupportedHandler(descriptor.handlerID)

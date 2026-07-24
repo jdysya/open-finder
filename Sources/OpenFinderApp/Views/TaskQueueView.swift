@@ -83,7 +83,7 @@ struct TaskQueueView: View {
                         .frame(width: 150)
                 }
             }
-            Text(record.status.rawValue)
+            Text(taskStatusLabel(record))
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 64, alignment: .trailing)
@@ -120,6 +120,9 @@ struct TaskQueueView: View {
     }
 
     private func taskDetail(_ record: TaskRecord) -> String {
+        if let interventionMessage = record.reasonCode?.interventionMessage {
+            return interventionMessage
+        }
         if record.status.isTerminal {
             return record.resultSummary ?? record.errorMessage ?? record.inputSummary
         }
@@ -135,6 +138,12 @@ struct TaskQueueView: View {
         default:
             return logs[record.id]?.last?.message ?? record.inputSummary
         }
+    }
+
+    private func taskStatusLabel(_ record: TaskRecord) -> String {
+        record.reasonCode?.interventionMessage == nil
+            ? record.status.rawValue
+            : "needs attention"
     }
 
     private func progressUnits(_ progress: TaskProgressSnapshot?) -> String? {
@@ -158,7 +167,7 @@ struct TaskQueueView: View {
             if record.status == .queued || record.status == .running || record.status == .cancelling {
                 Button("Cancel", role: .destructive) { onCancel(record.id) }
             }
-            if record.status == .failed || record.status == .cancelled {
+            if record.status == .failed || record.status == .cancelled || record.status == .interrupted {
                 Button("Retry") { onRetry(record.id) }
             }
         } label: {

@@ -164,7 +164,7 @@ extension AppModel {
             taskID: taskID,
             handlerID: handlerID,
             resourceKey: "transfer:\(destination.displayPath)",
-            idempotencyKey: "\(handlerID.rawValue):\(taskID.uuidString)",
+            idempotencyKey: try envelope.idempotencyKey(for: handlerID),
             lineage: .init(rootTaskID: taskID),
             queueOrdinal: await taskQueue.reserveQueueOrdinal()
         )
