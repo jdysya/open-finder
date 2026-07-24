@@ -339,14 +339,29 @@ public actor TaskQueueService {
                 return !runningResourceKeys.contains(key)
             }) else { return }
             let id = queue.remove(at: index)
-            guard let request = requests[id] else { continue }
+            guard let request = requests[id], let queuedRecord = records[id] else { continue }
             if let resourceKey = request.resourceKey {
                 runningResourceKeys.insert(resourceKey)
             }
             records[id]?.status = .running
             records[id]?.startedAt = Date()
             starting.insert(id)
-            await persistRecord(id)
+            do {
+                try await updateStoredRecord(id)
+            } catch {
+                starting.remove(id)
+                if let resourceKey = request.resourceKey {
+                    runningResourceKeys.remove(resourceKey)
+                }
+                if cancellationRequests.contains(id) {
+                    await finish(id, status: .cancelled, result: nil, error: nil)
+                    cancellationRequests.remove(id)
+                } else {
+                    records[id] = queuedRecord
+                    queue.insert(id, at: index)
+                }
+                return
+            }
             starting.remove(id)
             if cancellationRequests.contains(id) {
                 if let resourceKey = request.resourceKey {
@@ -478,12 +493,16 @@ public actor TaskQueueService {
     }
 
     private func persistRecord(_ id: UUID) async {
+        try? await updateStoredRecord(id)
+    }
+
+    private func updateStoredRecord(_ id: UUID) async throws {
         guard
             requests[id]?.isDurable == true,
             let record = records[id],
             let store
         else { return }
-        try? await store.update(
+        try await store.update(
             record: record,
             effectsCommitted: effectsCommittedTasks.contains(id)
         )

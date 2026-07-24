@@ -182,6 +182,38 @@ final class TaskQueueDescriptorExecutionTests: XCTestCase {
         XCTAssertTrue(storeEvents.isEmpty)
     }
 
+    func testRunningStatePersistenceFailureKeepsDurableDescriptorQueuedWithoutExecution() async throws {
+        let store = RunningStateFailureTaskStore()
+        let executions = DescriptorExecutionCounter()
+        let registry = TaskHandlerRegistry()
+        try await registry.register(TaskHandler(
+            handlerID: DurableTaskHandlerID.transferCopy.rawValue,
+            payloadVersion: 1
+        ) { _, _ in
+            await executions.incrementHandler()
+            return .success(summary: "must not execute", clipboard: nil)
+        })
+        let queue = TaskQueueService(
+            maxConcurrentTasks: 1,
+            handlerRegistry: registry,
+            store: store
+        )
+
+        let id = try await queue.enqueue(.init(
+            kind: .localCopy,
+            title: "Persistence gate",
+            descriptor: makeDescriptor(ordinal: 14)
+        ))
+        let record = await queue.record(for: id)
+        let runningUpdateAttempts = await store.runningUpdateAttempts
+        let handlerExecutions = await executions.values.handler
+
+        XCTAssertEqual(record?.status, .queued)
+        XCTAssertNil(record?.startedAt)
+        XCTAssertEqual(runningUpdateAttempts, 1)
+        XCTAssertEqual(handlerExecutions, 0)
+    }
+
     func testRecoveryUsesOnlyDurableDescriptorAndNeverRecoversOperation() async throws {
         let store = RecordingTaskStore()
         let operationCounter = DescriptorExecutionCounter()
@@ -275,6 +307,24 @@ private actor RecordingTaskStore: TaskStore {
     func append(log: TaskLogLine) async throws {
         events.append(.log(log.taskID, log.message))
     }
+}
+
+private enum TaskStoreWriteFailure: Error {
+    case runningState
+}
+
+private actor RunningStateFailureTaskStore: TaskStore {
+    private(set) var runningUpdateAttempts = 0
+
+    func enqueue(descriptor: TaskDescriptorEnvelope, record: TaskRecord) async throws {}
+
+    func update(record: TaskRecord, effectsCommitted: Bool) async throws {
+        guard record.status == .running else { return }
+        runningUpdateAttempts += 1
+        throw TaskStoreWriteFailure.runningState
+    }
+
+    func append(log: TaskLogLine) async throws {}
 }
 
 private actor DescriptorGate {
