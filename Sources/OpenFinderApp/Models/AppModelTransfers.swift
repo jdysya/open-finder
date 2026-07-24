@@ -9,9 +9,11 @@ extension AppModel {
             do {
                 let items = try await DroppedLocalFileItems.resolve(urls)
                 guard !items.isEmpty else { return }
-                let sourceLocation = items.first?.location
-                    ?? .local(path: urls[0].deletingLastPathComponent().path)
+                let sourceLocation = Location.local(
+                    path: urls[0].deletingLastPathComponent().path
+                )
                 let title = "Copy dropped \(items.count) item(s)"
+                let transferID = UUID()
                 let queuedID = try await taskQueue.enqueue(.init(
                     kind: .localCopy,
                     title: title
@@ -22,9 +24,10 @@ extension AppModel {
                         from: sourceLocation,
                         to: destinationLocation,
                         move: false,
+                        taskID: transferID,
                         remoteProviderResolver: self.remoteProviderResolver,
                         progress: { fraction, message in
-                            Task { await context.updateProgress(fraction, message) }
+                            await context.updateProgress(fraction, message)
                         }
                     )
                     await context.updateProgress(1.0, "Finished")
@@ -106,6 +109,7 @@ extension AppModel {
                 let title = move
                     ? "Move \(selected.count) item(s)"
                     : "Copy \(selected.count) item(s)"
+                let transferID = UUID()
                 let queuedID = try await taskQueue.enqueue(.init(
                     kind: move ? .localMove : .localCopy,
                     title: title
@@ -117,9 +121,10 @@ extension AppModel {
                         to: destinationLocation,
                         move: move,
                         overwriteExisting: overwriteExisting,
+                        taskID: transferID,
                         remoteProviderResolver: self.remoteProviderResolver,
                         progress: { fraction, message in
-                            Task { await context.updateProgress(fraction, message) }
+                            await context.updateProgress(fraction, message)
                         }
                     )
                     await context.updateProgress(1.0, "Finished")
