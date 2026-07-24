@@ -219,6 +219,52 @@ final class PluginTaskHandlerTests: XCTestCase {
         }
     }
 
+    func testDescriptorNeverFallsBackToDifferentPluginVersion() async throws {
+        let fixture = try PluginTaskFixture()
+        defer { fixture.cleanup() }
+        let runner = PluginExecutionCountingRunner()
+        let coordinator = PluginExecutionCoordinator(
+            runner: runner,
+            connectionChecker: ExactReadyPluginConnectionChecker(),
+            credentialResolver: fixture.credentials,
+            temporaryDirectory: fixture.root
+        )
+        let registry = TaskHandlerRegistry()
+        try await registry.register(PluginExecuteTaskHandler(
+            pluginResolver: .exact([fixture.processPlugin]),
+            credentialResolver: fixture.credentials,
+            coordinator: coordinator
+        ).taskHandler)
+        let queue = TaskQueueService(maxConcurrentTasks: 1, handlerRegistry: registry)
+        let payload = makePayload(
+            pluginID: fixture.processPlugin.id,
+            pluginVersion: "9.9.9",
+            actionID: fixture.processPlugin.manifest.actions[0].id,
+            currentLocation: .local(path: fixture.root.path)
+        )
+        let id = UUID()
+        let descriptor = try payload.makeDescriptor(
+            taskID: id,
+            resourceKey: "plugin:\(fixture.processPlugin.id)",
+            idempotencyKey: "plugin:\(fixture.processPlugin.id):inspect",
+            lineage: .init(rootTaskID: id),
+            queueOrdinal: 4
+        )
+
+        _ = try await queue.enqueue(.init(
+            kind: .plugin(pluginID: payload.pluginID, actionID: payload.actionID),
+            title: "Stale plugin version",
+            descriptor: descriptor
+        ))
+        let record = try await queue.waitForTerminalStatus(id, timeout: 2)
+        let executionCount = await runner.executionCount
+
+        XCTAssertEqual(record.status, .unavailable)
+        XCTAssertEqual(record.reasonCode, .handlerUnavailable)
+        XCTAssertEqual(executionCount, 0)
+        XCTAssertEqual(try PluginTaskEnvelope.decode(from: descriptor), payload)
+    }
+
     func testRetryUsesNewTaskIDAndPreservesImmutableSnapshot() async throws {
         let fixture = try PluginTaskFixture()
         defer { fixture.cleanup() }
@@ -448,4 +494,15 @@ private struct ExactReadyPluginConnectionChecker: PluginConnectionChecking {
             pluginVersion: manifest.version
         )
     }
+}
+
+private actor PluginExecutionCountingRunner: PluginRunner {
+    private(set) var executionCount = 0
+
+    func run(_ request: PluginRunRequest) async throws -> PluginRunResult {
+        executionCount += 1
+        return .init(exitCode: 0, events: [], stdout: "", stderr: "")
+    }
+
+    func cancel(taskID: UUID) async {}
 }
