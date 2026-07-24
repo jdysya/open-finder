@@ -7,13 +7,22 @@ public struct TaskRequest: @unchecked Sendable {
     public let title: String
     public let inputSummary: String
     public let resourceKey: String?
+    public let descriptor: TaskDescriptorEnvelope?
     public let operation: TaskOperation
 
-    public init(kind: TaskKind, title: String, inputSummary: String = "", resourceKey: String? = nil, operation: @escaping TaskOperation) {
+    public init(
+        kind: TaskKind,
+        title: String,
+        inputSummary: String = "",
+        resourceKey: String? = nil,
+        descriptor: TaskDescriptorEnvelope? = nil,
+        operation: @escaping TaskOperation
+    ) {
         self.kind = kind
         self.title = title
         self.inputSummary = inputSummary
-        self.resourceKey = resourceKey
+        self.resourceKey = descriptor?.resourceKey ?? resourceKey
+        self.descriptor = descriptor
         self.operation = operation
     }
 }
@@ -69,10 +78,20 @@ public actor TaskQueueService {
 
     @discardableResult
     public func enqueue(_ request: TaskRequest) async throws -> UUID {
-        let id = UUID()
+        let id = request.descriptor?.taskID ?? UUID()
         requests[id] = request
-        records[id] = TaskRecord(id: id, kind: request.kind, title: request.title, inputSummary: request.inputSummary)
+        records[id] = TaskRecord(
+            id: id,
+            kind: request.kind,
+            title: request.title,
+            inputSummary: request.inputSummary,
+            descriptor: request.descriptor
+        )
         logStorage[id] = []
+        if case .unavailable(let reasonCode) = request.descriptor?.availability {
+            finish(id, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
+            return id
+        }
         queue.append(id)
         startNextIfPossible()
         return id
@@ -87,6 +106,7 @@ public actor TaskQueueService {
     public func logs(for id: UUID) -> [TaskLogLine] { logStorage[id] ?? [] }
 
     public func cancel(_ id: UUID) async {
+        guard let record = records[id], !record.status.isTerminal else { return }
         cancellationRequests.insert(id)
         if let index = queue.firstIndex(of: id) {
             queue.remove(at: index)
@@ -105,30 +125,49 @@ public actor TaskQueueService {
             throw OpenFinderError.itemNotFound(id.uuidString)
         }
         let retryID = UUID()
-        requests[retryID] = original
+        let retryDescriptor = original.descriptor?.retried(
+            taskID: retryID,
+            queueOrdinal: (original.descriptor?.queueOrdinal ?? 0) &+ 1
+        )
+        requests[retryID] = TaskRequest(
+            kind: original.kind,
+            title: original.title,
+            inputSummary: original.inputSummary,
+            resourceKey: original.resourceKey,
+            descriptor: retryDescriptor,
+            operation: original.operation
+        )
         records[retryID] = TaskRecord(
             id: retryID,
             kind: original.kind,
             title: original.title,
             inputSummary: original.inputSummary,
-            retryCount: oldRecord.retryCount + 1
+            retryCount: oldRecord.retryCount + 1,
+            descriptor: retryDescriptor
         )
         logStorage[retryID] = []
+        if case .unavailable(let reasonCode) = retryDescriptor?.availability {
+            finish(retryID, status: .unavailable, result: nil, error: nil, reasonCode: reasonCode)
+            return retryID
+        }
         queue.append(retryID)
         startNextIfPossible()
         return retryID
     }
 
     public func appendLog(_ id: UUID, _ message: String, level: String = "info") {
+        guard records[id]?.status.isTerminal == false else { return }
         logStorage[id, default: []].append(.init(taskID: id, level: level, message: message))
     }
 
     public func updateProgress(_ id: UUID, _ progress: Double?, message: String? = nil) {
+        guard records[id]?.status.isTerminal == false else { return }
         records[id]?.progress = progress
         if let message { appendLog(id, message) }
     }
 
     public func updateProgress(_ id: UUID, _ snapshot: TaskProgressSnapshot) {
+        guard records[id]?.status.isTerminal == false else { return }
         let previousPhase = records[id]?.progressDetail?.phase
         records[id]?.progress = snapshot.fraction
         records[id]?.progressDetail = snapshot
@@ -195,9 +234,17 @@ public actor TaskQueueService {
         startNextIfPossible()
     }
 
-    private func finish(_ id: UUID, status: TaskStatus, result: TaskResult?, error: Error?) {
+    private func finish(
+        _ id: UUID,
+        status: TaskStatus,
+        result: TaskResult?,
+        error: Error?,
+        reasonCode: TaskStatusReasonCode? = nil
+    ) {
+        guard records[id]?.status.isTerminal == false else { return }
         records[id]?.status = status
         records[id]?.finishedAt = Date()
+        records[id]?.reasonCode = reasonCode
         if status == .succeeded { records[id]?.progress = 1.0 }
         if let result {
             records[id]?.resultSummary = result.summary
@@ -205,7 +252,11 @@ public actor TaskQueueService {
         }
         if let error {
             records[id]?.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            appendLog(id, records[id]?.errorMessage ?? "Task failed", level: "error")
+            logStorage[id, default: []].append(.init(
+                taskID: id,
+                level: "error",
+                message: records[id]?.errorMessage ?? "Task failed"
+            ))
         }
     }
 }

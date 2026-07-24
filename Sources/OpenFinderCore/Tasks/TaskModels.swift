@@ -56,11 +56,135 @@ public enum TaskStatus: String, Codable, Hashable, Sendable {
     case failed
     case cancelling
     case cancelled
+    case interrupted
+    case unavailable
 
     public var isTerminal: Bool {
         switch self {
-        case .succeeded, .failed, .cancelled: true
+        case .succeeded, .failed, .cancelled, .interrupted, .unavailable: true
         case .queued, .running, .cancelling: false
+        }
+    }
+}
+
+public enum TaskStatusReasonCode: String, Codable, Hashable, Sendable {
+    case recoveryInterrupted
+    case unknownHandler
+    case unsupportedPayloadVersion
+    case malformedPayload
+    case handlerUnavailable
+}
+
+public enum DurableTaskHandlerID: String, CaseIterable, Codable, Hashable, Sendable {
+    case pluginExecute = "plugin.execute.v1"
+    case transferCopy = "transfer.copy.v1"
+    case transferMove = "transfer.move.v1"
+}
+
+public struct TaskAttemptLineage: Codable, Hashable, Sendable {
+    public let rootTaskID: UUID
+    public let parentTaskID: UUID?
+    public let attempt: Int
+
+    public init(rootTaskID: UUID, parentTaskID: UUID? = nil, attempt: Int = 1) {
+        self.rootTaskID = rootTaskID
+        self.parentTaskID = parentTaskID
+        self.attempt = attempt
+    }
+}
+
+public enum TaskDescriptorAvailability: Hashable, Sendable {
+    case available(DurableTaskHandlerID)
+    case unavailable(TaskStatusReasonCode)
+}
+
+public struct TaskDescriptorEnvelope: Codable, Hashable, Sendable {
+    public let taskID: UUID
+    public let handlerID: String
+    public let payloadVersion: Int
+    public let resourceKey: String?
+    public let idempotencyKey: String?
+    public let lineage: TaskAttemptLineage
+    public let queueOrdinal: UInt64
+    public let redactedPayload: [String: String]
+
+    public init(
+        taskID: UUID,
+        handlerID: String,
+        payloadVersion: Int,
+        resourceKey: String? = nil,
+        idempotencyKey: String? = nil,
+        lineage: TaskAttemptLineage,
+        queueOrdinal: UInt64,
+        redactedPayload: [String: String] = [:]
+    ) {
+        self.taskID = taskID
+        self.handlerID = handlerID
+        self.payloadVersion = payloadVersion
+        self.resourceKey = resourceKey
+        self.idempotencyKey = idempotencyKey
+        self.lineage = lineage
+        self.queueOrdinal = queueOrdinal
+        self.redactedPayload = Self.sanitize(redactedPayload)
+    }
+
+    public var availability: TaskDescriptorAvailability {
+        guard let handler = DurableTaskHandlerID(rawValue: handlerID) else {
+            return .unavailable(.unknownHandler)
+        }
+        guard payloadVersion == 1 else {
+            return .unavailable(.unsupportedPayloadVersion)
+        }
+        return .available(handler)
+    }
+
+    public func retried(taskID: UUID, queueOrdinal: UInt64) -> TaskDescriptorEnvelope {
+        TaskDescriptorEnvelope(
+            taskID: taskID,
+            handlerID: handlerID,
+            payloadVersion: payloadVersion,
+            resourceKey: resourceKey,
+            idempotencyKey: idempotencyKey,
+            lineage: .init(
+                rootTaskID: lineage.rootTaskID,
+                parentTaskID: self.taskID,
+                attempt: lineage.attempt + 1
+            ),
+            queueOrdinal: queueOrdinal,
+            redactedPayload: redactedPayload
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case taskID
+        case handlerID
+        case payloadVersion
+        case resourceKey
+        case idempotencyKey
+        case lineage
+        case queueOrdinal
+        case redactedPayload
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        taskID = try container.decode(UUID.self, forKey: .taskID)
+        handlerID = try container.decode(String.self, forKey: .handlerID)
+        payloadVersion = try container.decode(Int.self, forKey: .payloadVersion)
+        resourceKey = try container.decodeIfPresent(String.self, forKey: .resourceKey)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        lineage = try container.decode(TaskAttemptLineage.self, forKey: .lineage)
+        queueOrdinal = try container.decode(UInt64.self, forKey: .queueOrdinal)
+        redactedPayload = Self.sanitize(
+            try container.decode([String: String].self, forKey: .redactedPayload)
+        )
+    }
+
+    private static func sanitize(_ payload: [String: String]) -> [String: String] {
+        payload.filter { key, _ in
+            let normalized = key.lowercased()
+            return !["secret", "token", "password", "credential", "bookmark", "authorization"]
+                .contains(where: normalized.contains)
         }
     }
 }
@@ -81,6 +205,8 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
     public var logFilePath: String?
     public var retryCount: Int
     public var clipboardText: String?
+    public var descriptor: TaskDescriptorEnvelope?
+    public var reasonCode: TaskStatusReasonCode?
 
     public init(
         id: UUID = UUID(),
@@ -97,7 +223,9 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
         errorMessage: String? = nil,
         logFilePath: String? = nil,
         retryCount: Int = 0,
-        clipboardText: String? = nil
+        clipboardText: String? = nil,
+        descriptor: TaskDescriptorEnvelope? = nil,
+        reasonCode: TaskStatusReasonCode? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -114,6 +242,18 @@ public struct TaskRecord: Identifiable, Codable, Hashable, Sendable {
         self.logFilePath = logFilePath
         self.retryCount = retryCount
         self.clipboardText = clipboardText
+        self.descriptor = descriptor
+        self.reasonCode = reasonCode
+    }
+
+    public mutating func markInterrupted(
+        reasonCode: TaskStatusReasonCode = .recoveryInterrupted,
+        at date: Date = Date()
+    ) {
+        guard !status.isTerminal else { return }
+        status = .interrupted
+        self.reasonCode = reasonCode
+        finishedAt = date
     }
 }
 

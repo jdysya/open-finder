@@ -115,6 +115,50 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(record.status, .cancelled)
     }
 
+    func testRequestConfigurationIsSnapshottedAtCreation() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        var title = "Original title"
+        var inputSummary = "Original input"
+        var resourceKey = "original-resource"
+        let request = TaskRequest(
+            kind: .localCopy,
+            title: title,
+            inputSummary: inputSummary,
+            resourceKey: resourceKey
+        ) { _ in
+            .success(summary: "done", clipboard: nil)
+        }
+
+        title = "Mutated title"
+        inputSummary = "Mutated input"
+        resourceKey = "mutated-resource"
+        let id = try await queue.enqueue(request)
+        let record = try await queue.waitForTerminalStatus(id, timeout: 2)
+
+        XCTAssertEqual(record.title, "Original title")
+        XCTAssertEqual(record.inputSummary, "Original input")
+    }
+
+    func testRepeatedCancellationDoesNotChangeTerminalRecord() async throws {
+        let queue = TaskQueueService(maxConcurrentTasks: 1)
+        let id = try await queue.enqueue(.init(kind: .localMove, title: "Cancel once") { context in
+            while await !context.isCancelled {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            throw CancellationError()
+        })
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await queue.cancel(id)
+        let terminal = try await queue.waitForTerminalStatus(id, timeout: 2)
+        await queue.cancel(id)
+        let afterRepeatedCancellation = await queue.record(for: id)
+
+        XCTAssertEqual(afterRepeatedCancellation?.status, terminal.status)
+        XCTAssertEqual(afterRepeatedCancellation?.finishedAt, terminal.finishedAt)
+        XCTAssertEqual(afterRepeatedCancellation?.resultSummary, terminal.resultSummary)
+    }
+
     func testResourceKeySerializesAnalysisWithoutBlockingUnrelatedTask() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 2)
         let gate = AnalysisResourceGate()
