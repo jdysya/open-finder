@@ -7,22 +7,33 @@ struct ArtifactSnapshot: Sendable {
     let byteCount: Int
     let sha256: String
 
-    static func fetchAll(_ db: Database) throws -> [Self] {
-        try Row.fetchAll(
+    static func fetchAll(_ db: Database) throws -> (records: [Self], issues: [PersistenceReconciliationIssue]) {
+        let rows = try Row.fetchAll(
             db,
             sql: """
                 SELECT artifact_id, relative_path, byte_count, sha256
                 FROM artifact_records
                 """
-        ).compactMap { row in
-            guard let id = UUID(uuidString: row["artifact_id"]) else { return nil }
-            return Self(
+        )
+        var records: [Self] = []
+        var issues: [PersistenceReconciliationIssue] = []
+        for row in rows {
+            let rawID: String = row["artifact_id"]
+            guard let id = UUID(uuidString: rawID) else {
+                issues.append(.init(
+                    kind: .corruptArtifactRow,
+                    detail: "Artifact row has an invalid UUID: \(rawID)"
+                ))
+                continue
+            }
+            records.append(Self(
                 id: id,
                 relativePath: row["relative_path"],
                 byteCount: row["byte_count"],
                 sha256: row["sha256"]
-            )
+            ))
         }
+        return (records, issues)
     }
 }
 
@@ -47,44 +58,64 @@ struct MediaDocumentSnapshot: Sendable {
     let taskID: UUID
     let artifactIDs: Set<UUID>
 
-    static func fetchAll(_ db: Database) throws -> [Self] {
-        try Row.fetchAll(
+    static func fetchAll(
+        _ db: Database
+    ) throws -> (records: [Self], rowIDs: Set<String>, issues: [PersistenceReconciliationIssue]) {
+        let rows = try Row.fetchAll(
             db,
             sql: "SELECT document_id, task_id, schema_id, schema_version, payload FROM media_analysis_documents"
-        ).compactMap { row in
-            guard
-                let id = UUID(uuidString: row["document_id"]),
-                let taskID = UUID(uuidString: row["task_id"]),
-                row["schema_id"] as String == MediaAnalysisDocument.schemaIdentifier,
-                row["schema_version"] as Int == MediaAnalysisDocument.currentSchemaVersion,
-                let object = try? JSONSerialization.jsonObject(with: row["payload"] as Data),
-                let dictionary = object as? [String: Any]
-            else { return nil }
-            return Self(
-                id: id,
-                taskID: taskID,
-                artifactIDs: referencedArtifactIDs(in: dictionary)
-            )
+        )
+        var records: [Self] = []
+        var issues: [PersistenceReconciliationIssue] = []
+        for row in rows {
+            let rawID: String = row["document_id"]
+            let rawTaskID: String = row["task_id"]
+            do {
+                guard
+                    let id = UUID(uuidString: rawID),
+                    let taskID = UUID(uuidString: rawTaskID),
+                    row["schema_id"] as String == MediaAnalysisDocument.schemaIdentifier,
+                    row["schema_version"] as Int == MediaAnalysisDocument.currentSchemaVersion
+                else { throw PersistenceRecordError.invalidMediaMetadata }
+                let document = try JSONDecoder().decode(
+                    MediaAnalysisDocument.self,
+                    from: row["payload"] as Data
+                )
+                guard document.documentID == id, document.taskID == taskID else {
+                    throw PersistenceRecordError.mediaIdentityMismatch
+                }
+                let artifactIDs = document.items.reduce(into: Set<UUID>()) { result, item in
+                    result.formUnion(item.moments.flatMap(\.assets).map(\.artifactID))
+                    if let report = item.report { result.insert(report.artifactID) }
+                }
+                records.append(Self(id: id, taskID: taskID, artifactIDs: artifactIDs))
+            } catch {
+                issues.append(.init(
+                    kind: .corruptMediaDocument,
+                    taskID: UUID(uuidString: rawTaskID),
+                    documentID: UUID(uuidString: rawID),
+                    detail: "Media document row is invalid: \(error)"
+                ))
+            }
         }
+        return (records, Set(rows.map { $0["document_id"] as String }), issues)
     }
+}
 
-    private static func referencedArtifactIDs(in value: Any) -> Set<UUID> {
-        if let dictionary = value as? [String: Any] {
-            var ids = Set(dictionary.compactMap { key, value -> UUID? in
-                guard key == "artifactID", let raw = value as? String else { return nil }
-                return UUID(uuidString: raw)
-            })
-            for nested in dictionary.values {
-                ids.formUnion(referencedArtifactIDs(in: nested))
-            }
-            return ids
-        }
-        if let array = value as? [Any] {
-            return array.reduce(into: Set<UUID>()) {
-                $0.formUnion(referencedArtifactIDs(in: $1))
-            }
-        }
-        return []
+struct ManagedTagSnapshot: Sendable {
+    let documentID: String
+
+    static func fetchAll(_ db: Database) throws -> [Self] {
+        try String.fetchAll(
+            db,
+            sql: "SELECT DISTINCT document_id FROM media_managed_tags ORDER BY document_id"
+        ).map(Self.init)
+    }
+}
+
+struct TaskIDSnapshot {
+    static func fetchAll(_ db: Database) throws -> Set<UUID> {
+        Set(try String.fetchAll(db, sql: "SELECT task_id FROM task_records").compactMap(UUID.init))
     }
 }
 
@@ -106,4 +137,9 @@ struct ExpiredTaskSnapshot: Sendable {
             arguments: [cutoff.timeIntervalSince1970]
         ).compactMap { UUID(uuidString: $0) }.map(Self.init)
     }
+}
+
+private enum PersistenceRecordError: Error {
+    case invalidMediaMetadata
+    case mediaIdentityMismatch
 }

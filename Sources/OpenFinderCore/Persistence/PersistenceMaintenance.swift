@@ -51,36 +51,22 @@ public actor PersistenceMaintenance {
             let staging = removeOrphanedStaging(knownArtifactIDs: Set(snapshot.artifacts.keys))
             issues.append(contentsOf: staging.issues)
 
-            var removedArtifacts: [UUID] = []
-            let referencedIDs = Set(snapshot.documents.values.flatMap(\.artifactIDs))
-            let protectedIDs = pinnedArtifactIDs.union(referencedIDs)
+            let mediaCleanup = await removeOrphanedMedia(
+                documents: snapshot.documents,
+                documentRowIDs: snapshot.documentRowIDs,
+                tags: snapshot.tags,
+                taskIDs: snapshot.taskIDs
+            )
+            issues.append(contentsOf: mediaCleanup)
+
             var remainingLinks = snapshot.links
             var removedTasks: [UUID] = []
-            for task in snapshot.expiredTasks {
-                let artifactIDs = remainingLinks
-                    .filter { $0.value.contains(task.id) }
-                    .map(\.key)
-                    .sorted { $0.uuidString < $1.uuidString }
+            for task in snapshot.expiredTasks
+            where !snapshot.diagnosticProtectedTaskIDs.contains(task.id) {
                 do {
                     try await removeLinks(taskID: task.id)
-                    for artifactID in artifactIDs {
+                    for artifactID in remainingLinks.keys {
                         remainingLinks[artifactID]?.remove(task.id)
-                        guard remainingLinks[artifactID]?.isEmpty != false,
-                              !protectedIDs.contains(artifactID),
-                              inspection.healthyIDs.contains(artifactID),
-                              let artifact = snapshot.artifacts[artifactID] else { continue }
-                        do {
-                            try await removeArtifactRow(artifactID)
-                            try removeArtifactFile(artifact)
-                            removedArtifacts.append(artifactID)
-                        } catch {
-                            issues.append(cleanupIssue(
-                                artifactID: artifactID,
-                                taskID: task.id,
-                                path: artifact.relativePath,
-                                error: error
-                            ))
-                        }
                     }
                     try await removeTaskRecord(task.id)
                     removedTasks.append(task.id)
@@ -88,6 +74,39 @@ public actor PersistenceMaintenance {
                     issues.append(cleanupIssue(taskID: task.id, error: error))
                 }
             }
+
+            let retainedDocuments = snapshot.documents.values.filter {
+                snapshot.taskIDs.contains($0.taskID) && !removedTasks.contains($0.taskID)
+            }
+            let referencedIDs = Set(retainedDocuments.flatMap(\.artifactIDs))
+            let protectedIDs = pinnedArtifactIDs.union(referencedIDs)
+            var removedArtifacts: [UUID] = []
+            for artifact in snapshot.artifacts.values.sorted(by: { $0.id.uuidString < $1.id.uuidString })
+            where remainingLinks[artifact.id]?.isEmpty != false
+                && !protectedIDs.contains(artifact.id)
+                && inspection.healthyIDs.contains(artifact.id) {
+                do {
+                    try await removeArtifactRowThenFile(artifact)
+                    removedArtifacts.append(artifact.id)
+                } catch {
+                    let issue = cleanupIssue(
+                        artifactID: artifact.id,
+                        path: artifact.relativePath,
+                        error: error
+                    )
+                    issues.append(issue)
+                    await persistArtifactDiagnostics([issue], now: now)
+                }
+            }
+            let retainedPaths = Set(snapshot.artifacts.values.compactMap {
+                removedArtifacts.contains($0.id) ? nil : $0.relativePath
+            })
+            let published = removeOrphanedPublished(
+                knownArtifactIDs: Set(snapshot.artifacts.keys).subtracting(removedArtifacts),
+                knownRelativePaths: retainedPaths
+            )
+            removedArtifacts.append(contentsOf: published.artifactIDs)
+            issues.append(contentsOf: published.issues)
 
             return report(
                 removedTasks: removedTasks,
@@ -111,13 +130,18 @@ public actor PersistenceMaintenance {
             let links = try ArtifactLinkSnapshot.fetchAll(db)
             let documents = try MediaDocumentSnapshot.fetchAll(db)
             let tasks = try ExpiredTaskSnapshot.fetchAll(db, now: now)
+            let tags = try ManagedTagSnapshot.fetchAll(db)
             return Snapshot(
-                artifacts: Dictionary(uniqueKeysWithValues: artifacts.map { ($0.id, $0) }),
+                artifacts: Dictionary(uniqueKeysWithValues: artifacts.records.map { ($0.id, $0) }),
                 links: Dictionary(grouping: links, by: \.artifactID)
                     .mapValues { Set($0.map(\.taskID)) },
-                documents: Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) }),
+                documents: Dictionary(uniqueKeysWithValues: documents.records.map { ($0.id, $0) }),
+                documentRowIDs: documents.rowIDs,
+                tags: tags,
+                taskIDs: try TaskIDSnapshot.fetchAll(db),
+                diagnosticProtectedTaskIDs: Set(documents.issues.compactMap(\.taskID)),
                 expiredTasks: tasks,
-                issues: []
+                issues: artifacts.issues + documents.issues
             )
         }
     }
@@ -158,6 +182,58 @@ private struct Snapshot: Sendable {
     let artifacts: [UUID: ArtifactSnapshot]
     let links: [UUID: Set<UUID>]
     let documents: [UUID: MediaDocumentSnapshot]
+    let documentRowIDs: Set<String>
+    let tags: [ManagedTagSnapshot]
+    let taskIDs: Set<UUID>
+    let diagnosticProtectedTaskIDs: Set<UUID>
     let expiredTasks: [ExpiredTaskSnapshot]
     let issues: [PersistenceReconciliationIssue]
+}
+
+extension PersistenceMaintenance {
+    func removeOrphanedMedia(
+        documents: [UUID: MediaDocumentSnapshot],
+        documentRowIDs: Set<String>,
+        tags: [ManagedTagSnapshot],
+        taskIDs: Set<UUID>
+    ) async -> [PersistenceReconciliationIssue] {
+        var issues: [PersistenceReconciliationIssue] = []
+        for tag in tags where !documentRowIDs.contains(tag.documentID) {
+            do {
+                try await databasePool.write { db in
+                    try db.execute(
+                        sql: "DELETE FROM media_managed_tags WHERE document_id = ?",
+                        arguments: [tag.documentID]
+                    )
+                }
+                issues.append(.init(
+                    kind: .orphanedManagedTag,
+                    documentID: UUID(uuidString: tag.documentID),
+                    detail: "Managed tag referenced a missing media document and was removed."
+                ))
+            } catch {
+                issues.append(cleanupIssue(error: error))
+            }
+        }
+        for document in documents.values.sorted(by: { $0.id.uuidString < $1.id.uuidString })
+        where !taskIDs.contains(document.taskID) {
+            do {
+                try await databasePool.write { db in
+                    try db.execute(
+                        sql: "DELETE FROM media_analysis_documents WHERE document_id = ?",
+                        arguments: [document.id.uuidString]
+                    )
+                }
+                issues.append(.init(
+                    kind: .orphanedMediaDocument,
+                    taskID: document.taskID,
+                    documentID: document.id,
+                    detail: "Media document referenced a missing task and was removed."
+                ))
+            } catch {
+                issues.append(cleanupIssue(taskID: document.taskID, error: error))
+            }
+        }
+        return issues
+    }
 }

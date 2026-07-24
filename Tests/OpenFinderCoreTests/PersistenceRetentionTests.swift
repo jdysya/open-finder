@@ -50,9 +50,64 @@ final class PersistenceRetentionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.url(for: expiredArtifact, taskID: expired).path))
         print("retention_fixture removed_tasks=30d,31d retained=29d,live pinned=1 referenced=1")
     }
+
+    func testCleanupFailureIsAuditedAndRetriedByPeriodicMaintenance() async throws {
+        // Given
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let now = Date(timeIntervalSince1970: 4_000_000)
+        let taskID = UUID()
+        let artifactID = UUID()
+        try fixture.insertTask(
+            taskID,
+            status: .failed,
+            finishedAt: now.addingTimeInterval(-31 * 24 * 60 * 60),
+            ordinal: 1
+        )
+        try fixture.insertArtifact(
+            artifactID,
+            taskID: taskID,
+            finishedAt: now.addingTimeInterval(-31 * 24 * 60 * 60)
+        )
+        let artifactURL = fixture.url(for: artifactID, taskID: taskID)
+        let fileManager = FailOnceFileManager(target: artifactURL)
+        let maintenance = PersistenceMaintenance(
+            databasePool: fixture.database.databasePool,
+            artifactRoot: fixture.artifactRoot,
+            fileManager: fileManager,
+            clock: { now }
+        )
+
+        // When
+        let first = await maintenance.runAtStartup()
+
+        // Then
+        XCTAssertTrue(first.issues.contains {
+            $0.kind == .cleanupFailure && $0.artifactID == artifactID
+        })
+        XCTAssertTrue(try fixture.artifactExists(artifactID))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artifactURL.path))
+        guard let diagnostic = try fixture.artifactDiagnostic(artifactID) else {
+            XCTFail("cleanup failure removed the durable artifact receipt")
+            return
+        }
+        XCTAssertEqual(diagnostic.attempts, 1)
+        XCTAssertNotNil(diagnostic.reason)
+
+        // When
+        let second = await maintenance.runPeriodically()
+
+        // Then
+        XCTAssertEqual(second.removedArtifactIDs, [artifactID])
+        XCTAssertFalse(try fixture.artifactExists(artifactID))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifactURL.path))
+        let pathHash = SHA256.hash(data: Data(artifactURL.path.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        print("cleanup_retry_fixture first_issue=1 durable_attempts=1 second_removed=1 path_sha256=\(pathHash)")
+    }
 }
 
-private final class PersistenceFixture {
+final class PersistenceFixture {
     let root: URL
     let artifactRoot: URL
     let database: AppDatabase
@@ -100,7 +155,8 @@ private final class PersistenceFixture {
         _ id: UUID,
         taskID: UUID,
         finishedAt: Date,
-        ordinal: Int = 0
+        ordinal: Int = 0,
+        linkToTask: Bool = true
     ) throws {
         let relativePath = "published/\(taskID.uuidString)/\(id.uuidString)/payload"
         let bytes = Data(id.uuidString.utf8)
@@ -127,10 +183,12 @@ private final class PersistenceFixture {
                     finishedAt.addingTimeInterval(ArtifactRecord.retentionInterval).timeIntervalSince1970
                 ]
             )
-            try db.execute(
-                sql: "INSERT INTO task_artifacts (task_id, artifact_id, ordinal) VALUES (?, ?, ?)",
-                arguments: [taskID.uuidString, id.uuidString, ordinal]
-            )
+            if linkToTask {
+                try db.execute(
+                    sql: "INSERT INTO task_artifacts (task_id, artifact_id, ordinal) VALUES (?, ?, ?)",
+                    arguments: [taskID.uuidString, id.uuidString, ordinal]
+                )
+            }
         }
     }
 
@@ -174,10 +232,39 @@ private final class PersistenceFixture {
         }
     }
 
+    func artifactDiagnostic(_ id: UUID) throws -> (attempts: Int, reason: String?)? {
+        try database.databasePool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT cleanup_attempts, reconciliation_reason FROM artifact_records WHERE artifact_id = ?",
+                arguments: [id.uuidString]
+            ) else { return nil }
+            return (row["cleanup_attempts"], row["reconciliation_reason"])
+        }
+    }
+
     func url(for artifactID: UUID, taskID: UUID) -> URL {
         artifactRoot.appendingPathComponent("published", isDirectory: true)
             .appendingPathComponent(taskID.uuidString, isDirectory: true)
             .appendingPathComponent(artifactID.uuidString, isDirectory: true)
             .appendingPathComponent("payload")
+    }
+}
+
+private final class FailOnceFileManager: FileManager, @unchecked Sendable {
+    private let targetPath: String
+    private var failsNextRemoval = true
+
+    init(target: URL) {
+        targetPath = target.resolvingSymlinksInPath().path
+        super.init()
+    }
+
+    override func removeItem(at URL: URL) throws {
+        if URL.path == targetPath, failsNextRemoval {
+            failsNextRemoval = false
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try super.removeItem(at: URL)
     }
 }
