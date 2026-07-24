@@ -40,7 +40,7 @@ Useful modes:
 
 ## Plugin development
 
-See `docs/plugin-api.md`. Put user plugins under:
+See `docs/architecture.md` for the code-level architecture/design guide and `docs/plugin-api.md` for plugin development. Put user plugins under:
 
 ```text
 ~/Library/Application Support/OpenFinder/Plugins/
