@@ -2,30 +2,9 @@ import Foundation
 import OpenFinderCore
 
 extension BrowserPaneModel {
-    func remoteLocation(for location: Location) throws -> RemoteLocation {
-        switch location {
-        case .remote(let remoteLocation):
-            return remoteLocation
-        case .webDAV(let accountID, let path):
-            return .init(
-                accountID: accountID,
-                connectorID: .webDAV,
-                path: .init(identifier: path, displayPath: path)
-            )
-        case .local, .rclone:
-            throw OpenFinderError.unsupportedLocation(location)
-        }
-    }
-
-    func remoteProvider(
-        for remoteLocation: RemoteLocation
-    ) async throws -> any RemoteProvider {
-        try await remoteProviderResolver(remoteLocation)
-    }
-
     func materializeRemoteFile(_ item: FileItem) async throws -> URL {
         let source = try await resolvedFileSource(for: item.location)
-        guard case .remote(let adapter) = source.adapter else {
+        guard source.location.sourceID.isRemote else {
             throw FileCapabilityUnsupportedReason.operationUnavailable(
                 sourceID: source.location.sourceID,
                 operation: .quickLook
@@ -33,7 +12,7 @@ extension BrowserPaneModel {
         }
         let lease = try await fileSourceRegistry.materialize(
             item.location,
-            revision: adapter.revision
+            revision: source.adapter.providerRevision
         )
         materializationLeases.append(lease)
         return lease.url
@@ -44,9 +23,8 @@ extension BrowserPaneModel {
             throw OpenFinderError.operationFailed("Only remote files can be dragged out")
         }
         _ = try safeRemoteFileName(item.name)
-        let remoteLocation = try remoteLocation(for: item.location)
-        let remote = try await remoteProvider(for: remoteLocation)
-        _ = try await remote.download(item: remoteLocation.path, to: destination)
+        let source = try await resolvedFileSource(for: item.location)
+        try await source.download(item, to: destination)
     }
 
     private func safeRemoteFileName(_ name: String) throws -> String {

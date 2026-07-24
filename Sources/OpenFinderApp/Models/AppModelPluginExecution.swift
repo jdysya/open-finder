@@ -17,7 +17,15 @@ extension AppModel {
                         return
                     }
                 }
-                let currentLocation = pane.location
+                let currentLocation = try pane.fileSourceRegistry.normalizedLocation(
+                    pane.location
+                )
+                let normalizedInputs = try items.map { item in
+                    PluginTaskInputSnapshot(
+                        location: try pane.fileSourceRegistry.normalizedLocation(item.location),
+                        identity: .init(item)
+                    )
+                }
                 let paneID = pane.id.rawValue
                 let configurationValues = configuration.pluginConfigurationValues[plugin.id] ?? [:]
                 let secretReferences = configuredPluginSecretReferences(for: plugin.manifest)
@@ -38,7 +46,7 @@ extension AppModel {
                         activePane: paneID,
                         currentLocation: currentLocation
                     ),
-                    inputs: items.map(PluginTaskInputSnapshot.init),
+                    inputs: normalizedInputs,
                     configuration: configurationValues,
                     secretReferences: secretReferences,
                     workspacePolicy: .taskScopedTemporary

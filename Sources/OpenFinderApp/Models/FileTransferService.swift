@@ -59,17 +59,6 @@ enum FileTransferService {
     }
 
     private static func remoteLocation(_ location: Location) -> RemoteLocation? {
-        switch location {
-        case .remote(let remoteLocation):
-            remoteLocation
-        case .webDAV(let accountID, let path):
-            .init(
-                accountID: accountID,
-                connectorID: .webDAV,
-                path: .init(identifier: path, displayPath: path)
-            )
-        case .local, .rclone:
-            nil
-        }
+        try? location.resolvedFileLocation.remoteLocation
     }
 }

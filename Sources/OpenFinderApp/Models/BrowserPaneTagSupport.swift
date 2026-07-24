@@ -4,12 +4,7 @@ import OpenFinderCore
 extension BrowserPaneModel {
     func tagProvider(for location: Location) async throws -> (any TagProvider)? {
         let source = try await resolvedFileSource(for: location)
-        switch source.adapter {
-        case .local(let adapter):
-            return adapter.provider
-        case .remote(let adapter):
-            return adapter.provider as? any TagProvider
-        }
+        return source.tagProvider
     }
 
     func beginTagEditorRequest() -> UInt64 {

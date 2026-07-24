@@ -162,28 +162,12 @@ extension TransferRegistryIO {
     }
 
     static func location(_ value: FileLocation) -> Location {
-        switch value.sourceID {
-        case .local:
-            .local(path: value.path.identifier)
-        case .remote(let accountID, let connectorID):
-            .remote(.init(
-                accountID: accountID,
-                connectorID: connectorID,
-                path: value.path
-            ))
-        }
+        value.location
     }
 }
 
 extension Location {
     var remotePath: RemotePath? {
-        switch self {
-        case .webDAV(_, let path):
-            .init(identifier: path, displayPath: path)
-        case .remote(let location):
-            location.path
-        case .local, .rclone:
-            nil
-        }
+        try? self.resolvedFileLocation.remoteLocation?.path
     }
 }

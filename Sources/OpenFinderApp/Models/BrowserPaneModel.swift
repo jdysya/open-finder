@@ -14,7 +14,7 @@ struct BrowserPaneListing {
     let listingCapabilities: FileListingCapabilities
     let providerRevision: String
     let items: [FileItem]
-    let remoteParent: RemotePath?
+    let parentLocation: Location?
 
     func retainingItemsWithoutParent() -> Self {
         .init(
@@ -22,7 +22,7 @@ struct BrowserPaneListing {
             listingCapabilities: listingCapabilities,
             providerRevision: providerRevision,
             items: items,
-            remoteParent: nil
+            parentLocation: nil
         )
     }
 }
@@ -157,7 +157,16 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     var remoteParent: RemotePath? {
-        fileSourceListing?.remoteParent
+        guard let parent = fileSourceListing?.parentLocation,
+              case .resolved(let location) = parent.fileLocation
+        else {
+            return nil
+        }
+        return location.remoteLocation?.path
+    }
+
+    var parentLocation: Location? {
+        fileSourceListing?.parentLocation
     }
 
     func hideListingParentWhileRefreshing() {

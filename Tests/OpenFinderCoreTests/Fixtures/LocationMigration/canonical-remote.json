@@ -1,0 +1,11 @@
+{
+  "type": "remote",
+  "remote": {
+    "accountID": "11111111-1111-1111-1111-111111111111",
+    "connectorID": "webdav",
+    "path": {
+      "identifier": "/Canonical",
+      "displayPath": "/Canonical"
+    }
+  }
+}

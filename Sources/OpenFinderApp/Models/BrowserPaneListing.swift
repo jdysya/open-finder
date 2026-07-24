@@ -5,66 +5,19 @@ extension BrowserPaneModel {
     func listItems(at location: Location) async throws -> BrowserPaneListing {
         let revision = await providerRevisionResolver(location)
         let source = try await fileSourceRegistry.resolve(location, revision: revision)
-        switch source.adapter {
-        case .local(let adapter):
-            let capabilities = FileListingCapabilities(
-                source: source.capabilities,
-                isReadable: true,
-                isWritable: true,
-                supportsTags: true
-            )
-            return .init(
-                locationCapabilities: source.capabilities,
-                listingCapabilities: capabilities,
-                providerRevision: revision,
-                items: try await adapter.provider.list(
-                    location,
-                    options: .init(
-                        showHiddenFiles: showHiddenFiles,
-                        sort: .name(ascending: true)
-                    )
-                ),
-                remoteParent: nil
-            )
-        case .remote(let adapter):
-            guard case .remote(let accountID, let connectorID) = source.location.sourceID else {
-                preconditionFailure("Remote adapter must have a remote source ID")
-            }
-            let listing = try await adapter.provider.list(directory: source.location.path)
-            let fileItems = listing.items.map { remoteItem in
-                FileItem(
-                    id: "remote:\(accountID.uuidString):\(remoteItem.remotePath.identifier)",
-                    name: remoteItem.name,
-                    location: .remote(.init(
-                        accountID: accountID,
-                        connectorID: connectorID,
-                        path: remoteItem.remotePath
-                    )),
-                    kind: remoteItem.kind,
-                    size: remoteItem.size,
-                    modificationDate: remoteItem.modificationDate,
-                    creationDate: nil,
-                    uti: nil,
-                    mimeType: remoteItem.mimeType,
-                    fileExtension: URL(fileURLWithPath: remoteItem.name).pathExtension.isEmpty
-                        ? nil
-                        : URL(fileURLWithPath: remoteItem.name).pathExtension.lowercased(),
-                    isHidden: remoteItem.name.hasPrefix("."),
-                    isReadable: remoteItem.isReadable,
-                    isWritable: remoteItem.isWritable,
-                    tags: remoteItem.tags,
-                    tagScopes: remoteItem.tagScopes,
-                    supportsTagEditing: remoteItem.supportsTagEditing
-                )
-            }
-            return .init(
-                locationCapabilities: source.capabilities,
-                listingCapabilities: source.effectiveCapabilities(for: listing.capabilities),
-                providerRevision: adapter.revision,
-                items: sortItems(fileItems),
-                remoteParent: listing.parent
-            )
-        }
+        let listing = try await source.list(options: .init(
+            showHiddenFiles: showHiddenFiles,
+            sort: .name(ascending: true)
+        ))
+        return .init(
+            locationCapabilities: source.capabilities,
+            listingCapabilities: listing.capabilities,
+            providerRevision: listing.providerRevision == "local"
+                ? revision
+                : listing.providerRevision,
+            items: sortItems(listing.items),
+            parentLocation: listing.parent
+        )
     }
 
     func refreshDirectorySizeCalculations(for listedItems: [FileItem]) {
@@ -118,16 +71,4 @@ extension BrowserPaneModel {
         }
     }
 
-    func uniqueName(base: String) -> String {
-        guard let root = location.localURL else { return base }
-        let ext = URL(fileURLWithPath: base).pathExtension
-        let stem = ext.isEmpty ? base : String(base.dropLast(ext.count + 1))
-        var candidate = base
-        var index = 2
-        while FileManager.default.fileExists(atPath: root.appendingPathComponent(candidate).path) {
-            candidate = ext.isEmpty ? "\(stem) \(index)" : "\(stem) \(index).\(ext)"
-            index += 1
-        }
-        return candidate
-    }
 }

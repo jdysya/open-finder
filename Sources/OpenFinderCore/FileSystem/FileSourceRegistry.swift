@@ -52,6 +52,15 @@ public enum FileSourceAdapter: Sendable {
         return resolvedConnectorID == connectorID
     }
 
+    public var providerRevision: String {
+        switch self {
+        case .local:
+            "local"
+        case .remote(let adapter):
+            adapter.revision
+        }
+    }
+
 }
 
 public struct ResolvedFileSource: Sendable {
@@ -128,6 +137,10 @@ public actor FileSourceRegistry {
         localAdapter = LocalFileSourceAdapter(provider: localProvider)
         self.remoteProviderRegistry = remoteProviderRegistry
         materializationService = MaterializationService(root: materializationRoot)
+    }
+
+    public nonisolated func normalizedLocation(_ location: Location) throws -> Location {
+        try location.resolvedFileLocation.location
     }
 
     public func resolve(

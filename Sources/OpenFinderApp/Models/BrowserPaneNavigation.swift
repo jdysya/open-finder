@@ -100,27 +100,8 @@ extension BrowserPaneModel {
     }
 
     func goUp() {
-        switch location {
-        case .local:
-            guard let url = location.localURL else { return }
-            let parent = url.deletingLastPathComponent()
-            Task { await navigate(to: .local(path: parent.path)) }
-        case .webDAV, .remote:
-            guard let remoteLocation = try? remoteLocation(for: location),
-                  let remoteParent
-            else {
-                return
-            }
-            Task {
-                await navigate(to: .remote(.init(
-                    accountID: remoteLocation.accountID,
-                    connectorID: remoteLocation.connectorID,
-                    path: remoteParent
-                )))
-            }
-        case .rclone:
-            break
-        }
+        guard let parentLocation else { return }
+        Task { await navigate(to: parentLocation) }
     }
 
     func toggleHidden() {

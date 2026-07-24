@@ -213,18 +213,7 @@ extension BrowserPaneModel {
             do {
                 try requireCapability(.createFolder, items: [])
                 let source = try await resolvedFileSource(for: location)
-                switch source.adapter {
-                case .local(let adapter):
-                    try await adapter.provider.createFolder(
-                        at: location,
-                        name: uniqueName(base: "New Folder")
-                    )
-                case .remote(let adapter):
-                    try await adapter.provider.createDirectory(
-                        in: source.location.path,
-                        named: "New Folder"
-                    )
-                }
+                try await source.createFolder(named: source.availableName("New Folder"))
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription
@@ -237,23 +226,7 @@ extension BrowserPaneModel {
             do {
                 try requireCapability(.createFile, items: [])
                 let source = try await resolvedFileSource(for: location)
-                switch source.adapter {
-                case .local(let adapter):
-                    try await adapter.provider.createFile(
-                        at: location,
-                        name: uniqueName(base: "Untitled.txt")
-                    )
-                case .remote(let adapter):
-                    let temp = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("OpenFinder-empty-\(UUID().uuidString).txt")
-                    FileManager.default.createFile(atPath: temp.path, contents: Data())
-                    defer { try? FileManager.default.removeItem(at: temp) }
-                    _ = try await adapter.provider.upload(
-                        localURL: temp,
-                        to: source.location.path,
-                        named: "Untitled.txt"
-                    )
-                }
+                try await source.createFile(named: source.availableName("Untitled.txt"))
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription
@@ -271,16 +244,7 @@ extension BrowserPaneModel {
                 guard itemSource.location.sourceID == destinationSource.location.sourceID else {
                     throw FileCapabilityUnsupportedReason.crossSource
                 }
-                switch itemSource.adapter {
-                case .local(let adapter):
-                    _ = try await adapter.provider.rename(item, to: newName)
-                case .remote(let adapter):
-                    try await adapter.provider.move(
-                        item: itemSource.location.path,
-                        to: destinationSource.location.path,
-                        named: newName
-                    )
-                }
+                try await itemSource.rename(item, to: newName, in: destinationSource)
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription
@@ -292,8 +256,10 @@ extension BrowserPaneModel {
         let selected = selectedItems
         guard !selected.isEmpty else { return }
         if selected.contains(where: { item in
-            if case .local = item.location { return false }
-            return true
+            guard case .resolved(let location) = item.location.fileLocation else {
+                return true
+            }
+            return location.sourceID.isRemote
         }) {
             pendingDeletion = PendingDeletion(items: selected)
             return
@@ -315,17 +281,15 @@ extension BrowserPaneModel {
         Task {
             do {
                 let operation: FileSourceOperation = selected.allSatisfy {
-                    if case .local = $0.location { true } else { false }
+                    guard case .resolved(let location) = $0.location.fileLocation else {
+                        return false
+                    }
+                    return !location.sourceID.isRemote
                 } ? .trash : .delete
                 try requireCapability(operation, items: selected)
                 for item in selected {
                     let source = try await resolvedFileSource(for: item.location)
-                    switch source.adapter {
-                    case .local(let adapter):
-                        try await adapter.provider.trashOrDelete([item])
-                    case .remote(let adapter):
-                        try await adapter.provider.delete(item: source.location.path)
-                    }
+                    try await source.delete(item)
                 }
                 await refresh()
             } catch {

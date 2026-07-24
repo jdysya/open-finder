@@ -23,7 +23,11 @@ let package = Package(
             dependencies: ["OpenFinderCore"],
             path: "Sources/OpenFinderApp"
         ),
-        .testTarget(name: "OpenFinderCoreTests", dependencies: ["OpenFinderCore"]),
+        .testTarget(
+            name: "OpenFinderCoreTests",
+            dependencies: ["OpenFinderCore"],
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "OpenFinderAppTests", dependencies: ["OpenFinderApp", "OpenFinderCore"])
     ]
 )
