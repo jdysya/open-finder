@@ -27,7 +27,7 @@ final class AppPluginPersistenceTests: XCTestCase {
         )
         let manifest = PluginManifest(
             schemaVersion: 2,
-            id: AppModel.videoAnalyzerPluginID,
+            id: "fixture.persistence",
             name: "Video Analyzer",
             version: "1.0.0",
             description: nil,

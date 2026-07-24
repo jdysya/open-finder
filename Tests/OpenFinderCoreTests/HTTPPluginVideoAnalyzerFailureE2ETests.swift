@@ -90,7 +90,9 @@ final class HTTPPluginVideoAnalyzerFailureE2ETests: XCTestCase {
             "useJoyTag": "false"
         ]
         let request = TaskRequest(
-            kind: .videoAnalysis, title: "Fixture analysis", resourceKey: "video-analysis"
+            kind: .plugin(pluginID: "fixture.video-analyzer", actionID: "analyze"),
+            title: "Fixture analysis",
+            resourceKey: "video-analysis"
         ) { context in
             try await active.run(context: context, config: preservedConfig, recorder: recorder)
         }

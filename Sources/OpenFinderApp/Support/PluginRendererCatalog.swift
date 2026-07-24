@@ -26,7 +26,11 @@ struct PluginRendererCatalog: Sendable {
     private let fallback = PluginRendererDescriptor(identifier: .unknown)
 
     init(entries: [Entry]) {
-        self.entries = Dictionary(uniqueKeysWithValues: entries.map { ($0.resultSchemaID, $0) })
+        var indexed: [String: Entry] = [:]
+        for entry in entries where indexed[entry.resultSchemaID] == nil {
+            indexed[entry.resultSchemaID] = entry
+        }
+        self.entries = indexed
     }
 
     func renderer(for projection: PluginResultProjection) -> PluginRendererDescriptor {

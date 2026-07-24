@@ -232,6 +232,12 @@ final class AppPluginRoutingTests: XCTestCase {
             ),
             directory: root
         )
+        let secretSaved = await app.setPluginSecret(
+            "fixture-token",
+            pluginID: plugin.id,
+            key: "serverToken"
+        )
+        XCTAssertTrue(secretSaved)
 
         app.runPlugin(plugin, action: plugin.manifest.actions[0], items: [], pane: app.leftPane)
         try await AppPluginFixture.waitUntil { !(await http.started()).isEmpty }
@@ -240,6 +246,9 @@ final class AppPluginRoutingTests: XCTestCase {
         app.cancelTask(taskID)
         try await AppPluginFixture.waitUntil {
             await app.taskQueue.record(for: taskID)?.status == .cancelled
+        }
+        try await AppPluginFixture.waitUntil {
+            await http.cancelled() == [taskID]
         }
 
         let cancelled = await http.cancelled()

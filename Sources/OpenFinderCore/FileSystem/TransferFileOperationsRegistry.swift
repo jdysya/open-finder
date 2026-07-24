@@ -1,6 +1,36 @@
 import Foundation
 
 public extension FileSourceRegistry {
+    func makeTransferEnvelope(
+        items: [FileItem],
+        source: Location,
+        destination: Location,
+        overwrite: TransferOverwritePolicy
+    ) async throws -> TransferTaskEnvelope {
+        let entries = items.map(TransferEntrySnapshot.init)
+        let draft = TransferTaskEnvelope(
+            entries: entries,
+            source: source,
+            destination: destination,
+            overwrite: overwrite
+        )
+        let operations = try await rebuildTransferOperations(for: draft)
+        var destinationSnapshots: [TransferEntrySnapshot?] = []
+        for entry in entries {
+            destinationSnapshots.append(try await operations.destinationSnapshot(
+                for: entry,
+                at: destination
+            ))
+        }
+        return TransferTaskEnvelope(
+            entries: entries,
+            source: source,
+            destination: destination,
+            overwrite: overwrite,
+            destinationSnapshots: destinationSnapshots
+        )
+    }
+
     func rebuildTransferOperations(
         for envelope: TransferTaskEnvelope
     ) async throws -> TransferFileOperations {

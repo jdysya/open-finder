@@ -9,9 +9,6 @@ enum PaneID: String {
 
 @MainActor
 final class AppModel: ObservableObject {
-    static let videoAnalyzerPluginID = "dev.openfinder.plugins.video-analyzer"
-    static let videoAnalyzerActionID = "analyze-video"
-    static let videoAnalyzerResourceKey = "video-analysis"
     static let videoAnalyzerVersion = "0.1.0"
 
     @Published var leftPane: BrowserPaneModel
@@ -27,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published var presentedVideoAnalysis: VideoAnalysisResult?
     @Published var presentedPluginResult: PluginResultProjection?
     @Published var pluginConnectionStatuses: [String: PluginConnectionStatus] = [:]
+    @Published var durableHandlerReadiness: AppDurableHandlerReadiness = .checking
     @Published var configuration = AppConfiguration() {
         didSet {
             runtimeConfigurationService.publish(configuration)
@@ -40,12 +38,17 @@ final class AppModel: ObservableObject {
     let pluginManagementService: PluginManagementService
     let remoteConnectorRegistry: RemoteConnectorRegistry
     let remoteProviderRegistry: RemoteProviderRegistry
+    let fileSourceRegistry: FileSourceRegistry
     let remoteProviderResolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider
     let videoAnalysisStore: VideoAnalysisResultStore
     let pluginRunnerRouter: PluginRunnerRouter
     let pluginExecutionCoordinator: PluginExecutionCoordinator
     let pluginWorkspaceMaintenance: PluginWorkspaceMaintenance
+    let pluginRendererCatalog: PluginRendererCatalog
     let configurableProcessRunner: ConfigurableProcessPluginRunner?
+    let pluginTaskResolver: AppPluginTaskResolver
+    let pluginResultProjections: PluginResultProjectionBox
+    var durableReadinessTask: Task<Result<Void, any Error>, Never>?
     var taskPollingTask: Task<Void, Never>?
     var didLoadInitialState = false
 
@@ -61,6 +64,10 @@ final class AppModel: ObservableObject {
         pluginRunnerRouter: PluginRunnerRouter? = nil,
         pluginConnectionChecker: (any PluginConnectionChecking)? = nil,
         pluginWorkspaceMaintenance: PluginWorkspaceMaintenance = .live(),
+        pluginResultHandlers: [PluginResultHandler] = [
+            PluginResultHandlerRegistry.mediaAnalysis
+        ],
+        pluginRendererEntries: [PluginRendererCatalog.Entry] = [.mediaAnalysis],
         startAutomatically: Bool = true
     ) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -101,6 +108,7 @@ final class AppModel: ObservableObject {
         let fileSourceRegistry = FileSourceRegistry(
             remoteProviderRegistry: configuredProviderRegistry
         )
+        self.fileSourceRegistry = fileSourceRegistry
         let resolver: @Sendable (RemoteLocation) async throws -> any RemoteProvider = { location in
             try await configuredProviderRegistry.resolve(
                 accountID: location.accountID.uuidString,
@@ -127,15 +135,25 @@ final class AppModel: ObservableObject {
         self.pluginRunnerRouter = configuredRunner
         configurationService.attach(processRunner: configurableProcessRunner)
         let configuredConnectionChecker = pluginService.connectionChecking
-        self.pluginExecutionCoordinator = PluginExecutionCoordinator(
+        let resultHandlerRegistry = (try? PluginResultHandlerRegistry(
+            handlers: pluginResultHandlers
+        )) ?? .standard
+        let coordinator = PluginExecutionCoordinator(
             runner: configuredRunner,
             connectionChecker: configuredConnectionChecker,
             credentialResolver: pluginCredentialResolver,
+            resultHandlers: resultHandlerRegistry,
             workspaceMaintenance: .init { workspace in
                 try pluginWorkspaceMaintenance.cleanup(.init(executionWorkspace: workspace))
             }
         )
+        self.pluginExecutionCoordinator = coordinator
         self.pluginWorkspaceMaintenance = pluginWorkspaceMaintenance
+        let taskResolver = AppPluginTaskResolver()
+        pluginTaskResolver = taskResolver
+        let resultProjections = PluginResultProjectionBox()
+        pluginResultProjections = resultProjections
+        pluginRendererCatalog = PluginRendererCatalog(entries: pluginRendererEntries)
         leftPane = BrowserPaneModel(
             id: .left,
             location: .local(path: home.path),
@@ -148,6 +166,75 @@ final class AppModel: ObservableObject {
             remoteProviderResolver: resolver,
             fileSourceRegistry: fileSourceRegistry
         )
+        let transferCoordinator = TransferCoordinator()
+        let registrations = [
+            AppDurableHandlerComposition.TaskRegistration(
+                handler: PluginExecuteTaskHandler(
+                    pluginResolver: PluginTaskPluginResolver { pluginID, pluginVersion in
+                        try await taskResolver.resolve(
+                            pluginID: pluginID,
+                            pluginVersion: pluginVersion
+                        )
+                    },
+                    credentialResolver: pluginCredentialResolver,
+                    coordinator: coordinator,
+                    publish: { taskID, projection in
+                        await resultProjections.store(projection, for: taskID)
+                    },
+                    cleanupWarning: { events in
+                        _ = await events.appendLog(
+                            PluginWorkspaceMaintenance.cleanupWarning,
+                            level: "warning"
+                        )
+                    }
+                ).taskHandler,
+                dependencies: [
+                    .pluginResolver,
+                    .credentialResolver,
+                    .pluginExecutionCoordinator,
+                ]
+            ),
+            AppDurableHandlerComposition.TaskRegistration(
+                handler: TransferCopyTaskHandler(
+                    fileSources: fileSourceRegistry,
+                    coordinator: transferCoordinator
+                ).taskHandler,
+                dependencies: [.fileSourceRegistry, .transferCoordinator]
+            ),
+            AppDurableHandlerComposition.TaskRegistration(
+                handler: TransferMoveTaskHandler(
+                    fileSources: fileSourceRegistry,
+                    coordinator: transferCoordinator
+                ).taskHandler,
+                dependencies: [.fileSourceRegistry, .transferCoordinator]
+            ),
+        ]
+        let compositionResult = Result {
+            try AppDurableHandlerComposition(
+                taskRegistrations: registrations,
+                resultHandlers: pluginResultHandlers,
+                rendererEntries: pluginRendererEntries
+            )
+        }
+        durableReadinessTask = Task {
+            do {
+                let composition = try compositionResult.get()
+                let registry = try await composition.makeTaskHandlerRegistry()
+                try await configuredTaskQueue.installHandlerRegistry(registry)
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        Task { [weak self] in
+            guard let result = await self?.durableReadinessTask?.value else { return }
+            switch result {
+            case .success:
+                self?.durableHandlerReadiness = .ready
+            case .failure(let error):
+                self?.durableHandlerReadiness = .unavailable(error.localizedDescription)
+            }
+        }
         if startAutomatically {
             Task { await loadInitialState() }
             startTaskPolling()

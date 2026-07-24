@@ -50,7 +50,6 @@ actor BlockingPluginRunner: PluginRunner {
         do {
             while true { try await Task.sleep(for: .seconds(1)) }
         } catch is CancellationError {
-            cancelledIDs.append(request.input.taskID)
             throw CancellationError()
         }
     }

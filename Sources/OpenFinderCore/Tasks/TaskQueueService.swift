@@ -75,8 +75,9 @@ public actor TaskQueueService {
     private var effectsCommittedTasks: Set<UUID> = []
     private var runningResourceKeys: Set<String> = []
     private var maxConcurrentTasks: Int
-    private let handlerRegistry: TaskHandlerRegistry?
+    private var handlerRegistry: TaskHandlerRegistry?
     private let store: (any TaskStore)?
+    private var nextReservedQueueOrdinal: UInt64 = 1
 
     public init(
         maxConcurrentTasks: Int = 2,
@@ -94,6 +95,21 @@ public actor TaskQueueService {
     }
 
     public func currentMaxConcurrentTasks() -> Int { maxConcurrentTasks }
+
+    public func installHandlerRegistry(_ registry: TaskHandlerRegistry) throws {
+        guard handlerRegistry == nil else {
+            throw TaskHandlerRegistryError.handlerUnavailable(
+                "A durable task handler registry is already installed"
+            )
+        }
+        handlerRegistry = registry
+    }
+
+    public func reserveQueueOrdinal() -> UInt64 {
+        let reserved = nextReservedQueueOrdinal
+        nextReservedQueueOrdinal &+= 1
+        return reserved
+    }
 
     @discardableResult
     public func enqueue(_ request: TaskRequest) async throws -> UUID {
@@ -114,6 +130,9 @@ public actor TaskQueueService {
             inputSummary: request.inputSummary,
             descriptor: request.descriptor
         )
+        if let ordinal = request.descriptor?.queueOrdinal {
+            nextReservedQueueOrdinal = max(nextReservedQueueOrdinal, ordinal &+ 1)
+        }
         if persist, let descriptor = request.descriptor, let store {
             try await store.enqueue(descriptor: descriptor, record: record)
         }
@@ -509,7 +528,6 @@ public actor TaskQueueService {
     }
 
     private func nextQueueOrdinal() -> UInt64 {
-        let maximum = requests.values.compactMap(\.descriptor?.queueOrdinal).max() ?? 0
-        return maximum &+ 1
+        reserveQueueOrdinal()
     }
 }

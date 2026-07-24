@@ -27,26 +27,14 @@ extension AppModel {
                     path: urls[0].deletingLastPathComponent().path
                 )
                 let title = "Copy dropped \(items.count) item(s)"
-                let transferID = UUID()
-                let queuedID = try await taskQueue.enqueue(.init(
-                    kind: .localCopy,
+                let queuedID = try await submitTransfer(
+                    items,
+                    source: sourceLocation,
+                    destination: destinationLocation,
+                    move: false,
+                    overwriteExisting: false,
                     title: title
-                ) { context in
-                    await context.appendLog("\(title) to \(destinationLocation.displayPath)")
-                    try await FileTransferService.copyOrMove(
-                        items,
-                        from: sourceLocation,
-                        to: destinationLocation,
-                        move: false,
-                        taskID: transferID,
-                        remoteProviderResolver: self.remoteProviderResolver,
-                        progress: { fraction, message in
-                            await context.updateProgress(fraction, message)
-                        }
-                    )
-                    await context.updateProgress(1.0, "Finished")
-                    return .success(summary: title, clipboard: nil)
-                })
+                )
                 await observeTask(queuedID)
                 await pane.refresh()
             } catch {
@@ -138,27 +126,14 @@ extension AppModel {
                 let title = move
                     ? "Move \(selected.count) item(s)"
                     : "Copy \(selected.count) item(s)"
-                let transferID = UUID()
-                let queuedID = try await taskQueue.enqueue(.init(
-                    kind: move ? .localMove : .localCopy,
+                let queuedID = try await submitTransfer(
+                    selected,
+                    source: sourceLocation,
+                    destination: destinationLocation,
+                    move: move,
+                    overwriteExisting: overwriteExisting,
                     title: title
-                ) { context in
-                    await context.appendLog("\(title) to \(destinationLocation.displayPath)")
-                    try await FileTransferService.copyOrMove(
-                        selected,
-                        from: sourceLocation,
-                        to: destinationLocation,
-                        move: move,
-                        overwriteExisting: overwriteExisting,
-                        taskID: transferID,
-                        remoteProviderResolver: self.remoteProviderResolver,
-                        progress: { fraction, message in
-                            await context.updateProgress(fraction, message)
-                        }
-                    )
-                    await context.updateProgress(1.0, "Finished")
-                    return .success(summary: title, clipboard: nil)
-                })
+                )
                 await observeTask(queuedID)
                 await browser(for: sourcePaneID).refresh()
                 await browser(for: destinationPaneID).refresh()
@@ -166,6 +141,38 @@ extension AppModel {
                 statusMessage = error.localizedDescription
             }
         }
+    }
+
+    private func submitTransfer(
+        _ items: [FileItem],
+        source: Location,
+        destination: Location,
+        move: Bool,
+        overwriteExisting: Bool,
+        title: String
+    ) async throws -> UUID {
+        try await requireDurableHandlerReadiness()
+        let taskID = UUID()
+        let handlerID: DurableTaskHandlerID = move ? .transferMove : .transferCopy
+        let envelope = try await fileSourceRegistry.makeTransferEnvelope(
+            items: items,
+            source: source,
+            destination: destination,
+            overwrite: overwriteExisting ? .replaceExisting : .rejectExisting
+        )
+        let descriptor = try envelope.makeDescriptor(
+            taskID: taskID,
+            handlerID: handlerID,
+            resourceKey: "transfer:\(destination.displayPath)",
+            idempotencyKey: "\(handlerID.rawValue):\(taskID.uuidString)",
+            lineage: .init(rootTaskID: taskID),
+            queueOrdinal: await taskQueue.reserveQueueOrdinal()
+        )
+        return try await taskQueue.enqueue(.init(
+            kind: move ? .localMove : .localCopy,
+            title: title,
+            descriptor: descriptor
+        ))
     }
 
     private func preflightTransfer(

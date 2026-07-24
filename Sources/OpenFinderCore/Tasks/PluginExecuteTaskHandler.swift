@@ -45,15 +45,24 @@ public struct PluginExecuteTaskHandler: Sendable {
     private let pluginResolver: PluginTaskPluginResolver
     private let credentialResolver: PluginCredentialResolver
     private let coordinator: PluginExecutionCoordinator
+    private let publish: @Sendable (UUID, PluginResultProjection) async throws -> Void
+    private let cleanupWarning: @Sendable (TaskEventSink) async -> Void
 
     public init(
         pluginResolver: PluginTaskPluginResolver,
         credentialResolver: PluginCredentialResolver,
-        coordinator: PluginExecutionCoordinator
+        coordinator: PluginExecutionCoordinator,
+        publish: @escaping @Sendable (
+            UUID,
+            PluginResultProjection
+        ) async throws -> Void = { _, _ in },
+        cleanupWarning: @escaping @Sendable (TaskEventSink) async -> Void = { _ in }
     ) {
         self.pluginResolver = pluginResolver
         self.credentialResolver = credentialResolver
         self.coordinator = coordinator
+        self.publish = publish
+        self.cleanupWarning = cleanupWarning
     }
 
     public var taskHandler: TaskHandler {
@@ -99,8 +108,9 @@ public struct PluginExecuteTaskHandler: Sendable {
                 "plugin action \(payload.pluginID)/\(payload.actionID)"
             )
         }
-        guard action.output?.resultSchemaID == payload.resultSchemaID,
-              action.output?.canCopyToClipboard == payload.outputPolicy.canCopyToClipboard else {
+        guard action.output?.resultSchemaID ?? "unknown" == payload.resultSchemaID,
+              action.output?.canCopyToClipboard ?? false
+                == payload.outputPolicy.canCopyToClipboard else {
             throw TaskHandlerRegistryError.handlerUnavailable(
                 "plugin action snapshot \(payload.pluginID)/\(payload.actionID)"
             )
@@ -125,7 +135,10 @@ public struct PluginExecuteTaskHandler: Sendable {
         let outcome: PluginExecutionOutcome
         do {
             outcome = try await withTaskCancellationHandler {
-                try await coordinator.execute(request, callbacks: callbacks(events: events))
+                try await coordinator.execute(
+                    request,
+                    callbacks: callbacks(taskID: descriptor.taskID, events: events)
+                )
             } onCancel: {
                 Task { await coordinator.cancel(taskID: descriptor.taskID) }
             }
@@ -195,23 +208,38 @@ public struct PluginExecuteTaskHandler: Sendable {
         }
     }
 
-    private func callbacks(events: TaskEventSink) -> PluginExecutionCallbacks {
-        PluginExecutionCallbacks(onEvent: { event in
-            switch event {
-            case .progress(let progress):
-                Task {
-                    _ = await events.updateProgress(.init(
-                        fraction: progress.fraction,
-                        phase: progress.phase,
-                        detail: progress.message,
-                        completed: progress.completed,
-                        total: progress.total,
-                        unit: progress.unit
-                    ))
+    private func callbacks(
+        taskID: UUID,
+        events: TaskEventSink
+    ) -> PluginExecutionCallbacks {
+        PluginExecutionCallbacks(
+            onEvent: { event in
+                switch event {
+                case .progress(let progress):
+                    Task {
+                        _ = await events.updateProgress(.init(
+                            fraction: progress.fraction,
+                            phase: progress.phase,
+                            detail: progress.message,
+                            completed: progress.completed,
+                            total: progress.total,
+                            unit: progress.unit
+                        ))
+                    }
+                case .log(let level, let message):
+                    Task { _ = await events.appendLog(message, level: level) }
+                case .result(_, let message, _, _):
+                    if let message {
+                        Task { _ = await events.appendLog(message) }
+                    }
                 }
-            case .log, .result:
-                break
+            },
+            publish: { projection in
+                try await publish(taskID, projection)
+            },
+            cleanupWarning: {
+                await cleanupWarning(events)
             }
-        })
+        )
     }
 }

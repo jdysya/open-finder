@@ -122,7 +122,7 @@ final class AppPluginWorkspaceLifetimeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: PluginWorkspace.makeHTTP(taskID: record.id).taskRoot) }
 
         XCTAssertEqual(record.status, .failed)
-        XCTAssertEqual(record.errorMessage, "fixture failure")
+        XCTAssertEqual(record.errorMessage, "Plugin execution failed.")
         await assertSanitizedCleanupWarning(for: record.id, in: fixture.app)
     }
 
@@ -152,11 +152,20 @@ final class AppPluginWorkspaceLifetimeTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppPluginWorkspace\(name)-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let keychain = InMemoryKeychainStore()
+        try keychain.setSecret(
+            "fixture-token",
+            for: PluginCredentialReference.keychain(
+                pluginID: "fixture.http",
+                key: "serverToken"
+            )
+        )
         let app = AppPluginFixture.app(
             root: root,
             process: RecordingPluginRunner(),
             http: runner,
             checker: checker,
+            keychain: keychain,
             workspaceMaintenance: maintenance
         )
         let plugin = LoadedPlugin(

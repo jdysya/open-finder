@@ -15,6 +15,7 @@ extension AppModel {
         ] + (bundledPlugins.map { [($0, .builtIn)] } ?? [])
         let catalog = pluginManagementService.scan(locations: locations)
         loadedPlugins = catalog.loaded
+        Task { await pluginTaskResolver.register(catalog.loaded) }
         pluginLoadDiagnostics = catalog.diagnostics
         statusMessage = catalog.diagnostics.isEmpty
             ? "Loaded \(catalog.loaded.count) plugins"

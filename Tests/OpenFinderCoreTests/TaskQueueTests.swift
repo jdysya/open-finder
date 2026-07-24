@@ -25,7 +25,7 @@ final class TaskQueueTests: XCTestCase {
 
     func testStructuredProgressPreservesPhaseAndUnitCounts() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 1)
-        let id = try await queue.enqueue(.init(kind: .videoAnalysis, title: "Analyze") { context in
+        let id = try await queue.enqueue(.init(kind: .localCopy, title: "Analyze") { context in
             await context.updateProgress(.init(
                 fraction: 0.625,
                 phase: "JoyTag analysis",
@@ -65,7 +65,7 @@ final class TaskQueueTests: XCTestCase {
 
     func testStructuredProgressLogsOnlyWhenPhaseChanges() async throws {
         let queue = TaskQueueService(maxConcurrentTasks: 1)
-        let id = try await queue.enqueue(.init(kind: .videoAnalysis, title: "Analyze") { context in
+        let id = try await queue.enqueue(.init(kind: .localCopy, title: "Analyze") { context in
             await context.updateProgress(.init(fraction: 0.1, phase: "Extract", detail: "Starting"))
             await context.updateProgress(.init(fraction: 0.2, phase: "Extract", detail: "Frame 2"))
             await context.updateProgress(.init(fraction: 0.3, phase: "Tag", detail: "Starting"))
@@ -163,7 +163,7 @@ final class TaskQueueTests: XCTestCase {
         let queue = TaskQueueService(maxConcurrentTasks: 2)
         let gate = AnalysisResourceGate()
         let firstID = try await queue.enqueue(.init(
-            kind: .videoAnalysis,
+            kind: .localCopy,
             title: "Analysis 1",
             resourceKey: "video-analysis"
         ) { _ in
@@ -173,7 +173,7 @@ final class TaskQueueTests: XCTestCase {
         await gate.waitForEntrants(1)
 
         let secondID = try await queue.enqueue(.init(
-            kind: .videoAnalysis,
+            kind: .localCopy,
             title: "Analysis 2",
             resourceKey: "video-analysis"
         ) { _ in
@@ -233,7 +233,7 @@ final class TaskQueueTests: XCTestCase {
         let queue = TaskQueueService(maxConcurrentTasks: 2)
         let gate = AnalysisResourceGate()
         let firstID = try await queue.enqueue(.init(
-            kind: .videoAnalysis,
+            kind: .localCopy,
             title: "Analysis 1",
             resourceKey: "video-analysis"
         ) { _ in
@@ -242,7 +242,7 @@ final class TaskQueueTests: XCTestCase {
         })
         await gate.waitForEntrants(1)
         let secondID = try await queue.enqueue(.init(
-            kind: .videoAnalysis,
+            kind: .localCopy,
             title: "Analysis 2",
             resourceKey: "video-analysis"
         ) { _ in

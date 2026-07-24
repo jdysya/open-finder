@@ -19,63 +19,47 @@ extension AppModel {
                 }
                 let currentLocation = pane.location
                 let paneID = pane.id.rawValue
-                let resultBox = PluginResultProjectionBox()
-                let coordinator = pluginExecutionCoordinator
                 let configurationValues = configuration.pluginConfigurationValues[plugin.id] ?? [:]
                 let secretReferences = configuredPluginSecretReferences(for: plugin.manifest)
+                try await requireDurableHandlerReadiness()
+                await pluginTaskResolver.register(plugin)
+                let taskID = UUID()
+                let resultSchemaID = action.output?.resultSchemaID ?? "unknown"
+                let envelope = PluginTaskEnvelope(
+                    pluginID: plugin.id,
+                    pluginVersion: plugin.manifest.version,
+                    actionID: action.id,
+                    resultSchemaID: resultSchemaID,
+                    outputPolicy: .init(
+                        canCopyToClipboard: action.output?.canCopyToClipboard ?? false
+                    ),
+                    app: .init(name: "OpenFinder", version: "0.1.0"),
+                    context: .init(
+                        activePane: paneID,
+                        currentLocation: currentLocation
+                    ),
+                    inputs: items.map(PluginTaskInputSnapshot.init),
+                    configuration: configurationValues,
+                    secretReferences: secretReferences,
+                    workspacePolicy: .taskScopedTemporary
+                )
+                let resourceKey = action.output?.resultSchemaID
+                    ?? "plugin:\(plugin.id):\(action.id)"
+                let descriptor = try envelope.makeDescriptor(
+                    taskID: taskID,
+                    resourceKey: resourceKey,
+                    idempotencyKey: "plugin:\(plugin.id):\(action.id):\(taskID.uuidString)",
+                    lineage: .init(rootTaskID: taskID),
+                    queueOrdinal: await taskQueue.reserveQueueOrdinal()
+                )
                 let queuedID = try await taskQueue.enqueue(.init(
                     kind: .plugin(pluginID: plugin.id, actionID: action.id),
                     title: "\(plugin.manifest.name): \(action.title)",
-                    resourceKey: action.output?.resultSchemaID
-                ) { context in
-                    await context.appendLog(
-                        "Starting plugin \(plugin.manifest.name) / \(action.title)"
-                    )
-                    let outcome = try await coordinator.execute(.init(
-                        plugin: plugin,
-                        pluginVersion: plugin.manifest.version,
-                        action: action,
-                        taskID: context.id,
-                        app: .init(name: "OpenFinder", version: "0.1.0"),
-                        context: .init(activePane: paneID, currentLocation: currentLocation),
-                        files: items.map(PluginInputFile.init(item:)),
-                        configurationValues: configurationValues,
-                        secretReferences: secretReferences
-                    ), callbacks: .init(
-                        onEvent: { event in
-                            Task {
-                                switch event {
-                                case .log(let level, let message):
-                                    await context.appendLog(message, level: level)
-                                case .progress(let progress):
-                                    await context.updateProgress(.init(
-                                        fraction: progress.fraction,
-                                        phase: progress.phase,
-                                        detail: progress.message,
-                                        completed: progress.completed,
-                                        total: progress.total,
-                                        unit: progress.unit
-                                    ))
-                                case .result(_, let message, _, _):
-                                    if let message { await context.appendLog(message) }
-                                }
-                            }
-                        },
-                        publish: { projection in
-                            await resultBox.store(projection)
-                        },
-                        cleanupWarning: {
-                            await context.appendLog(
-                                PluginWorkspaceMaintenance.cleanupWarning,
-                                level: "warning"
-                            )
-                        }
-                    ))
-                    return .success(summary: outcome.summary, clipboard: outcome.clipboard)
-                })
+                    descriptor: descriptor
+                ))
                 statusMessage = "Queued plugin task \(queuedID.uuidString.prefix(8))"
                 await observeTask(queuedID)
-                if let projection = await resultBox.value {
+                if let projection = await pluginResultProjections.take(for: queuedID) {
                     presentedPluginResult = projection
                     presentedVideoAnalysis = nil
                 }
@@ -85,4 +69,19 @@ extension AppModel {
         }
     }
 
+    func requireDurableHandlerReadiness() async throws {
+        guard let result = await durableReadinessTask?.value else {
+            throw AppDurableHandlerCompositionError.missingTaskHandler(.init(
+                handlerID: DurableTaskHandlerID.pluginExecute.rawValue,
+                payloadVersion: 1
+            ))
+        }
+        do {
+            try result.get()
+            durableHandlerReadiness = .ready
+        } catch {
+            durableHandlerReadiness = .unavailable(error.localizedDescription)
+            throw error
+        }
+    }
 }
