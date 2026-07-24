@@ -237,6 +237,9 @@ public struct PluginExecuteTaskHandler: Sendable {
             publish: { projection in
                 try await publish(taskID, projection)
             },
+            markEffectsCommitted: {
+                try await events.markEffectsCommitted()
+            },
             cleanupWarning: {
                 await cleanupWarning(events)
             }

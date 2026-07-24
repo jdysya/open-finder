@@ -85,6 +85,7 @@ final class ApplicationServices {
             ?? LocalPluginCredentialStore()
 
         var openedTaskStore: (any TaskStore)?
+        var openedDatabase: AppDatabase?
         var taskDatabaseOpenError: (any Error)?
         if let taskDatabaseURL = dependencies.taskDatabaseURL {
             do {
@@ -92,9 +93,9 @@ final class ApplicationServices {
                     at: taskDatabaseURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                openedTaskStore = GRDBTaskStore(
-                    database: try AppDatabase(url: taskDatabaseURL)
-                )
+                let database = try AppDatabase(url: taskDatabaseURL)
+                openedDatabase = database
+                openedTaskStore = GRDBTaskStore(database: database)
             } catch {
                 taskDatabaseOpenError = error
             }
@@ -159,6 +160,37 @@ final class ApplicationServices {
             configurableProcessRunner = processRunner
         }
         configurationService.attach(processRunner: configurableProcessRunner)
+        let configuredArtifactResults: ArtifactResultService?
+        if let injectedArtifactResults = dependencies.artifactResultService {
+            configuredArtifactResults = injectedArtifactResults
+        } else {
+            let metadata: any ArtifactMetadataBackend = openedDatabase.map {
+                GRDBArtifactMetadataBackend(database: $0)
+            } ?? InMemoryArtifactMetadataBackend()
+            let root = dependencies.supportDirectory.appendingPathComponent(
+                "artifacts",
+                isDirectory: true
+            )
+            configuredArtifactResults = try? ArtifactResultService(
+                store: ArtifactStore(root: root, metadata: metadata),
+                metadata: metadata
+            )
+        }
+        artifactResults = configuredArtifactResults
+        let artifactCommit = configuredArtifactResults.map { artifactResults in
+            PluginExecutionArtifactCommit { context, workspace, markEffectsCommitted in
+                try await artifactResults.commit(
+                    context,
+                    workspace: workspace,
+                    markEffectsCommitted: markEffectsCommitted,
+                    cleanupWorkspace: {
+                        try dependencies.pluginWorkspaceMaintenance.cleanup(
+                            .init(executionWorkspace: workspace)
+                        )
+                    }
+                )
+            }
+        } ?? .passthrough
         executionCoordinator = PluginExecutionCoordinator(
             runner: configuredRunner,
             connectionChecker: pluginService.connectionChecking,
@@ -166,25 +198,13 @@ final class ApplicationServices {
             resultHandlers: (try? PluginResultHandlerRegistry(
                 handlers: dependencies.pluginResultHandlers
             )) ?? .standard,
+            artifactCommit: artifactCommit,
             workspaceMaintenance: .init { workspace in
                 try dependencies.pluginWorkspaceMaintenance.cleanup(
                     .init(executionWorkspace: workspace)
                 )
             }
         )
-        if let injectedArtifactResults = dependencies.artifactResultService {
-            artifactResults = injectedArtifactResults
-        } else {
-            let metadata = InMemoryArtifactMetadataBackend()
-            let root = dependencies.supportDirectory.appendingPathComponent(
-                "artifacts",
-                isDirectory: true
-            )
-            artifactResults = try? ArtifactResultService(
-                store: ArtifactStore(root: root, metadata: metadata),
-                metadata: metadata
-            )
-        }
 
         let pluginResolver = AppPluginTaskResolver()
         self.pluginResolver = pluginResolver

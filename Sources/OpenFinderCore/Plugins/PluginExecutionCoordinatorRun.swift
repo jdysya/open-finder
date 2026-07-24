@@ -40,7 +40,11 @@ extension PluginExecutionCoordinator {
             events: result.events,
             outputDirectory: workspace.outputDirectory
         )
-        let committed = try await artifactCommit.commit(context, workspace: workspace)
+        let committed = try await artifactCommit.commit(
+            context,
+            workspace: workspace,
+            markEffectsCommitted: callbacks.markEffectsCommitted
+        )
         let projection = try await resultHandlers.handle(committed)
         try await callbacks.publish(projection)
         return .init(

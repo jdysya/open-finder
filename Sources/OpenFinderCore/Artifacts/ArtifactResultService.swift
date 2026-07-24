@@ -68,6 +68,62 @@ public actor ArtifactResultService {
         )
     }
 
+    public func commit(
+        _ context: PluginResultHandlingContext,
+        workspace: PluginExecutionWorkspace,
+        markEffectsCommitted: @escaping ArtifactCommitCoordinator.CommitEffects,
+        cleanupWorkspace: @escaping ArtifactCommitCoordinator.CleanupWorkspace
+    ) async throws -> PluginResultHandlingContext {
+        let fileArtifacts = context.events.flatMap { event -> [PluginFileArtifact] in
+            guard case .result(_, _, _, let artifacts) = event else { return [] }
+            return artifacts.compactMap(\.file)
+        }
+        guard !fileArtifacts.isEmpty else { return context }
+        let records = try await commit(
+            taskID: context.taskID,
+            schemaID: context.resultSchemaID,
+            artifacts: fileArtifacts,
+            from: ConfinedArtifactReader(root: workspace.outputDirectory),
+            markEffectsCommitted: markEffectsCommitted,
+            cleanupWorkspace: cleanupWorkspace
+        )
+        var recordIndex = 0
+        let events = context.events.map { event in
+            guard case .result(let status, let message, let clipboard, let artifacts) = event else {
+                return event
+            }
+            let committedArtifacts = artifacts.map { artifact in
+                guard artifact.file != nil else { return artifact }
+                let record = records[recordIndex]
+                recordIndex += 1
+                return PluginArtifact(
+                    type: artifact.type,
+                    file: .init(
+                        relativePath: record.relativePath,
+                        mediaType: record.mediaType,
+                        byteCount: record.byteCount,
+                        sha256: record.sha256
+                    )
+                )
+            }
+            return .result(
+                status: status,
+                message: message,
+                clipboard: clipboard,
+                artifacts: committedArtifacts
+            )
+        }
+        return PluginResultHandlingContext(
+            resultSchemaID: context.resultSchemaID,
+            pluginID: context.pluginID,
+            pluginVersion: context.pluginVersion,
+            actionID: context.actionID,
+            taskID: context.taskID,
+            events: events,
+            outputDirectory: store.root
+        )
+    }
+
     private func committedRecord(id: UUID) async throws -> ArtifactRecord {
         guard let record = await metadata.record(id: id) else {
             throw ArtifactResultServiceError.artifactNotFound(id)

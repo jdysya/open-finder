@@ -69,15 +69,18 @@ public struct PluginExecutionRequest: Sendable {
 public struct PluginExecutionCallbacks: Sendable {
     public let onEvent: @Sendable (PluginOutputEvent) -> Void
     public let publish: @Sendable (PluginResultProjection) async throws -> Void
+    public let markEffectsCommitted: @Sendable () async throws -> Void
     public let cleanupWarning: @Sendable () async -> Void
 
     public init(
         onEvent: @escaping @Sendable (PluginOutputEvent) -> Void = { _ in },
         publish: @escaping @Sendable (PluginResultProjection) async throws -> Void = { _ in },
+        markEffectsCommitted: @escaping @Sendable () async throws -> Void = {},
         cleanupWarning: @escaping @Sendable () async -> Void = {}
     ) {
         self.onEvent = onEvent
         self.publish = publish
+        self.markEffectsCommitted = markEffectsCommitted
         self.cleanupWarning = cleanupWarning
     }
 }
@@ -97,7 +100,8 @@ public struct PluginExecutionOutcome: Sendable {
 public struct PluginExecutionArtifactCommit: Sendable {
     public typealias Operation = @Sendable (
         PluginResultHandlingContext,
-        PluginExecutionWorkspace
+        PluginExecutionWorkspace,
+        @escaping ArtifactCommitCoordinator.CommitEffects
     ) async throws -> PluginResultHandlingContext
 
     private let operation: Operation
@@ -108,12 +112,13 @@ public struct PluginExecutionArtifactCommit: Sendable {
 
     public func commit(
         _ context: PluginResultHandlingContext,
-        workspace: PluginExecutionWorkspace
+        workspace: PluginExecutionWorkspace,
+        markEffectsCommitted: @escaping ArtifactCommitCoordinator.CommitEffects
     ) async throws -> PluginResultHandlingContext {
-        try await operation(context, workspace)
+        try await operation(context, workspace, markEffectsCommitted)
     }
 
-    public static let passthrough = PluginExecutionArtifactCommit { context, _ in context }
+    public static let passthrough = PluginExecutionArtifactCommit { context, _, _ in context }
 }
 
 public struct PluginExecutionCoordinator: Sendable {

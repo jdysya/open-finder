@@ -130,13 +130,16 @@ enum AppPluginFixture {
         checker: any PluginConnectionChecking = StubPluginConnectionChecker.ready,
         keychain: any KeychainStore = InMemoryKeychainStore(),
         localCredentialStore: LocalPluginCredentialStore? = nil,
-        workspaceMaintenance: PluginWorkspaceMaintenance = .live()
+        workspaceMaintenance: PluginWorkspaceMaintenance = .live(),
+        taskDatabaseURL: URL? = nil
     ) -> AppModel {
         AppModel(
+            supportDirectory: root,
             remoteDirectory: RemoteAccountDirectory(storageURL: root.appendingPathComponent("accounts.json")),
             configurationStore: JSONConfigStore(url: root.appendingPathComponent("config.json")),
             keychainStore: keychain,
             localPluginCredentialStore: localCredentialStore,
+            taskDatabaseURL: taskDatabaseURL,
             pluginRunnerRouter: PluginRunnerRouter(processRunner: process, httpRunner: http),
             pluginConnectionChecker: checker,
             pluginWorkspaceMaintenance: workspaceMaintenance,

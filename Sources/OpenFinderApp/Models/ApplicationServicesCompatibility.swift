@@ -4,6 +4,7 @@ import OpenFinderCore
 @MainActor
 extension AppModel {
     convenience init(
+        supportDirectory: URL = ApplicationServices.applicationSupportDirectory(),
         remoteDirectory: RemoteAccountDirectory? = nil,
         configurationStore: (any AppConfigurationStore)? = nil,
         keychainStore: (any KeychainStore)? = nil,
@@ -24,6 +25,7 @@ extension AppModel {
     ) {
         self.init(
             services: ApplicationServices(dependencies: .init(
+                supportDirectory: supportDirectory,
                 remoteDirectory: remoteDirectory,
                 configurationStore: configurationStore,
                 keychainStore: keychainStore,
