@@ -345,7 +345,7 @@ public actor TaskQueueService {
 
     private func registryReason(for error: TaskHandlerRegistryError) -> TaskStatusReasonCode {
         switch error {
-        case .duplicateRegistration:
+        case .duplicateRegistration, .handlerUnavailable:
             .handlerUnavailable
         case .unknownHandler(_, let payloadVersion):
             payloadVersion == 1 ? .unknownHandler : .unsupportedPayloadVersion

@@ -3,6 +3,7 @@ import Foundation
 public enum TaskHandlerRegistryError: Error, Equatable, Sendable {
     case duplicateRegistration(handlerID: String, payloadVersion: Int)
     case unknownHandler(handlerID: String, payloadVersion: Int)
+    case handlerUnavailable(String)
 }
 
 public struct TaskHandler: Sendable {
