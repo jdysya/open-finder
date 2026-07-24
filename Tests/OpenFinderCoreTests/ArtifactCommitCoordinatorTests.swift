@@ -44,6 +44,39 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
         )
     }
 
+    func testCleanupFailureDoesNotPersistUnderlyingSecret() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let backend = InMemoryArtifactMetadataBackend()
+        let store = try ArtifactStore(root: fixture.storeRoot, metadata: backend)
+        let coordinator = ArtifactCommitCoordinator(store: store, metadata: backend)
+        let source = try fixture.write("result.bin", data: Data("payload".utf8))
+        let secret = "bearer-token=fixture-secret"
+
+        let records = try await coordinator.commit(
+            taskID: fixture.taskID,
+            schemaID: "secret-safe.v1",
+            artifacts: [source],
+            from: ConfinedArtifactReader(root: fixture.workspace),
+            markEffectsCommitted: {},
+            cleanupWorkspace: {
+                throw SecretBearingCleanupError(secret: secret)
+            }
+        )
+
+        XCTAssertEqual(records.first?.state, .committed)
+        let persisted = await backend.cleanupFailure(taskID: fixture.taskID)
+        XCTAssertEqual(persisted, ArtifactCommitCoordinator.cleanupFailureMessage)
+        XCTAssertFalse(persisted?.contains(secret) == true)
+
+        let report = await coordinator.reconcileAtStartup()
+        let issue = try XCTUnwrap(report.issues.first {
+            $0.taskID == fixture.taskID && $0.kind == .cleanupFailure
+        })
+        XCTAssertEqual(issue.detail, ArtifactCommitCoordinator.cleanupFailureMessage)
+        XCTAssertFalse(issue.detail.contains(secret))
+    }
+
     func testReconcilesEveryFilesystemDatabaseSplit() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -272,6 +305,12 @@ private actor TestFlag {
 }
 
 private struct InjectedMetadataError: Error {}
+
+private struct SecretBearingCleanupError: Error, CustomStringConvertible {
+    let secret: String
+
+    var description: String { "Cleanup failed: \(secret)" }
+}
 
 private actor FailingCommitMetadataBackend: ArtifactMetadataBackend {
     private let base = InMemoryArtifactMetadataBackend()

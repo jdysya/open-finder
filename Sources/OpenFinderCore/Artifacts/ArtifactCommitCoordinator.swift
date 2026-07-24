@@ -4,6 +4,9 @@ public actor ArtifactCommitCoordinator {
     public typealias CommitEffects = @Sendable () async throws -> Void
     public typealias CleanupWorkspace = @Sendable () async throws -> Void
 
+    static let cleanupFailureMessage =
+        "Artifact workspace cleanup failed; stale temporary data may remain."
+
     private let store: ArtifactStore
     private let metadata: any ArtifactMetadataBackend
 
@@ -59,7 +62,10 @@ public actor ArtifactCommitCoordinator {
             try await cleanupWorkspace()
             await metadata.clearCleanupFailure(taskID: taskID)
         } catch {
-            await metadata.recordCleanupFailure(taskID: taskID, message: String(describing: error))
+            await metadata.recordCleanupFailure(
+                taskID: taskID,
+                message: Self.cleanupFailureMessage
+            )
         }
         return records
     }
