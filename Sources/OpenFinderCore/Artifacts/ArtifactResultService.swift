@@ -1,9 +1,10 @@
-import CryptoKit
 import Foundation
 
 public enum ArtifactResultServiceError: Error, Equatable, Sendable {
     case artifactNotFound(UUID)
     case artifactNotCommitted(UUID)
+    case mediaDocumentPersistenceDeferred(UUID)
+    case mediaDocumentRecoverySourceMissing(UUID)
 }
 
 public protocol MediaAnalysisDocumentStore: Sendable {
@@ -65,6 +66,52 @@ public actor ArtifactResultService {
         return destination
     }
 
+    @discardableResult
+    public func recoverMediaAnalysisDocument(taskID: UUID) async throws -> Bool {
+        guard let mediaDocuments else {
+            throw ArtifactResultServiceError.mediaDocumentRecoverySourceMissing(taskID)
+        }
+        let records = await query(
+            taskID: taskID,
+            schemaID: MediaAnalysisDocument.schemaIdentifier
+        )
+        let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        var recoveredDocument: MediaAnalysisDocument?
+        var recoveredPayload: Data?
+        for record in records where record.mediaType == "application/json" {
+            guard
+                let payload = try? await store.read(record),
+                let document = try? JSONDecoder.openFinder.decode(
+                    MediaAnalysisDocument.self,
+                    from: payload
+                ),
+                document.taskID == taskID,
+                (try? document.validate(artifacts: recordsByID)) != nil
+            else { continue }
+            recoveredDocument = document
+            recoveredPayload = payload
+            break
+        }
+        guard let recoveredDocument, let recoveredPayload else {
+            throw ArtifactResultServiceError.mediaDocumentRecoverySourceMissing(taskID)
+        }
+        do {
+            try await mediaDocuments.persist(
+                recoveredDocument,
+                payload: recoveredPayload,
+                committedArtifacts: records
+            )
+            await metadata.clearCleanupFailure(taskID: taskID)
+            return true
+        } catch {
+            await metadata.recordCleanupFailure(
+                taskID: taskID,
+                message: "media-analysis-document-persistence-failed"
+            )
+            throw ArtifactResultServiceError.mediaDocumentPersistenceDeferred(taskID)
+        }
+    }
+
     public func commit(
         taskID: UUID,
         schemaID: String,
@@ -95,14 +142,34 @@ public actor ArtifactResultService {
             guard case .result(_, _, _, let artifacts) = event else { return [] }
             return artifacts.compactMap(\.file)
         }
+        let anticipatedRecords = fileArtifacts.map { artifact in
+            ArtifactRecord(
+                id: artifact.artifactID,
+                schemaID: preparedContext.resultSchemaID,
+                relativePath: ArtifactStore.publishedRelativePath(
+                    taskID: preparedContext.taskID,
+                    artifact: artifact
+                ),
+                mediaType: artifact.mediaType,
+                byteCount: artifact.byteCount,
+                sha256: artifact.sha256,
+                state: .committed,
+                stagedAt: .distantPast,
+                finishedAt: .distantPast
+            )
+        }
+        let mediaDocument = try await validatedMediaAnalysisDocument(
+            preparedContext,
+            records: anticipatedRecords
+        )
+        let mediaDocumentPayload = try mediaDocument.map {
+            try JSONEncoder.openFinder.encode($0)
+        }
         guard !fileArtifacts.isEmpty else {
-            if let document = try await validatedMediaAnalysisDocument(
-                preparedContext,
-                records: []
-            ), let mediaDocuments {
+            if let mediaDocument, let mediaDocumentPayload, let mediaDocuments {
                 try await mediaDocuments.persist(
-                    document,
-                    payload: try JSONEncoder.openFinder.encode(document),
+                    mediaDocument,
+                    payload: mediaDocumentPayload,
                     committedArtifacts: []
                 )
             }
@@ -155,16 +222,12 @@ public actor ArtifactResultService {
             events: events,
             outputDirectory: store.root
         )
-        if let document = try await validatedMediaAnalysisDocument(
-            committedContext,
-            records: records
-        ), let mediaDocuments {
-            try await mediaDocuments.persist(
-                document,
-                payload: try JSONEncoder.openFinder.encode(document),
-                committedArtifacts: records
-            )
-        }
+        try await persistMediaAnalysisDocument(
+            mediaDocument,
+            payload: mediaDocumentPayload,
+            committedArtifacts: records,
+            taskID: preparedContext.taskID
+        )
         return committedContext
     }
 
@@ -196,15 +259,19 @@ public actor ArtifactResultService {
         }
 
         let sourceData: Data
+        let schemaReader: ConfinedArtifactReader?
         switch schemaArtifact.payload {
         case .inline(let content):
             sourceData = Data(content.utf8)
+            schemaReader = nil
         case .file(let file):
             guard file.mediaType == "application/json" else {
                 throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
             }
             do {
-                sourceData = try ConfinedArtifactReader(root: workspace.outputDirectory).read(file)
+                let reader = try ConfinedArtifactReader(root: workspace.outputDirectory)
+                sourceData = try reader.read(file)
+                schemaReader = reader
             } catch {
                 throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
             }
@@ -237,17 +304,12 @@ public actor ArtifactResultService {
                     }
                     return PluginArtifact(type: artifact.type, content: content)
                 case .file(let file):
-                    let destination = workspace.outputDirectory.appendingPathComponent(file.relativePath)
-                    try rewrittenData.write(to: destination, options: .atomic)
+                    guard let schemaReader else {
+                        throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
+                    }
                     return PluginArtifact(
                         type: artifact.type,
-                        file: .init(
-                            artifactID: file.artifactID,
-                            relativePath: file.relativePath,
-                            mediaType: file.mediaType,
-                            byteCount: rewrittenData.count,
-                            sha256: Self.sha256(rewrittenData)
-                        )
+                        file: try schemaReader.replace(file, with: rewrittenData)
                     )
                 }
             }
@@ -269,13 +331,6 @@ public actor ArtifactResultService {
         )
     }
 
-    private func validateMediaAnalysisContext(
-        _ context: PluginResultHandlingContext,
-        records: [ArtifactRecord]
-    ) async throws {
-        _ = try await validatedMediaAnalysisDocument(context, records: records)
-    }
-
     private func validatedMediaAnalysisDocument(
         _ context: PluginResultHandlingContext,
         records: [ArtifactRecord]
@@ -291,8 +346,26 @@ public actor ArtifactResultService {
         return document
     }
 
-    private static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    private func persistMediaAnalysisDocument(
+        _ document: MediaAnalysisDocument?,
+        payload: Data?,
+        committedArtifacts: [ArtifactRecord],
+        taskID: UUID
+    ) async throws {
+        guard let document, let payload, let mediaDocuments else { return }
+        do {
+            try await mediaDocuments.persist(
+                document,
+                payload: payload,
+                committedArtifacts: committedArtifacts
+            )
+        } catch {
+            await metadata.recordCleanupFailure(
+                taskID: taskID,
+                message: "media-analysis-document-persistence-failed"
+            )
+            throw ArtifactResultServiceError.mediaDocumentPersistenceDeferred(taskID)
+        }
     }
 
     private func committedRecord(id: UUID) async throws -> ArtifactRecord {

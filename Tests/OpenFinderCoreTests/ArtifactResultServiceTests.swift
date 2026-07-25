@@ -427,6 +427,166 @@ final class ArtifactResultServiceTests: XCTestCase {
         XCTAssertTrue(records.isEmpty)
     }
 
+    func testMediaDocumentValidationFailsBeforeEffectsCommit() async throws {
+        let fixture = try MediaCommitFixture()
+        defer { fixture.remove() }
+        let assetID = UUID()
+        let asset = try fixture.write(
+            "frames/frame.jpg",
+            data: Data("frame".utf8),
+            mediaType: "image/jpeg",
+            artifactID: assetID
+        )
+        let invalidDocument = MediaAnalysisDocument(
+            documentID: UUID(),
+            taskID: fixture.taskID,
+            items: [.init(
+                media: .init(stableID: "", sourcePath: "/media/video.mp4", displayName: "video.mp4"),
+                summaryMetrics: [],
+                facets: [],
+                moments: [.init(
+                    index: 0,
+                    timestamp: 0,
+                    summary: "moment",
+                    facets: [],
+                    assets: [.init(artifactID: assetID, relativePath: "frames/frame.jpg")],
+                    suggestedTags: []
+                )],
+                suggestedTags: [],
+                report: nil
+            )],
+            suggestedTags: [],
+            actions: [],
+            managedTagLedger: .init(mediaEntries: []),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let schemaArtifact = try fixture.write(
+            "result.json",
+            data: try JSONEncoder.openFinder.encode(invalidDocument),
+            mediaType: "application/json",
+            artifactID: UUID()
+        )
+        let effects = EffectsCommitProbe()
+
+        do {
+            _ = try await fixture.service.commit(
+                fixture.context(artifacts: [
+                    .init(type: MediaAnalysisDocument.schemaIdentifier, file: schemaArtifact),
+                    .init(type: "image.fixture", file: asset)
+                ]),
+                workspace: fixture.workspace,
+                markEffectsCommitted: { await effects.mark() },
+                cleanupWorkspace: {}
+            )
+            XCTFail("Expected media validation failure")
+        } catch {
+            XCTAssertEqual(error as? MediaAnalysisValidationError, .missingStableMediaID)
+        }
+
+        let effectsMarked = await effects.isMarked
+        let records = await fixture.service.query(taskID: fixture.taskID)
+        XCTAssertFalse(effectsMarked)
+        XCTAssertTrue(records.isEmpty)
+    }
+
+    func testMediaDocumentPersistenceFailureThrowsDeferredErrorAndRecoversAfterRestart() async throws {
+        let documentStore = RecoverableMediaAnalysisDocumentStore()
+        let fixture = try MediaCommitFixture(mediaDocuments: documentStore)
+        defer { fixture.remove() }
+        let assetID = UUID()
+        let asset = try fixture.write(
+            "frames/frame.jpg",
+            data: Data("frame".utf8),
+            mediaType: "image/jpeg",
+            artifactID: assetID
+        )
+        let schemaArtifact = try fixture.write(
+            "result.json",
+            data: try JSONEncoder.openFinder.encode(fixture.document(
+                assetID: assetID,
+                relativePath: "frames/frame.jpg"
+            )),
+            mediaType: "application/json",
+            artifactID: UUID()
+        )
+        let effects = EffectsCommitProbe()
+
+        do {
+            _ = try await fixture.service.commit(
+                fixture.context(artifacts: [
+                    .init(type: MediaAnalysisDocument.schemaIdentifier, file: schemaArtifact),
+                    .init(type: "image.fixture", file: asset)
+                ]),
+                workspace: fixture.workspace,
+                markEffectsCommitted: { await effects.mark() },
+                cleanupWorkspace: {}
+            )
+            XCTFail("Expected explicit deferred persistence error")
+        } catch {
+            XCTAssertEqual(
+                error as? ArtifactResultServiceError,
+                .mediaDocumentPersistenceDeferred(fixture.taskID)
+            )
+        }
+
+        let records = await fixture.service.query(taskID: fixture.taskID)
+        let recoveryMarker = await fixture.metadata.cleanupFailure(taskID: fixture.taskID)
+        let effectsMarked = await effects.isMarked
+        XCTAssertTrue(effectsMarked)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertNotNil(recoveryMarker)
+
+        await documentStore.allowPersistence()
+        let restarted = ArtifactResultService(
+            store: try ArtifactStore(root: fixture.storeRoot, metadata: fixture.metadata),
+            metadata: fixture.metadata,
+            mediaDocuments: documentStore
+        )
+        let recovered = try await restarted.recoverMediaAnalysisDocument(taskID: fixture.taskID)
+        let persistedCount = await documentStore.persistedCount
+        let clearedMarker = await fixture.metadata.cleanupFailure(taskID: fixture.taskID)
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(persistedCount, 1)
+        XCTAssertNil(clearedMarker)
+    }
+
+    func testInlineMediaDocumentPersistenceFailurePrecedesEffectsCommit() async throws {
+        let documentStore = RecoverableMediaAnalysisDocumentStore()
+        let fixture = try MediaCommitFixture(mediaDocuments: documentStore)
+        defer { fixture.remove() }
+        let document = MediaAnalysisDocument(
+            documentID: UUID(),
+            taskID: fixture.taskID,
+            items: [],
+            suggestedTags: [],
+            actions: [],
+            managedTagLedger: .init(mediaEntries: []),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let payload = try JSONEncoder.openFinder.encode(document)
+        let content = try XCTUnwrap(String(data: payload, encoding: .utf8))
+        let effects = EffectsCommitProbe()
+
+        do {
+            _ = try await fixture.service.commit(
+                fixture.context(artifacts: [
+                    .init(type: MediaAnalysisDocument.schemaIdentifier, content: content)
+                ]),
+                workspace: fixture.workspace,
+                markEffectsCommitted: { await effects.mark() },
+                cleanupWorkspace: {}
+            )
+            XCTFail("Expected inline media document persistence failure")
+        } catch {
+            XCTAssertNotNil(error as? CocoaError)
+        }
+
+        let effectsMarked = await effects.isMarked
+        let records = await fixture.service.query(taskID: fixture.taskID)
+        XCTAssertFalse(effectsMarked)
+        XCTAssertTrue(records.isEmpty)
+    }
+
     func testContextCommitRemapsUnknownFileAndPreservesInlineArtifact() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ArtifactResultContext-\(UUID())", isDirectory: true)
@@ -548,8 +708,12 @@ private struct MediaCommitFixture {
     let workspace: PluginExecutionWorkspace
     let service: ArtifactResultService
     let databaseURL: URL?
+    let metadata: any ArtifactMetadataBackend
 
-    init(databaseBacked: Bool = false) throws {
+    init(
+        databaseBacked: Bool = false,
+        mediaDocuments: (any MediaAnalysisDocumentStore)? = nil
+    ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("MediaArtifactResultService-\(UUID())", isDirectory: true)
         let taskRoot = root.appendingPathComponent("workspace", isDirectory: true)
@@ -564,19 +728,22 @@ private struct MediaCommitFixture {
         )
         if databaseBacked {
             let url = root.appendingPathComponent("tasks.sqlite")
-            let metadata = GRDBArtifactMetadataBackend(database: try AppDatabase(url: url))
+            let backend = GRDBArtifactMetadataBackend(database: try AppDatabase(url: url))
+            metadata = backend
             databaseURL = url
             service = ArtifactResultService(
-                store: try ArtifactStore(root: storeRoot, metadata: metadata),
-                metadata: metadata,
-                mediaDocuments: metadata
+                store: try ArtifactStore(root: storeRoot, metadata: backend),
+                metadata: backend,
+                mediaDocuments: backend
             )
         } else {
-            let metadata = InMemoryArtifactMetadataBackend()
+            let backend = InMemoryArtifactMetadataBackend()
+            metadata = backend
             databaseURL = nil
             service = ArtifactResultService(
-                store: try ArtifactStore(root: storeRoot, metadata: metadata),
-                metadata: metadata
+                store: try ArtifactStore(root: storeRoot, metadata: backend),
+                metadata: backend,
+                mediaDocuments: mediaDocuments
             )
         }
     }
@@ -651,5 +818,31 @@ private struct MediaCommitFixture {
 
     func remove() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor EffectsCommitProbe {
+    private(set) var isMarked = false
+
+    func mark() {
+        isMarked = true
+    }
+}
+
+private actor RecoverableMediaAnalysisDocumentStore: MediaAnalysisDocumentStore {
+    private var persistenceAllowed = false
+    private(set) var persistedCount = 0
+
+    func allowPersistence() {
+        persistenceAllowed = true
+    }
+
+    func persist(
+        _: MediaAnalysisDocument,
+        payload _: Data,
+        committedArtifacts _: [ArtifactRecord]
+    ) async throws {
+        guard persistenceAllowed else { throw CocoaError(.fileWriteUnknown) }
+        persistedCount += 1
     }
 }

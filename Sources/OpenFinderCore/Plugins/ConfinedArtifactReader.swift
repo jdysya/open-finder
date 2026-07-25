@@ -95,6 +95,43 @@ public struct ConfinedArtifactReader: Sendable {
         return root.appendingPathComponent(relativePath).standardizedFileURL
     }
 
+    public func replace(_ artifact: PluginFileArtifact, with data: Data) throws -> PluginFileArtifact {
+        _ = try read(artifact)
+        let components = try Self.pathComponents(artifact.relativePath)
+        let parent = try openParentDirectory(components)
+        defer { Darwin.close(parent) }
+        let filename = components.last!
+        let temporaryName = ".openfinder-rewrite-\(UUID().uuidString)"
+        let temporary = temporaryName.withCString {
+            openat(parent, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        }
+        guard temporary >= 0 else { throw mappedOpenError() }
+        var renamed = false
+        defer {
+            Darwin.close(temporary)
+            if !renamed {
+                _ = temporaryName.withCString { unlinkat(parent, $0, 0) }
+            }
+        }
+        try write(data, to: temporary)
+        guard fsync(temporary) == 0 else { throw ConfinedArtifactError.ioFailure }
+        let renameResult = temporaryName.withCString { source in
+            filename.withCString { destination in
+                renameat(parent, source, parent, destination)
+            }
+        }
+        guard renameResult == 0 else { throw ConfinedArtifactError.ioFailure }
+        renamed = true
+        guard fsync(parent) == 0 else { throw ConfinedArtifactError.ioFailure }
+        return PluginFileArtifact(
+            artifactID: artifact.artifactID,
+            relativePath: artifact.relativePath,
+            mediaType: artifact.mediaType,
+            byteCount: data.count,
+            sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        )
+    }
+
     public func relativePath(forValidatedURL url: URL) throws -> String {
         let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
         let path = url.standardizedFileURL.path
@@ -106,19 +143,10 @@ public struct ConfinedArtifactReader: Sendable {
 
     func openFile(relativePath: String) throws -> Int32 {
         let components = try Self.pathComponents(relativePath)
-        var current = try openVerifiedRoot()
-        defer { Darwin.close(current) }
-
-        for component in components.dropLast() {
-            let next = component.withCString {
-                openat(current, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            }
-            guard next >= 0 else { throw mappedOpenError() }
-            Darwin.close(current)
-            current = next
-        }
+        let parent = try openParentDirectory(components)
+        defer { Darwin.close(parent) }
         let final = components.last!.withCString {
-            openat(current, $0, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            openat(parent, $0, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         }
         guard final >= 0 else { throw mappedOpenError() }
         var status = stat()
@@ -131,6 +159,23 @@ public struct ConfinedArtifactReader: Sendable {
             throw ConfinedArtifactError.notRegularFile
         }
         return final
+    }
+
+    private func openParentDirectory(_ components: [String]) throws -> Int32 {
+        var current = try openVerifiedRoot()
+        defer { Darwin.close(current) }
+
+        for component in components.dropLast() {
+            let next = component.withCString {
+                openat(current, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            }
+            guard next >= 0 else { throw mappedOpenError() }
+            Darwin.close(current)
+            current = next
+        }
+        let result = Darwin.dup(current)
+        guard result >= 0 else { throw ConfinedArtifactError.ioFailure }
+        return result
     }
 
     private func openVerifiedRoot() throws -> Int32 {
@@ -160,6 +205,26 @@ public struct ConfinedArtifactReader: Sendable {
             && lhs.st_mtimespec.tv_nsec == rhs.st_mtimespec.tv_nsec
             && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec
             && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
+    }
+
+    private func write(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(
+                    descriptor,
+                    base.advanced(by: offset),
+                    bytes.count - offset
+                )
+                guard written >= 0 else {
+                    if errno == EINTR { continue }
+                    throw ConfinedArtifactError.ioFailure
+                }
+                guard written > 0 else { throw ConfinedArtifactError.ioFailure }
+                offset += written
+            }
+        }
     }
 
     private static func pathComponents(_ path: String) throws -> [String] {
