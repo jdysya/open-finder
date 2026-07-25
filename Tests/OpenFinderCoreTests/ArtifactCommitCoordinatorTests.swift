@@ -210,6 +210,44 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
         ))
     }
 
+    func testStoreRejectsMalformedDataOverrideBeforeMetadataOrEffects() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let backend = InMemoryArtifactMetadataBackend()
+        let store = try ArtifactStore(root: fixture.storeRoot, metadata: backend)
+        let source = try fixture.write("schema.json", data: Data("valid".utf8))
+        let reader = try ConfinedArtifactReader(root: fixture.workspace)
+
+        do {
+            _ = try await store.stage(
+                taskID: fixture.taskID,
+                schemaID: "override.v1",
+                artifact: source,
+                from: reader,
+                dataOverride: Data("bad".utf8)
+            )
+            XCTFail("Expected override size mismatch")
+        } catch {
+            XCTAssertEqual(error as? ConfinedArtifactError, .sizeMismatch)
+        }
+
+        do {
+            _ = try await store.stage(
+                taskID: fixture.taskID,
+                schemaID: "override.v1",
+                artifact: source,
+                from: reader,
+                dataOverride: Data("other".utf8)
+            )
+            XCTFail("Expected override hash mismatch")
+        } catch {
+            XCTAssertEqual(error as? ConfinedArtifactError, .hashMismatch)
+        }
+
+        let entries = await backend.entries()
+        XCTAssertTrue(entries.isEmpty)
+    }
+
     func testCancellationBeforeCommitRollsBackAndAfterCommitPreservesArtifact() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

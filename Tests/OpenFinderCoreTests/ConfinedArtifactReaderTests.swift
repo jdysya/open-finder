@@ -95,35 +95,6 @@ final class ConfinedArtifactReaderTests: XCTestCase {
         }
     }
 
-    func testReplaceRejectsParentSymlinkSwapWithoutTouchingOutsideSentinel() throws {
-        let parent = temporaryRoot()
-        let root = parent.appendingPathComponent("root", isDirectory: true)
-        let outside = parent.appendingPathComponent("outside", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: parent) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        let original = Data("original".utf8)
-        let rewritten = Data("rewritten".utf8)
-        _ = try write(original, relativePath: "nested/result.json", root: root)
-        let sentinel = outside.appendingPathComponent("result.json")
-        try Data("sentinel".utf8).write(to: sentinel)
-        let reader = try ConfinedArtifactReader(root: root)
-        let artifact = metadata(relativePath: "nested/result.json", data: original)
-        try FileManager.default.moveItem(
-            at: root.appendingPathComponent("nested"),
-            to: root.appendingPathComponent("detached")
-        )
-        try FileManager.default.createSymbolicLink(
-            at: root.appendingPathComponent("nested"),
-            withDestinationURL: outside
-        )
-
-        XCTAssertThrowsError(try reader.replace(artifact, with: rewritten))
-        XCTAssertEqual(try Data(contentsOf: sentinel), Data("sentinel".utf8))
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["result.json"])
-        print("SCHEMA_REWRITE_SWAP_QA result=rejected sentinel=unchanged")
-    }
-
     private func withRoot(_ body: (URL) throws -> Void) throws {
         let root = temporaryRoot()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

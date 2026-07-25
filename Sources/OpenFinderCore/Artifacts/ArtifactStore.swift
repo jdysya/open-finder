@@ -114,6 +114,7 @@ public actor ArtifactStore {
         schemaID: String,
         artifact: PluginFileArtifact,
         from reader: ConfinedArtifactReader,
+        dataOverride: Data? = nil,
         at date: Date = .now
     ) async throws -> ArtifactRecord {
         try verifyRoot()
@@ -125,7 +126,20 @@ public actor ArtifactStore {
         let staging = stagingURL(taskID: taskID, artifactID: id)
         try fileManager.createDirectory(at: staging.deletingLastPathComponent(), withIntermediateDirectories: true)
         do {
-            try reader.copy(artifact: artifact, to: staging)
+            if let dataOverride {
+                guard dataOverride.count == artifact.byteCount else {
+                    throw ConfinedArtifactError.sizeMismatch
+                }
+                let digest = SHA256.hash(data: dataOverride)
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+                guard digest == artifact.sha256 else {
+                    throw ConfinedArtifactError.hashMismatch
+                }
+                try dataOverride.write(to: staging, options: .atomic)
+            } else {
+                try reader.copy(artifact: artifact, to: staging)
+            }
             try syncDirectory(staging.deletingLastPathComponent())
             try Task.checkCancellation()
 

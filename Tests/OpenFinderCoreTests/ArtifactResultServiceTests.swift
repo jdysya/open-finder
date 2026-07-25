@@ -120,6 +120,76 @@ final class ArtifactResultServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.workspace.taskRoot.path))
     }
 
+    func testSchemaOverrideLeavesRelocatedWorkspaceAndOutsideSentinelUnchanged() async throws {
+        let fixture = try MediaCommitFixture()
+        defer { fixture.remove() }
+        let assetID = UUID()
+        let schemaID = UUID()
+        let asset = try fixture.write(
+            "frames/frame.jpg",
+            data: Data("frame".utf8),
+            mediaType: "image/jpeg",
+            artifactID: assetID
+        )
+        let sourceData = try JSONEncoder.openFinder.encode(fixture.document(
+            assetID: assetID,
+            relativePath: "frames/frame.jpg"
+        ))
+        let schema = try fixture.write(
+            "nested/result.json",
+            data: sourceData,
+            mediaType: "application/json",
+            artifactID: schemaID
+        )
+        let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appendingPathComponent("sentinel.txt")
+        let sentinelData = Data("outside-sentinel".utf8)
+        try sentinelData.write(to: sentinel)
+        let relocated = fixture.root.appendingPathComponent("relocated-schema", isDirectory: true)
+
+        _ = try await fixture.service.commit(
+            fixture.context(artifacts: [
+                .init(type: MediaAnalysisDocument.schemaIdentifier, file: schema),
+                .init(type: "image.fixture", file: asset)
+            ]),
+            workspace: fixture.workspace,
+            markEffectsCommitted: {
+                try FileManager.default.moveItem(
+                    at: fixture.output.appendingPathComponent("nested"),
+                    to: relocated
+                )
+                try FileManager.default.createSymbolicLink(
+                    at: fixture.output.appendingPathComponent("nested"),
+                    withDestinationURL: outside
+                )
+            },
+            cleanupWorkspace: {}
+        )
+
+        let records = await fixture.service.query(taskID: fixture.taskID)
+        let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        let committedData = try await fixture.service.open(schemaID)
+        let committedDocument = try JSONDecoder.openFinder.decode(
+            MediaAnalysisDocument.self,
+            from: committedData
+        )
+
+        XCTAssertEqual(try Data(contentsOf: relocated.appendingPathComponent("result.json")), sourceData)
+        XCTAssertEqual(try Data(contentsOf: sentinel), sentinelData)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["sentinel.txt"])
+        XCTAssertNotEqual(committedData, sourceData)
+        XCTAssertEqual(
+            committedDocument.items[0].moments[0].assets[0].relativePath,
+            recordsByID[assetID]?.relativePath
+        )
+        try committedDocument.validate(artifacts: recordsByID)
+        print(
+            "SCHEMA_OVERRIDE_RELOCATION_QA workspace=unchanged outside=unchanged " +
+                "committed=rewritten"
+        )
+    }
+
     func testMediaDocumentPersistsInGRDBAndSurvivesRestart() async throws {
         let fixture = try MediaCommitFixture(databaseBacked: true)
         defer { fixture.remove() }

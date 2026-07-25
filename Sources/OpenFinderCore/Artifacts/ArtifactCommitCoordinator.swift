@@ -20,6 +20,7 @@ public actor ArtifactCommitCoordinator {
         schemaID: String,
         artifacts: [PluginFileArtifact],
         from reader: ConfinedArtifactReader,
+        artifactDataOverrides: [UUID: Data] = [:],
         markEffectsCommitted: CommitEffects,
         cleanupWorkspace: CleanupWorkspace
     ) async throws -> [ArtifactRecord] {
@@ -39,7 +40,8 @@ public actor ArtifactCommitCoordinator {
                     taskID: taskID,
                     schemaID: schemaID,
                     artifact: artifact,
-                    from: reader
+                    from: reader,
+                    dataOverride: artifactDataOverrides[artifact.artifactID]
                 )
                 records.append(record)
                 try Task.checkCancellation()

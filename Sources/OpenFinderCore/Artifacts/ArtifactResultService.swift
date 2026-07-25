@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum ArtifactResultServiceError: Error, Equatable, Sendable {
@@ -13,6 +14,12 @@ public protocol MediaAnalysisDocumentStore: Sendable {
         payload: Data,
         committedArtifacts: [ArtifactRecord]
     ) async throws
+}
+
+private struct PreparedArtifactResultContext {
+    let context: PluginResultHandlingContext
+    let artifactDataOverrides: [UUID: Data]
+    let mediaDocument: MediaAnalysisDocument?
 }
 
 public actor ArtifactResultService {
@@ -137,7 +144,8 @@ public actor ArtifactResultService {
         cleanupWorkspace: @escaping ArtifactCommitCoordinator.CleanupWorkspace
     ) async throws -> PluginResultHandlingContext {
         try Task.checkCancellation()
-        let preparedContext = try prepareMediaAnalysisContext(context, workspace: workspace)
+        let prepared = try prepareMediaAnalysisContext(context, workspace: workspace)
+        let preparedContext = prepared.context
         let fileArtifacts = preparedContext.events.flatMap { event -> [PluginFileArtifact] in
             guard case .result(_, _, _, let artifacts) = event else { return [] }
             return artifacts.compactMap(\.file)
@@ -158,10 +166,12 @@ public actor ArtifactResultService {
                 finishedAt: .distantPast
             )
         }
-        let mediaDocument = try await validatedMediaAnalysisDocument(
-            preparedContext,
-            records: anticipatedRecords
-        )
+        let mediaDocument = prepared.mediaDocument
+        if let mediaDocument {
+            try mediaDocument.validate(artifacts: Dictionary(
+                uniqueKeysWithValues: anticipatedRecords.map { ($0.id, $0) }
+            ))
+        }
         let mediaDocumentPayload = try mediaDocument.map {
             try JSONEncoder.openFinder.encode($0)
         }
@@ -178,11 +188,12 @@ public actor ArtifactResultService {
             try await metadata.markTaskEffectsCommitted(preparedContext.taskID)
             return preparedContext
         }
-        let records = try await commit(
+        let records = try await commitCoordinator.commit(
             taskID: preparedContext.taskID,
             schemaID: preparedContext.resultSchemaID,
             artifacts: fileArtifacts,
             from: ConfinedArtifactReader(root: workspace.outputDirectory),
+            artifactDataOverrides: prepared.artifactDataOverrides,
             markEffectsCommitted: markEffectsCommitted,
             cleanupWorkspace: cleanupWorkspace
         )
@@ -234,9 +245,13 @@ public actor ArtifactResultService {
     private func prepareMediaAnalysisContext(
         _ context: PluginResultHandlingContext,
         workspace: PluginExecutionWorkspace
-    ) throws -> PluginResultHandlingContext {
+    ) throws -> PreparedArtifactResultContext {
         guard context.resultSchemaID == MediaAnalysisDocument.schemaIdentifier else {
-            return context
+            return PreparedArtifactResultContext(
+                context: context,
+                artifactDataOverrides: [:],
+                mediaDocument: nil
+            )
         }
         let artifacts = context.events.flatMap { event -> [PluginArtifact] in
             guard case .result(_, _, _, let artifacts) = event else { return [] }
@@ -259,19 +274,15 @@ public actor ArtifactResultService {
         }
 
         let sourceData: Data
-        let schemaReader: ConfinedArtifactReader?
         switch schemaArtifact.payload {
         case .inline(let content):
             sourceData = Data(content.utf8)
-            schemaReader = nil
         case .file(let file):
             guard file.mediaType == "application/json" else {
                 throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
             }
             do {
-                let reader = try ConfinedArtifactReader(root: workspace.outputDirectory)
-                sourceData = try reader.read(file)
-                schemaReader = reader
+                sourceData = try ConfinedArtifactReader(root: workspace.outputDirectory).read(file)
             } catch {
                 throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
             }
@@ -290,6 +301,7 @@ public actor ArtifactResultService {
         }
         let rewritten = try document.replacingAssetPaths(pathsByArtifactID)
         let rewrittenData = try JSONEncoder.openFinder.encode(rewritten)
+        var artifactDataOverrides: [UUID: Data] = [:]
 
         let rewrittenEvents = try context.events.map { event -> PluginOutputEvent in
             guard case .result(let status, let message, let clipboard, let eventArtifacts) = event else {
@@ -304,12 +316,18 @@ public actor ArtifactResultService {
                     }
                     return PluginArtifact(type: artifact.type, content: content)
                 case .file(let file):
-                    guard let schemaReader else {
-                        throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
-                    }
+                    artifactDataOverrides[file.artifactID] = rewrittenData
                     return PluginArtifact(
                         type: artifact.type,
-                        file: try schemaReader.replace(file, with: rewrittenData)
+                        file: .init(
+                            artifactID: file.artifactID,
+                            relativePath: file.relativePath,
+                            mediaType: file.mediaType,
+                            byteCount: rewrittenData.count,
+                            sha256: SHA256.hash(data: rewrittenData)
+                                .map { String(format: "%02x", $0) }
+                                .joined()
+                        )
                     )
                 }
             }
@@ -320,30 +338,19 @@ public actor ArtifactResultService {
                 artifacts: rewrittenArtifacts
             )
         }
-        return PluginResultHandlingContext(
-            resultSchemaID: context.resultSchemaID,
-            pluginID: context.pluginID,
-            pluginVersion: context.pluginVersion,
-            actionID: context.actionID,
-            taskID: context.taskID,
-            events: rewrittenEvents,
-            outputDirectory: context.outputDirectory
+        return PreparedArtifactResultContext(
+            context: PluginResultHandlingContext(
+                resultSchemaID: context.resultSchemaID,
+                pluginID: context.pluginID,
+                pluginVersion: context.pluginVersion,
+                actionID: context.actionID,
+                taskID: context.taskID,
+                events: rewrittenEvents,
+                outputDirectory: context.outputDirectory
+            ),
+            artifactDataOverrides: artifactDataOverrides,
+            mediaDocument: rewritten
         )
-    }
-
-    private func validatedMediaAnalysisDocument(
-        _ context: PluginResultHandlingContext,
-        records: [ArtifactRecord]
-    ) async throws -> MediaAnalysisDocument? {
-        guard context.resultSchemaID == MediaAnalysisDocument.schemaIdentifier else { return nil }
-        let projection = try await PluginResultHandlerRegistry.standard.handle(context)
-        guard let document = projection.project(MediaAnalysisDocument.self) else {
-            throw PluginResultHandlingError.malformedSchemaArtifact(context.resultSchemaID)
-        }
-        try document.validate(artifacts: Dictionary(
-            uniqueKeysWithValues: records.map { ($0.id, $0) }
-        ))
-        return document
     }
 
     private func persistMediaAnalysisDocument(
