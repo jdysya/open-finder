@@ -128,6 +128,54 @@ final class AppPluginRoutingTests: XCTestCase {
         XCTAssertEqual(httpRequests[1].input.config["serverURL"], "http://127.0.0.1:8765")
     }
 
+    func testHTTPSubmissionDropsConfigurationKeysRemovedFromManifestBeforeDispatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppPluginStaleConfiguration-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = RecordingPluginRunner()
+        let app = AppPluginFixture.app(root: root, process: runner, http: runner)
+        let plugin = LoadedPlugin(
+            manifest: AppPluginFixture.manifest(
+                id: "fixture.http",
+                execution: .http(
+                    protocolVersion: 1,
+                    endpointConfigurationKey: "serverURL",
+                    tokenSecretKey: "serverToken"
+                )
+            ),
+            directory: root
+        )
+        app.loadedPlugins = [plugin]
+        app.setPluginConfigValue(
+            "http://127.0.0.1:8765",
+            pluginID: plugin.id,
+            key: "serverURL"
+        )
+        app.setPluginConfigValue(
+            "/obsolete/runtime",
+            pluginID: plugin.id,
+            key: "removedRuntimePath"
+        )
+        let secretSaved = await app.setPluginSecret(
+            "fixture-token",
+            pluginID: plugin.id,
+            key: "serverToken"
+        )
+        XCTAssertTrue(secretSaved)
+
+        app.runPlugin(plugin, action: plugin.manifest.actions[0], items: [], pane: app.leftPane)
+        try await AppPluginFixture.waitUntil {
+            await app.taskQueue.history().first?.status.isTerminal == true
+        }
+
+        let records = await app.taskQueue.history()
+        let requests = await runner.captured()
+        let record = try XCTUnwrap(records.first)
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(record.status, .succeeded)
+        XCTAssertEqual(request.input.config, ["serverURL": "http://127.0.0.1:8765"])
+    }
+
     func testUnavailableConnectionBlocksSubmissionWithGuidance() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("AppPluginBlocked-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

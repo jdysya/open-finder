@@ -27,7 +27,8 @@ extension PluginExecutionCoordinator {
             environment: credentials.environment,
             pluginDirectory: request.plugin.directory,
             workingDirectory: request.plugin.directory,
-            onEvent: callbacks.onEvent
+            onEvent: callbacks.onEvent,
+            onHTTPTranscript: callbacks.onHTTPTranscript
         ))
         try validateTerminal(result)
         let schemaID = request.action.output?.resultSchemaID ?? "unknown"

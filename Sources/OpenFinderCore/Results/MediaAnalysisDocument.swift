@@ -78,6 +78,20 @@ public struct MediaAnalysisDocument: Codable, Hashable, Sendable {
             }
         }
     }
+
+    func replacingAssetPaths(_ pathsByArtifactID: [UUID: String]) throws -> Self {
+        Self(
+            documentID: documentID,
+            taskID: taskID,
+            items: try items.map { try $0.replacingAssetPaths(pathsByArtifactID) },
+            suggestedTags: suggestedTags,
+            actions: actions,
+            managedTagLedger: managedTagLedger,
+            createdAt: createdAt,
+            schemaID: schemaID,
+            schemaVersion: schemaVersion
+        )
+    }
 }
 
 public struct MediaAnalysisItem: Codable, Hashable, Sendable {
@@ -106,6 +120,17 @@ public struct MediaAnalysisItem: Codable, Hashable, Sendable {
 
     fileprivate var assetReferences: [ConfinedAssetReference] {
         moments.flatMap(\.assets) + [report].compactMap { $0 }
+    }
+
+    fileprivate func replacingAssetPaths(_ pathsByArtifactID: [UUID: String]) throws -> Self {
+        Self(
+            media: media,
+            summaryMetrics: summaryMetrics,
+            facets: facets,
+            moments: try moments.map { try $0.replacingAssetPaths(pathsByArtifactID) },
+            suggestedTags: suggestedTags,
+            report: try report.map { try $0.replacingAssetPath(pathsByArtifactID) }
+        )
     }
 }
 
@@ -198,6 +223,17 @@ public struct MediaAnalysisMoment: Codable, Hashable, Sendable {
         self.assets = assets
         self.suggestedTags = suggestedTags
     }
+
+    fileprivate func replacingAssetPaths(_ pathsByArtifactID: [UUID: String]) throws -> Self {
+        Self(
+            index: index,
+            timestamp: timestamp,
+            summary: summary,
+            facets: facets,
+            assets: try assets.map { try $0.replacingAssetPath(pathsByArtifactID) },
+            suggestedTags: suggestedTags
+        )
+    }
 }
 
 public struct ConfinedAssetReference: Codable, Hashable, Sendable {
@@ -210,13 +246,7 @@ public struct ConfinedAssetReference: Codable, Hashable, Sendable {
     }
 
     fileprivate func validate(artifacts: [UUID: ArtifactRecord]) throws {
-        guard !NSString(string: relativePath).isAbsolutePath else {
-            throw MediaAnalysisValidationError.absoluteAssetPath(relativePath)
-        }
-        let components = NSString(string: relativePath).pathComponents
-        guard !relativePath.isEmpty, !components.contains(".."), !components.contains(".") else {
-            throw MediaAnalysisValidationError.unconfinedAssetPath(relativePath)
-        }
+        try validateConfinement()
         guard let artifact = artifacts[artifactID] else {
             throw MediaAnalysisValidationError.unknownArtifact(artifactID)
         }
@@ -229,6 +259,24 @@ public struct ConfinedAssetReference: Codable, Hashable, Sendable {
         }
         guard artifact.relativePath == relativePath else {
             throw MediaAnalysisValidationError.artifactPathMismatch(artifactID)
+        }
+    }
+
+    fileprivate func replacingAssetPath(_ pathsByArtifactID: [UUID: String]) throws -> Self {
+        try validateConfinement()
+        guard let relativePath = pathsByArtifactID[artifactID] else {
+            throw MediaAnalysisValidationError.unknownArtifact(artifactID)
+        }
+        return Self(artifactID: artifactID, relativePath: relativePath)
+    }
+
+    private func validateConfinement() throws {
+        guard !NSString(string: relativePath).isAbsolutePath else {
+            throw MediaAnalysisValidationError.absoluteAssetPath(relativePath)
+        }
+        let components = NSString(string: relativePath).pathComponents
+        guard !relativePath.isEmpty, !components.contains(".."), !components.contains(".") else {
+            throw MediaAnalysisValidationError.unconfinedAssetPath(relativePath)
         }
     }
 }

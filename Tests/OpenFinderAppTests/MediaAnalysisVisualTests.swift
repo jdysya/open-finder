@@ -249,6 +249,7 @@ final class MediaAnalysisVisualTests: XCTestCase {
             taskID: taskID,
             schemaID: MediaAnalysisDocument.schemaIdentifier,
             artifacts: [.init(
+                artifactID: UUID(),
                 relativePath: filename,
                 mediaType: "image/png",
                 byteCount: png.count,

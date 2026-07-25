@@ -19,6 +19,12 @@ extension ApplicationServices {
         }
         try await taskService.requireReadiness()
         await pluginResolver.register(plugin)
+        let secretReferences = configuredPluginSecretReferences(for: plugin.manifest)
+        let resolvedConfiguration = PluginConfigurationResolver.resolve(
+            manifest: plugin.manifest,
+            values: configuration.pluginConfigurationValues[plugin.id] ?? [:],
+            secretReferences: secretReferences
+        )
         let taskID = UUID()
         let resultSchemaID = action.output?.resultSchemaID ?? "unknown"
         let envelope = PluginTaskEnvelope(
@@ -35,8 +41,8 @@ extension ApplicationServices {
                 currentLocation: currentLocation
             ),
             inputs: normalizedInputs,
-            configuration: configuration.pluginConfigurationValues[plugin.id] ?? [:],
-            secretReferences: configuredPluginSecretReferences(for: plugin.manifest),
+            configuration: resolvedConfiguration.config,
+            secretReferences: secretReferences,
             workspacePolicy: .taskScopedTemporary
         )
         let resourceKey = action.output?.resultSchemaID

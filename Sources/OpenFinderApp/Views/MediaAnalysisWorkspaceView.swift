@@ -58,9 +58,9 @@ struct MediaAnalysisWorkspaceView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("分析筛选")
+                    Text("关键帧筛选")
                         .font(.headline)
-                    Text("仅筛选下方关键帧，不会写入 Finder 标签。多个条件同时满足时才显示。")
+                    Text("按人脸、裸露程度和 JoyTag 标签筛选下方关键帧；多个条件需同时满足，不会写入 Finder 标签。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -81,7 +81,7 @@ struct MediaAnalysisWorkspaceView: View {
                         toggleFilter(facet.selection)
                     } label: {
                         HStack(spacing: 6) {
-                            Text(presentation.displayValue(facet.selection.value)).lineLimit(1)
+                            Text(facet.label).lineLimit(1)
                             Spacer(minLength: 4)
                             Text("\(facet.momentCount)")
                                 .font(.caption.monospacedDigit())
@@ -91,9 +91,9 @@ struct MediaAnalysisWorkspaceView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(filters.contains(facet.selection) ? .accentColor : nil)
-                    .help("\(facet.selection.key) · \(facet.momentCount)/\(facet.totalMoments) 个时刻")
+                    .help("\(facet.category) · \(facet.momentCount)/\(facet.totalMoments) 个时刻")
                     .accessibilityLabel(
-                        "\(facet.selection.key)，\(presentation.displayValue(facet.selection.value))，\(facet.momentCount) 个时刻"
+                        "\(facet.category)，\(facet.label)，\(facet.momentCount) 个时刻"
                     )
                 }
             }

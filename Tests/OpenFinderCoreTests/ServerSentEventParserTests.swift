@@ -28,6 +28,7 @@ final class ServerSentEventParserTests: XCTestCase {
                 message: "Analyzed 1 video.",
                 clipboard: nil,
                 artifacts: [PluginArtifact(type: "mediaAnalysis.v1", file: PluginFileArtifact(
+                    artifactID: UUID(uuidString: "22222222-2222-4222-8222-222222222222")!,
                     relativePath: "result.json",
                     mediaType: "application/json",
                     byteCount: 2_048,
@@ -41,7 +42,8 @@ final class ServerSentEventParserTests: XCTestCase {
                 relativePath: "result.json",
                 mediaType: "application/json",
                 byteCount: 2_048,
-                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                artifactID: UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
             )
         ])
         XCTAssertEqual(parser.lastEventID, 7)
@@ -113,6 +115,38 @@ final class ServerSentEventParserTests: XCTestCase {
 
         XCTAssertEqual(events.map(\.eventID), [7])
         XCTAssertEqual(parser.lastEventID, 7)
+    }
+
+    func testResultArtifactPreservesServerArtifactID() throws {
+        let artifactID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        let json = """
+        {"schemaVersion":1,"eventID":1,"taskID":"\(taskID.uuidString)","type":"result","status":"success","artifacts":[{"artifactID":"\(artifactID.uuidString)","type":"mediaAnalysis.v1","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
+        """
+        var parser = ServerSentEventParser(expectedTaskID: taskID)
+
+        let events = try parser.append(Data(frame(eventID: 1, event: "result", json: json).utf8))
+        try parser.finish()
+
+        guard case .result(_, _, _, let artifacts) = events.first?.pluginOutputEvent else {
+            return XCTFail("Expected terminal result event.")
+        }
+        XCTAssertEqual(artifacts.first?.file?.artifactID, artifactID)
+    }
+
+    func testMediaResultArtifactWithoutArtifactIDIsRejected() {
+        let json = """
+        {"schemaVersion":1,"eventID":1,"taskID":"\(taskID.uuidString)","type":"result","status":"success","artifacts":[{"type":"mediaAnalysis.v1","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
+        """
+        var parser = ServerSentEventParser(expectedTaskID: taskID)
+
+        XCTAssertThrowsError(
+            try parser.append(Data(frame(eventID: 1, event: "result", json: json).utf8))
+        ) { error in
+            XCTAssertEqual(
+                error as? ServerSentEventParserError,
+                .invalidEvent(field: "artifacts.artifactID")
+            )
+        }
     }
 
     func testRejectsEventLargerThanOneMiBWithoutGrowingPastLimit() {
@@ -233,7 +267,7 @@ final class ServerSentEventParserTests: XCTestCase {
 
     id: 7
     event: result
-    data: {"schemaVersion":1,"eventID":7,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","message":"Analyzed 1 video.","artifacts":[{"type":"mediaAnalysis.v1","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
+    data: {"schemaVersion":1,"eventID":7,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","message":"Analyzed 1 video.","artifacts":[{"artifactID":"22222222-2222-4222-8222-222222222222","type":"mediaAnalysis.v1","relativePath":"result.json","mediaType":"application/json","byteCount":2048,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
 
 
     """

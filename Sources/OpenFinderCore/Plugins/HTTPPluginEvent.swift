@@ -7,13 +7,22 @@ public enum HTTPPluginEventType: String, Codable, Equatable, Sendable {
 }
 
 public struct HTTPPluginArtifact: Codable, Equatable, Sendable {
+    public let artifactID: UUID
     public let type: String
     public let relativePath: String
     public let mediaType: String
     public let byteCount: Int
     public let sha256: String
 
-    public init(type: String, relativePath: String, mediaType: String, byteCount: Int, sha256: String) {
+    public init(
+        type: String,
+        relativePath: String,
+        mediaType: String,
+        byteCount: Int,
+        sha256: String,
+        artifactID: UUID
+    ) {
+        self.artifactID = artifactID
         self.type = type
         self.relativePath = relativePath
         self.mediaType = mediaType
@@ -165,6 +174,7 @@ extension HTTPPluginEvent {
                 allowed: commonKeys.union(["status", "message", "clipboard", "artifacts"])
             )
             try rejectNullValues(in: object, keys: ["message", "clipboard"])
+            try requireArtifactIDs(in: object)
             let fields: ResultFields = try decodeJSON(ResultFields.self, from: data)
             guard ["success", "failure", "cancelled"].contains(fields.status) else {
                 throw ServerSentEventParserError.invalidEvent(field: "status")
@@ -181,6 +191,7 @@ extension HTTPPluginEvent {
                     clipboard: fields.clipboard,
                     artifacts: fields.artifacts.map {
                         .init(type: $0.type, file: .init(
+                            artifactID: $0.artifactID,
                             relativePath: $0.relativePath,
                             mediaType: $0.mediaType,
                             byteCount: $0.byteCount,
@@ -194,7 +205,9 @@ extension HTTPPluginEvent {
     }
 
     private static let commonKeys: Set<String> = ["schemaVersion", "eventID", "taskID", "type"]
-    private static let artifactKeys: Set<String> = ["type", "relativePath", "mediaType", "byteCount", "sha256"]
+    private static let artifactKeys: Set<String> = [
+        "artifactID", "type", "relativePath", "mediaType", "byteCount", "sha256"
+    ]
 
     private static func decodeJSON<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
@@ -213,6 +226,20 @@ extension HTTPPluginEvent {
     private static func rejectNullValues(in object: [String: Any], keys: Set<String>) throws {
         if let key = keys.sorted().first(where: { object[$0] is NSNull }) {
             throw ServerSentEventParserError.invalidEvent(field: key)
+        }
+    }
+
+    private static func requireArtifactIDs(in object: [String: Any]) throws {
+        guard let artifacts = object["artifacts"] as? [Any] else {
+            throw ServerSentEventParserError.invalidJSON
+        }
+        for artifact in artifacts {
+            guard let artifact = artifact as? [String: Any] else {
+                throw ServerSentEventParserError.invalidJSON
+            }
+            guard artifact["artifactID"] != nil else {
+                throw ServerSentEventParserError.invalidEvent(field: "artifacts.artifactID")
+            }
         }
     }
 

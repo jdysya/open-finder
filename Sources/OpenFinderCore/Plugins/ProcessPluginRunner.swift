@@ -11,6 +11,7 @@ public struct PluginRunRequest: Sendable {
     public let pluginDirectory: URL
     public let workingDirectory: URL
     public let onEvent: (@Sendable (PluginOutputEvent) -> Void)?
+    public let onHTTPTranscript: (@Sendable (HTTPPluginTranscript) async -> Void)?
 
     public init(
         manifest: PluginManifest,
@@ -19,7 +20,8 @@ public struct PluginRunRequest: Sendable {
         environment: [String: String],
         pluginDirectory: URL,
         workingDirectory: URL,
-        onEvent: (@Sendable (PluginOutputEvent) -> Void)? = nil
+        onEvent: (@Sendable (PluginOutputEvent) -> Void)? = nil,
+        onHTTPTranscript: (@Sendable (HTTPPluginTranscript) async -> Void)? = nil
     ) {
         self.manifest = manifest
         self.action = action
@@ -28,6 +30,7 @@ public struct PluginRunRequest: Sendable {
         self.pluginDirectory = pluginDirectory
         self.workingDirectory = workingDirectory
         self.onEvent = onEvent
+        self.onHTTPTranscript = onHTTPTranscript
     }
 }
 

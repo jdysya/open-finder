@@ -5,9 +5,39 @@ import UniformTypeIdentifiers
 #endif
 
 public struct LocalFileProvider: FileProvider, @unchecked Sendable {
+    typealias ResourceValuesLoader = @Sendable (URL, Set<URLResourceKey>) throws -> URLResourceValues
+
+    private static let essentialResourceKeys: Set<URLResourceKey> = [
+        .isDirectoryKey,
+        .isSymbolicLinkKey,
+        .isPackageKey,
+        .isHiddenKey,
+        .fileSizeKey,
+        .contentModificationDateKey,
+        .creationDateKey,
+        .isReadableKey,
+        .isWritableKey,
+        .tagNamesKey
+    ]
+    private static let optionalTypeMetadataKeys: Set<URLResourceKey> = [
+        .typeIdentifierKey,
+        .contentTypeKey
+    ]
+
     private let trashItemHandler: @Sendable (URL) throws -> Void
+    private let resourceValues: ResourceValuesLoader
 
     public init(trashItem: (@Sendable (URL) throws -> Void)? = nil) {
+        self.init(
+            trashItem: trashItem,
+            resourceValues: { url, keys in try url.resourceValues(forKeys: keys) }
+        )
+    }
+
+    init(
+        trashItem: (@Sendable (URL) throws -> Void)? = nil,
+        resourceValues: @escaping ResourceValuesLoader
+    ) {
         self.trashItemHandler = trashItem ?? { url in
             #if os(macOS)
             var resultingURL: NSURL?
@@ -16,26 +46,17 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
             throw OpenFinderError.operationFailed("Move to Trash is not available on this platform")
             #endif
         }
+        self.resourceValues = resourceValues
     }
 
     public func list(_ location: Location, options: FileListOptions = .init()) async throws -> [FileItem] {
         try await Self.runFileIO {
             let directory = try localURL(for: location)
-            let keys: Set<URLResourceKey> = [
-                .isDirectoryKey,
-                .isSymbolicLinkKey,
-                .isPackageKey,
-                .isHiddenKey,
-                .fileSizeKey,
-                .contentModificationDateKey,
-                .creationDateKey,
-                .isReadableKey,
-                .isWritableKey,
-                .tagNamesKey,
-                .typeIdentifierKey,
-                .contentTypeKey
-            ]
-            let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [])
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: Array(Self.essentialResourceKeys),
+                options: []
+            )
             let mapped = try urls.compactMap { url -> FileItem? in
                 let item = try makeItem(url)
                 if !options.showHiddenFiles && item.isHidden { return nil }
@@ -186,20 +207,13 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
     }
 
     private func makeItem(_ url: URL) throws -> FileItem {
-        let values = try url.resourceValues(forKeys: [
-            .isDirectoryKey,
-            .isSymbolicLinkKey,
-            .isPackageKey,
-            .isHiddenKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .creationDateKey,
-            .isReadableKey,
-            .isWritableKey,
-            .tagNamesKey,
-            .typeIdentifierKey,
-            .contentTypeKey
-        ])
+        let values = try resourceValues(url, Self.essentialResourceKeys)
+        let typeMetadata: URLResourceValues?
+        do {
+            typeMetadata = try resourceValues(url, Self.optionalTypeMetadataKeys)
+        } catch {
+            typeMetadata = nil
+        }
         let kind: FileKind
         if values.isSymbolicLink == true {
             kind = .symlink
@@ -213,7 +227,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
         let ext = url.pathExtension.isEmpty ? nil : url.pathExtension.lowercased()
         let mimeType: String?
         #if canImport(UniformTypeIdentifiers)
-        if #available(macOS 11.0, *), let contentType = values.contentType {
+        if #available(macOS 11.0, *), let contentType = typeMetadata?.contentType {
             mimeType = contentType.preferredMIMEType
         } else {
             mimeType = nil
@@ -229,7 +243,7 @@ public struct LocalFileProvider: FileProvider, @unchecked Sendable {
             size: values.fileSize.map(Int64.init),
             modificationDate: values.contentModificationDate,
             creationDate: values.creationDate,
-            uti: values.typeIdentifier,
+            uti: typeMetadata?.typeIdentifier,
             mimeType: mimeType,
             fileExtension: ext,
             isHidden: values.isHidden == true || url.lastPathComponent.hasPrefix("."),

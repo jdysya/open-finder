@@ -155,6 +155,14 @@ public struct PluginExecuteTaskHandler: Sendable {
         } catch {
             throw OpenFinderError.operationFailed("Plugin execution failed.")
         }
+        if case .http = plugin.manifest.execution {
+            _ = await events.appendLog(HTTPPluginTranscript.resultCommitted(
+                taskID: descriptor.taskID,
+                pluginID: plugin.id,
+                actionID: action.id,
+                schema: payload.resultSchemaID
+            ).message)
+        }
         return .success(
             summary: outcome.summary,
             clipboard: payload.outputPolicy.canCopyToClipboard ? outcome.clipboard : nil
@@ -233,6 +241,9 @@ public struct PluginExecuteTaskHandler: Sendable {
                         Task { _ = await events.appendLog(message) }
                     }
                 }
+            },
+            onHTTPTranscript: { transcript in
+                _ = await events.appendLog(transcript.message)
             },
             publish: { projection in
                 try await publish(taskID, projection)

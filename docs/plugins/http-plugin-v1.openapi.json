@@ -1256,10 +1256,15 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "artifactID",
           "type",
           "path"
         ],
         "properties": {
+          "artifactID": {
+            "type": "string",
+            "format": "uuid"
+          },
           "type": {
             "type": "string",
             "const": "local"
@@ -1863,6 +1868,7 @@
           "message": "Analyzed 1 video.",
           "artifacts": [
             {
+              "artifactID": "22222222-2222-4222-8222-222222222222",
               "type": "mediaAnalysis.v1",
               "relativePath": "result.json",
               "mediaType": "application/json",
@@ -1883,7 +1889,7 @@
       },
       "SSEReplay": {
         "summary": "Replay after Last-Event-ID 2",
-        "value": "id: 3\nevent: progress\ndata: {\"schemaVersion\":1,\"eventID\":3,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"progress\",\"fraction\":0.375,\"message\":\"3/8 frames\",\"phase\":\"Keyframe extraction\",\"completed\":3,\"total\":8,\"unit\":\"frames\"}\n\n: keep-alive\n\nid: 7\nevent: result\ndata: {\"schemaVersion\":1,\"eventID\":7,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"result\",\"status\":\"success\",\"message\":\"Analyzed 1 video.\",\"artifacts\":[{\"type\":\"mediaAnalysis.v1\",\"relativePath\":\"result.json\",\"mediaType\":\"application/json\",\"byteCount\":2048,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}\n\n"
+        "value": "id: 3\nevent: progress\ndata: {\"schemaVersion\":1,\"eventID\":3,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"progress\",\"fraction\":0.375,\"message\":\"3/8 frames\",\"phase\":\"Keyframe extraction\",\"completed\":3,\"total\":8,\"unit\":\"frames\"}\n\n: keep-alive\n\nid: 7\nevent: result\ndata: {\"schemaVersion\":1,\"eventID\":7,\"taskID\":\"11111111-1111-1111-1111-111111111111\",\"type\":\"result\",\"status\":\"success\",\"message\":\"Analyzed 1 video.\",\"artifacts\":[{\"artifactID\":\"22222222-2222-4222-8222-222222222222\",\"type\":\"mediaAnalysis.v1\",\"relativePath\":\"result.json\",\"mediaType\":\"application/json\",\"byteCount\":2048,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}\n\n"
       }
     }
   }

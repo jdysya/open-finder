@@ -75,8 +75,8 @@ final class ConfinedArtifactReaderTests: XCTestCase {
             let data = Data("hello".utf8)
             _ = try write(data, relativePath: "result.json", root: root)
             let valid = metadata(relativePath: "result.json", data: data)
-            let wrongSize = PluginFileArtifact(relativePath: valid.relativePath, mediaType: valid.mediaType, byteCount: 6, sha256: valid.sha256)
-            let wrongHash = PluginFileArtifact(relativePath: valid.relativePath, mediaType: valid.mediaType, byteCount: 5, sha256: String(repeating: "0", count: 64))
+            let wrongSize = PluginFileArtifact(artifactID: valid.artifactID, relativePath: valid.relativePath, mediaType: valid.mediaType, byteCount: 6, sha256: valid.sha256)
+            let wrongHash = PluginFileArtifact(artifactID: valid.artifactID, relativePath: valid.relativePath, mediaType: valid.mediaType, byteCount: 5, sha256: String(repeating: "0", count: 64))
             XCTAssertThrowsError(try reader.read(wrongSize)) { XCTAssertEqual($0 as? ConfinedArtifactError, .sizeMismatch) }
             XCTAssertThrowsError(try reader.read(wrongHash)) { XCTAssertEqual($0 as? ConfinedArtifactError, .hashMismatch) }
         }
@@ -115,6 +115,7 @@ final class ConfinedArtifactReaderTests: XCTestCase {
 
     private func metadata(relativePath: String, data: Data) -> PluginFileArtifact {
         PluginFileArtifact(
+            artifactID: UUID(),
             relativePath: relativePath,
             mediaType: "application/json",
             byteCount: data.count,

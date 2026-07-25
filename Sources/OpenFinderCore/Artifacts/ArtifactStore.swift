@@ -5,6 +5,7 @@ import Foundation
 public enum ArtifactStoreError: Error, Equatable, Sendable {
     case invalidRoot
     case invalidState(ArtifactLifecycleState)
+    case duplicateArtifactID(UUID)
     case metadataRecordMissing(UUID)
     case fileOperationFailed
 }
@@ -100,16 +101,27 @@ public actor ArtifactStore {
             .appendingPathComponent("payload")
     }
 
+    nonisolated static func publishedRelativePath(
+        taskID: UUID,
+        artifact: PluginFileArtifact
+    ) -> String {
+        let filename = URL(fileURLWithPath: artifact.relativePath).lastPathComponent
+        return "published/\(taskID.uuidString)/\(artifact.artifactID.uuidString)/\(filename)"
+    }
+
     public func stage(
         taskID: UUID,
         schemaID: String,
         artifact: PluginFileArtifact,
         from reader: ConfinedArtifactReader,
-        id: UUID = UUID(),
         at date: Date = .now
     ) async throws -> ArtifactRecord {
         try verifyRoot()
         try Task.checkCancellation()
+        let id = artifact.artifactID
+        guard await metadata.record(id: id) == nil else {
+            throw ArtifactStoreError.duplicateArtifactID(id)
+        }
         let staging = stagingURL(taskID: taskID, artifactID: id)
         try fileManager.createDirectory(at: staging.deletingLastPathComponent(), withIntermediateDirectories: true)
         do {
@@ -117,12 +129,10 @@ public actor ArtifactStore {
             try syncDirectory(staging.deletingLastPathComponent())
             try Task.checkCancellation()
 
-            let filename = URL(fileURLWithPath: artifact.relativePath).lastPathComponent
-            let relativePath = "published/\(taskID.uuidString)/\(id.uuidString)/\(filename)"
             let staged = ArtifactRecord(
                 id: id,
                 schemaID: schemaID,
-                relativePath: relativePath,
+                relativePath: Self.publishedRelativePath(taskID: taskID, artifact: artifact),
                 mediaType: artifact.mediaType,
                 byteCount: artifact.byteCount,
                 sha256: artifact.sha256,
@@ -174,6 +184,7 @@ public actor ArtifactStore {
     public func read(_ record: ArtifactRecord) throws -> Data {
         try verifyRoot()
         return try ConfinedArtifactReader(root: root).read(.init(
+            artifactID: record.id,
             relativePath: record.relativePath,
             mediaType: record.mediaType,
             byteCount: record.byteCount,

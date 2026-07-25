@@ -16,6 +16,7 @@ final class PluginArtifactTests: XCTestCase {
 
     func testFileArtifactRoundTripsWithoutInlineContent() throws {
         let file = PluginFileArtifact(
+            artifactID: UUID(),
             relativePath: "results/result.json",
             mediaType: "application/json",
             byteCount: 12,
@@ -53,6 +54,7 @@ final class PluginArtifactTests: XCTestCase {
     func testRedactorChangesOnlyInlineTextAndPreservesFileMetadata() {
         let token = "secret-token"
         let file = PluginFileArtifact(
+            artifactID: UUID(),
             relativePath: "secret-token/result.json",
             mediaType: "application/secret-token",
             byteCount: 42,

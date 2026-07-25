@@ -68,17 +68,20 @@ public struct PluginExecutionRequest: Sendable {
 
 public struct PluginExecutionCallbacks: Sendable {
     public let onEvent: @Sendable (PluginOutputEvent) -> Void
+    public let onHTTPTranscript: @Sendable (HTTPPluginTranscript) async -> Void
     public let publish: @Sendable (PluginResultProjection) async throws -> Void
     public let markEffectsCommitted: @Sendable () async throws -> Void
     public let cleanupWarning: @Sendable () async -> Void
 
     public init(
         onEvent: @escaping @Sendable (PluginOutputEvent) -> Void = { _ in },
+        onHTTPTranscript: @escaping @Sendable (HTTPPluginTranscript) async -> Void = { _ in },
         publish: @escaping @Sendable (PluginResultProjection) async throws -> Void = { _ in },
         markEffectsCommitted: @escaping @Sendable () async throws -> Void = {},
         cleanupWarning: @escaping @Sendable () async -> Void = {}
     ) {
         self.onEvent = onEvent
+        self.onHTTPTranscript = onHTTPTranscript
         self.publish = publish
         self.markEffectsCommitted = markEffectsCommitted
         self.cleanupWarning = cleanupWarning

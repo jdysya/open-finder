@@ -24,6 +24,12 @@ public actor ArtifactCommitCoordinator {
         cleanupWorkspace: CleanupWorkspace
     ) async throws -> [ArtifactRecord] {
         try Task.checkCancellation()
+        var artifactIDs: Set<UUID> = []
+        for artifact in artifacts {
+            guard artifactIDs.insert(artifact.artifactID).inserted else {
+                throw ArtifactStoreError.duplicateArtifactID(artifact.artifactID)
+            }
+        }
         var records: [ArtifactRecord] = []
         var effectsCommitted = false
         do {

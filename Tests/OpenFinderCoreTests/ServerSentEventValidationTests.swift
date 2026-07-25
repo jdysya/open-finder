@@ -31,7 +31,7 @@ final class ServerSentEventValidationTests: XCTestCase {
     }
 
     func testRejectsInvalidFileArtifactMetadata() {
-        let json = #"{"schemaVersion":1,"eventID":1,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","artifacts":[{"type":"result","relativePath":"../result.json","mediaType":"application/json","byteCount":1,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}"#
+        let json = #"{"schemaVersion":1,"eventID":1,"taskID":"11111111-1111-1111-1111-111111111111","type":"result","status":"success","artifacts":[{"artifactID":"22222222-2222-4222-8222-222222222222","type":"result","relativePath":"../result.json","mediaType":"application/json","byteCount":1,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}"#
         assertAppendError(frame(eventID: 1, event: "result", json: json), equals: .invalidEvent(field: "artifacts.relativePath"))
     }
 

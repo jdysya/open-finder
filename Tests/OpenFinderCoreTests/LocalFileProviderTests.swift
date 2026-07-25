@@ -31,6 +31,42 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertEqual(FileBrowserFilter.apply(items, text: "ALP").map(\.name), ["alpha.md"])
     }
 
+    func testListKeepsReadableFileWhenOptionalTypeMetadataIsUnavailable() async throws {
+        let file = tempRoot.appendingPathComponent("receipt.txt")
+        try "receipt".write(to: file, atomically: true, encoding: .utf8)
+        let optionalTypeKeys: Set<URLResourceKey> = [.typeIdentifierKey, .contentTypeKey]
+        let provider = LocalFileProvider(resourceValues: { url, keys in
+            if !keys.isDisjoint(with: optionalTypeKeys) {
+                throw NSError(domain: NSOSStatusErrorDomain, code: -10813)
+            }
+            return try url.resourceValues(forKeys: keys)
+        })
+
+        let items = try await provider.list(.local(path: tempRoot.path))
+        let listedFile = try XCTUnwrap(items.first { $0.name == file.lastPathComponent })
+
+        XCTAssertEqual(listedFile.size, 7)
+        XCTAssertTrue(listedFile.isReadable)
+        XCTAssertTrue(listedFile.isWritable)
+        XCTAssertNil(listedFile.uti)
+        XCTAssertNil(listedFile.mimeType)
+        print("local_file_listed=true essential_metadata_preserved=true optional_metadata_failure_tolerated=true")
+    }
+
+    func testStatPropagatesMissingLocalFileError() async throws {
+        let missingFile = tempRoot.appendingPathComponent("missing.txt")
+        let provider = LocalFileProvider()
+
+        do {
+            _ = try await provider.stat(.local(path: missingFile.path))
+            XCTFail("A missing local file must not be converted into an item")
+        } catch {
+            let nsError = error as NSError
+            XCTAssertEqual(nsError.domain, NSCocoaErrorDomain)
+            XCTAssertEqual(nsError.code, CocoaError.fileReadNoSuchFile.rawValue)
+        }
+    }
+
     func testListAndStatReadFinderTags() async throws {
         let file = tempRoot.appendingPathComponent("tagged.txt")
         let folder = tempRoot.appendingPathComponent("Tagged Folder", isDirectory: true)

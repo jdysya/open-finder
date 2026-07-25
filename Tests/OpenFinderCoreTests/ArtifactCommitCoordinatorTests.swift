@@ -4,6 +4,39 @@ import XCTest
 @testable import OpenFinderCore
 
 final class ArtifactCommitCoordinatorTests: XCTestCase {
+    func testRejectsDuplicateSuppliedArtifactIDsBeforeStaging() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let backend = InMemoryArtifactMetadataBackend()
+        let store = try ArtifactStore(root: fixture.storeRoot, metadata: backend)
+        let coordinator = ArtifactCommitCoordinator(store: store, metadata: backend)
+        let duplicateID = UUID()
+        let first = try fixture.write("first.bin", data: Data("first".utf8), artifactID: duplicateID)
+        let second = try fixture.write("second.bin", data: Data("second".utf8), artifactID: duplicateID)
+
+        do {
+            _ = try await coordinator.commit(
+                taskID: fixture.taskID,
+                schemaID: "duplicate.v1",
+                artifacts: [first, second],
+                from: ConfinedArtifactReader(root: fixture.workspace),
+                markEffectsCommitted: {},
+                cleanupWorkspace: {}
+            )
+            XCTFail("Expected duplicate artifact IDs to be rejected")
+        } catch {
+            XCTAssertEqual(error as? ArtifactStoreError, .duplicateArtifactID(duplicateID))
+        }
+
+        let entries = await backend.entries()
+        XCTAssertTrue(entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.storeRoot
+                .appendingPathComponent("published/\(fixture.taskID.uuidString)", isDirectory: true)
+                .path
+        ))
+    }
+
     func testCommitPersistsBeforeWorkspaceCleanup() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -151,6 +184,7 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try reader.copy(
             artifact: .init(
+                artifactID: valid.artifactID,
                 relativePath: valid.relativePath, mediaType: valid.mediaType,
                 byteCount: valid.byteCount + 1, sha256: valid.sha256
             ),
@@ -159,6 +193,7 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try reader.copy(
             artifact: .init(
+                artifactID: valid.artifactID,
                 relativePath: valid.relativePath, mediaType: valid.mediaType,
                 byteCount: valid.byteCount, sha256: String(repeating: "0", count: 64)
             ),
@@ -170,7 +205,7 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
         let link = fixture.workspace.appendingPathComponent("link.bin")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
         XCTAssertThrowsError(try reader.copy(
-            artifact: .init(relativePath: "link.bin", mediaType: "application/octet-stream", byteCount: 7, sha256: valid.sha256),
+            artifact: .init(artifactID: UUID(), relativePath: "link.bin", mediaType: "application/octet-stream", byteCount: 7, sha256: valid.sha256),
             to: destination
         ))
     }
@@ -200,6 +235,7 @@ final class ArtifactCommitCoordinatorTests: XCTestCase {
             markEffectsCommitted: { withUnsafeCurrentTask { $0?.cancel() } },
             cleanupWorkspace: {}
         )
+        XCTAssertEqual(committed.first?.id, source.artifactID)
         XCTAssertEqual(committed.first?.state, .committed)
         let committedData = try await store.read(committed[0])
         XCTAssertEqual(committedData, Data("value".utf8))
@@ -275,11 +311,16 @@ private struct Fixture {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
     }
 
-    func write(_ relativePath: String, data: Data) throws -> PluginFileArtifact {
+    func write(
+        _ relativePath: String,
+        data: Data,
+        artifactID: UUID = UUID()
+    ) throws -> PluginFileArtifact {
         let url = workspace.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url)
         return .init(
+            artifactID: artifactID,
             relativePath: relativePath, mediaType: "application/octet-stream",
             byteCount: data.count, sha256: SHA256.hexDigest(data)
         )

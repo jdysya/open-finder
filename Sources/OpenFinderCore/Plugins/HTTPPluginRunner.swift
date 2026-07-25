@@ -67,7 +67,14 @@ public struct HTTPPluginRunner: PluginRunner {
         let prepared = try HTTPPluginEndpoint.prepare(request: request, credentialResolver: credentialResolver)
         let client = HTTPPluginClient(endpoint: prepared.endpoint, token: prepared.bearerToken, transport: transport)
         let capabilities = try await client.negotiate(manifest: request.manifest, action: request.action)
-        _ = try await client.submit(input: prepared.input)
+        await request.onHTTPTranscript?(HTTPPluginTranscript.request(
+            taskID: prepared.input.taskID, pluginID: request.manifest.id, actionID: request.action.id
+        ))
+        let submission = try await client.submit(input: prepared.input)
+        await request.onHTTPTranscript?(HTTPPluginTranscript.accepted(
+            taskID: prepared.input.taskID, pluginID: request.manifest.id,
+            actionID: request.action.id, status: submission.statusCode
+        ))
         await cancellations.register(taskID: prepared.input.taskID) {
             await HTTPPluginCancellation.send(
                 transport: transport, request: client.cancellationRequest(taskID: prepared.input.taskID),
@@ -80,20 +87,29 @@ public struct HTTPPluginRunner: PluginRunner {
         var cursor = 0
         if capabilities.features.sse,
            let result = try await consumeSSE(client: client, taskID: prepared.input.taskID,
-                                             cursor: &cursor, events: &events, onEvent: request.onEvent) {
-            return try await finish(result, client: client, events: &events, onEvent: request.onEvent)
+                                             cursor: &cursor, events: &events, onEvent: request.onEvent,
+                                             onHTTPTranscript: request.onHTTPTranscript,
+                                             pluginID: request.manifest.id, actionID: request.action.id) {
+            return try await finish(result, client: client, events: &events, onEvent: request.onEvent,
+                                    onHTTPTranscript: request.onHTTPTranscript,
+                                    pluginID: request.manifest.id, actionID: request.action.id,
+                                    schema: request.action.output?.resultSchemaID ?? "unknown")
         }
         guard capabilities.features.polling else {
             throw HTTPPluginError.invalidResponse("event stream reconnects exhausted")
         }
         let result = try await poll(client: client, taskID: prepared.input.taskID,
                                     cursor: &cursor, events: &events, onEvent: request.onEvent)
-        return try await finish(result, client: client, events: &events, onEvent: request.onEvent)
+        return try await finish(result, client: client, events: &events, onEvent: request.onEvent,
+                                onHTTPTranscript: request.onHTTPTranscript,
+                                pluginID: request.manifest.id, actionID: request.action.id,
+                                schema: request.action.output?.resultSchemaID ?? "unknown")
     }
 
     private func consumeSSE(
         client: HTTPPluginClient, taskID: UUID, cursor: inout Int,
-        events: inout [PluginOutputEvent], onEvent: (@Sendable (PluginOutputEvent) -> Void)?
+        events: inout [PluginOutputEvent], onEvent: (@Sendable (PluginOutputEvent) -> Void)?,
+        onHTTPTranscript: (@Sendable (HTTPPluginTranscript) async -> Void)?, pluginID: String, actionID: String
     ) async throws -> HTTPPluginEvent? {
         let delays = [0.25, 0.5, 1.0]
         for attempt in 0 ... 3 {
@@ -108,6 +124,9 @@ public struct HTTPPluginRunner: PluginRunner {
                         cursor = event.eventID
                         let output = HTTPPluginRedactor.event(event.pluginOutputEvent, token: client.token)
                         events.append(output)
+                        await onHTTPTranscript?(HTTPPluginTranscript.sse(
+                            taskID: taskID, pluginID: pluginID, actionID: actionID, event: event
+                        ))
                         onEvent?(output)
                         if event.type == .result { terminal = event }
                     }
@@ -146,7 +165,7 @@ public struct HTTPPluginRunner: PluginRunner {
                 events.append(event); onEvent?(event)
             }
             if snapshot.state.isTerminal {
-                let result = try await client.result(taskID: taskID)
+                let result = try await client.result(taskID: taskID).event
                 let expectedStatus: String = switch snapshot.state {
                 case .succeeded: "success"
                 case .failed: "failure"
@@ -165,10 +184,20 @@ public struct HTTPPluginRunner: PluginRunner {
 
     private func finish(
         _ streamed: HTTPPluginEvent, client: HTTPPluginClient,
-        events: inout [PluginOutputEvent], onEvent: (@Sendable (PluginOutputEvent) -> Void)?
+        events: inout [PluginOutputEvent], onEvent: (@Sendable (PluginOutputEvent) -> Void)?,
+        onHTTPTranscript: (@Sendable (HTTPPluginTranscript) async -> Void)?, pluginID: String, actionID: String,
+        schema: String
     ) async throws -> PluginRunResult {
-        let result = try await client.result(taskID: streamed.taskID)
+        let response = try await client.result(taskID: streamed.taskID)
+        let result = response.event
+        await onHTTPTranscript?(HTTPPluginTranscript.resultFetched(
+            taskID: streamed.taskID, pluginID: pluginID, actionID: actionID, status: response.statusCode
+        ))
         guard result == streamed else { throw HTTPPluginError.invalidResponse("terminal result mismatch") }
+        await onHTTPTranscript?(HTTPPluginTranscript.resultValidated(
+            taskID: streamed.taskID, pluginID: pluginID, actionID: actionID,
+            schema: schema, artifacts: result.artifacts
+        ))
         let output = HTTPPluginRedactor.event(result.pluginOutputEvent, token: client.token)
         if events.last != output {
             events.append(output); onEvent?(output)

@@ -4,6 +4,81 @@ import XCTest
 @testable import OpenFinderApp
 
 final class MediaAnalysisRendererIntegrationTests: XCTestCase {
+    func testFilterFacetsUseChineseVideoSemanticsAndIncludeJoyTagMomentLabels() throws {
+        let joyTag = MediaSuggestedTag(
+            name: "床",
+            category: "scene",
+            confidence: 0.82,
+            frameRatio: 0.5,
+            source: "joytag",
+            modelVersion: "local"
+        )
+        let item = MediaAnalysisItem(
+            media: .init(
+                stableID: "filter-semantics",
+                sourcePath: "/tmp/filter-semantics.mp4",
+                displayName: "filter-semantics.mp4"
+            ),
+            summaryMetrics: [],
+            facets: [],
+            moments: [
+                .init(
+                    index: 0,
+                    timestamp: 0,
+                    summary: "Opening",
+                    facets: [
+                        .init(key: "faceVisible", value: .bool(true)),
+                        .init(key: "faceCount", value: .integer(1)),
+                        .init(key: "nudityLevel", value: .text("none")),
+                    ],
+                    assets: [],
+                    suggestedTags: [joyTag]
+                ),
+                .init(
+                    index: 1,
+                    timestamp: 10,
+                    summary: "Second",
+                    facets: [
+                        .init(key: "faceVisible", value: .bool(false)),
+                        .init(key: "faceCount", value: .integer(0)),
+                        .init(key: "nudityLevel", value: .text("explicit")),
+                    ],
+                    assets: [],
+                    suggestedTags: []
+                ),
+            ],
+            suggestedTags: [joyTag],
+            report: nil
+        )
+        let presentation = MediaAnalysisPresentationService()
+
+        let facets = presentation.facets(for: item)
+        XCTAssertEqual(
+            facets.first { $0.selection == .init(key: "faceVisible", value: .bool(true)) }?.label,
+            "露脸"
+        )
+        XCTAssertEqual(
+            facets.first { $0.selection == .init(key: "faceCount", value: .integer(1)) }?.label,
+            "1 张人脸"
+        )
+        XCTAssertEqual(
+            facets.first { $0.selection == .init(key: "nudityLevel", value: .text("none")) }?.label,
+            "完全穿着"
+        )
+        XCTAssertEqual(
+            facets.first { $0.selection == .init(key: "nudityLevel", value: .text("explicit")) }?.label,
+            "完全裸露"
+        )
+
+        let bed = try XCTUnwrap(facets.first { $0.label == "床" })
+        XCTAssertEqual(bed.category, "JoyTag · 场景")
+        XCTAssertEqual(bed.momentCount, 1)
+        XCTAssertEqual(
+            presentation.moments(in: item, matching: [bed.selection]).map(\.index),
+            [0]
+        )
+    }
+
     @MainActor
     func testFinderTagApplyEligibilityBaseline() {
         XCTAssertFalse(

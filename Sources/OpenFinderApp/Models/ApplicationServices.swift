@@ -164,17 +164,24 @@ final class ApplicationServices {
         if let injectedArtifactResults = dependencies.artifactResultService {
             configuredArtifactResults = injectedArtifactResults
         } else {
-            let metadata: any ArtifactMetadataBackend = openedDatabase.map {
-                GRDBArtifactMetadataBackend(database: $0)
-            } ?? InMemoryArtifactMetadataBackend()
             let root = dependencies.supportDirectory.appendingPathComponent(
                 "artifacts",
                 isDirectory: true
             )
-            configuredArtifactResults = try? ArtifactResultService(
-                store: ArtifactStore(root: root, metadata: metadata),
-                metadata: metadata
-            )
+            if let openedDatabase {
+                let metadata = GRDBArtifactMetadataBackend(database: openedDatabase)
+                configuredArtifactResults = try? ArtifactResultService(
+                    store: ArtifactStore(root: root, metadata: metadata),
+                    metadata: metadata,
+                    mediaDocuments: metadata
+                )
+            } else {
+                let metadata = InMemoryArtifactMetadataBackend()
+                configuredArtifactResults = try? ArtifactResultService(
+                    store: ArtifactStore(root: root, metadata: metadata),
+                    metadata: metadata
+                )
+            }
         }
         artifactResults = configuredArtifactResults
         let artifactCommit = configuredArtifactResults.map { artifactResults in

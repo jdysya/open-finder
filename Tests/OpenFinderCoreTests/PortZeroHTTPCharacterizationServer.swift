@@ -141,7 +141,7 @@ final class PortZeroHTTPCharacterizationServer: @unchecked Sendable {
     }
 
     private static let program = #"""
-import hashlib, http.server, json, os, pathlib
+import hashlib, http.server, json, os, pathlib, uuid
 
 TOKEN = os.environ["OPENFINDER_CHARACTERIZATION_TOKEN"]
 OBSERVATIONS = os.environ["OPENFINDER_CHARACTERIZATION_OBSERVATIONS"]
@@ -210,6 +210,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             output.mkdir(parents=True, exist_ok=True)
             (output / "media-analysis.json").write_bytes(data)
             media_artifacts[task_id] = [{"type":"mediaAnalysis.v1",
+                "artifactID":str(uuid.uuid5(uuid.NAMESPACE_URL, task_id + "/media-analysis.json")),
                 "relativePath":"media-analysis.json","mediaType":"application/json",
                 "byteCount":len(data),"sha256":hashlib.sha256(data).hexdigest()}]
         self.send_json({"schemaVersion":1,"taskID":task_id,"state":"queued","createdAt":"2026-07-18T00:00:00Z","updatedAt":"2026-07-18T00:00:00Z","startedAt":None,"finishedAt":None,"lastEventID":0,"resultAvailable":False}, 202)

@@ -1,7 +1,15 @@
 import Foundation
 import GRDB
 
-public final class GRDBArtifactMetadataBackend: ArtifactMetadataBackend, Sendable {
+public enum GRDBMediaAnalysisDocumentStoreError: Error, Equatable {
+    case missingCommittedResultArtifact
+}
+
+public final class GRDBArtifactMetadataBackend:
+    ArtifactMetadataBackend,
+    MediaAnalysisDocumentStore,
+    Sendable
+{
     private let databasePool: DatabasePool
 
     public init(database: AppDatabase) {
@@ -51,6 +59,71 @@ public final class GRDBArtifactMetadataBackend: ArtifactMetadataBackend, Sendabl
                     record.id.uuidString,
                     ordinal,
                     Date().timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
+    public func persist(
+        _ document: MediaAnalysisDocument,
+        payload: Data,
+        committedArtifacts: [ArtifactRecord]
+    ) async throws {
+        guard committedArtifacts.isEmpty || committedArtifacts.contains(where: {
+            $0.schemaID == MediaAnalysisDocument.schemaIdentifier && $0.state == .committed
+        }) else {
+            throw GRDBMediaAnalysisDocumentStoreError.missingCommittedResultArtifact
+        }
+        try await databasePool.write { db in
+            for artifact in committedArtifacts {
+                guard try Bool.fetchOne(
+                    db,
+                    sql: """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM artifact_records
+                            JOIN task_artifacts USING (artifact_id)
+                            WHERE artifact_id = ? AND task_id = ? AND state = 'committed'
+                        )
+                        """,
+                    arguments: [artifact.id.uuidString, document.taskID.uuidString]
+                ) == true else {
+                    throw ArtifactResultServiceError.artifactNotCommitted(artifact.id)
+                }
+            }
+            try db.execute(
+                sql: """
+                    DELETE FROM media_analysis_documents
+                    WHERE task_id = ? AND document_id <> ?
+                    """,
+                arguments: [
+                    document.taskID.uuidString,
+                    document.documentID.uuidString
+                ]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO media_analysis_documents (
+                        document_id, task_id, schema_id, schema_version,
+                        payload, created_at, reconciliation_state
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'stable')
+                    ON CONFLICT(document_id) DO UPDATE SET
+                        task_id = excluded.task_id,
+                        schema_id = excluded.schema_id,
+                        schema_version = excluded.schema_version,
+                        payload = excluded.payload,
+                        created_at = excluded.created_at,
+                        reconciliation_state = 'stable',
+                        reconciliation_reason = NULL,
+                        reconciled_at = NULL
+                    """,
+                arguments: [
+                    document.documentID.uuidString,
+                    document.taskID.uuidString,
+                    document.schemaID,
+                    document.schemaVersion,
+                    payload,
+                    document.createdAt.timeIntervalSince1970
                 ]
             )
         }
