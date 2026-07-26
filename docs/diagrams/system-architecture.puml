@@ -1,0 +1,72 @@
+@startuml OpenFinder_System_Architecture
+title OpenFinder System Architecture
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+actor User
+
+package "OpenFinderApp" {
+  [SwiftUI / AppKit Views] as Views
+  [AppModel] as AppModel
+  [Application Services] as Services
+  [Composition Root] as Composition
+  [Renderer Catalog] as Renderer
+}
+
+package "OpenFinderCore" {
+  [Domain & Capabilities] as Domain
+  [FileSourceRegistry] as FileSources
+  [Remote Registries] as RemoteRegistries
+  [TaskQueueService] as Tasks
+  [PluginExecutionCoordinator] as PluginCoordinator
+  [Plugin Runner Router] as RunnerRouter
+  [ArtifactResultService] as Artifacts
+  [Result Handler Registry] as ResultHandlers
+  [Persistence Maintenance] as Maintenance
+}
+
+database "SQLite / GRDB" as DB
+folder "Application Support\nconfig, accounts, plugins, artifacts" as Support
+cloud "WebDAV / Kodbox" as Remote
+folder "Local File System\nFinder Tags" as Local
+component "Process Plugins\nshell / Python / Node" as Process
+component "Loopback HTTP Plugins\nprotocol v1" as HTTP
+component "macOS Keychain" as Keychain
+
+User --> Views
+Views --> AppModel
+AppModel --> Services
+Composition --> Services
+Services --> Domain
+Services --> FileSources
+Services --> RemoteRegistries
+Services --> Tasks
+Services --> PluginCoordinator
+Services --> Artifacts
+Services --> Renderer
+
+FileSources --> Local
+FileSources --> RemoteRegistries
+RemoteRegistries --> Remote
+Tasks --> DB
+PluginCoordinator --> RunnerRouter
+RunnerRouter --> Process
+RunnerRouter --> HTTP
+PluginCoordinator --> Artifacts
+Artifacts --> ResultHandlers
+Artifacts --> DB
+Artifacts --> Support
+Maintenance --> DB
+Maintenance --> Support
+Services --> Keychain
+Services --> Support
+ResultHandlers --> Renderer
+Renderer --> Views
+
+note bottom of RunnerRouter
+Transport differs below this boundary.
+Terminal validation, artifacts, handlers,
+and rendering are shared above it.
+end note
+@enduml

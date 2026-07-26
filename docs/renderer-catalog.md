@@ -1,5 +1,7 @@
 # Renderer Catalog
 
+Status: current reference. The end-to-end lifecycle is explained in [插件机制](plugin-system.md#10-result-handler-与-renderer).
+
 `PluginRendererCatalog` is the single presentation registry for plugin results. Each entry contains
 a result schema identifier, a renderer descriptor, and a typed-projection predicate.
 

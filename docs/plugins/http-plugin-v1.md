@@ -2,6 +2,8 @@
 
 Status: canonical v1 contract.
 
+Architecture and lifecycle context: [插件机制](../plugin-system.md). Manifest and shared event/artifact fields: [插件 API](../plugin-api.md).
+
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, and **MAY** are normative. The machine-readable companion is [`http-plugin-v1.openapi.json`](http-plugin-v1.openapi.json).
 
 ## Transport boundary

@@ -1,8 +1,10 @@
 # OpenFinder
 
-OpenFinder is a native macOS SwiftUI/AppKit prototype for the product described in `docs/plan.md`: a developer-oriented extensible file manager with local dual-pane browsing, plugin actions, a task queue, and a WebDAV provider foundation.
+OpenFinder 是一个原生 macOS SwiftUI/AppKit 双栏文件工作区：它用统一能力模型浏览本地、WebDAV 和 Kodbox 文件源，通过持久任务队列执行传输与插件动作，并以 schema 驱动的工件系统呈现插件结果。
 
-## Implemented scope
+完整文档从 [`docs/README.md`](docs/README.md) 开始；[`docs/plan.md`](docs/plan.md) 是历史产品计划，不代表当前实现边界。
+
+## 已实现范围
 
 - SwiftPM macOS app (`OpenFinder`) and testable core library (`OpenFinderCore`).
 - SwiftUI main window, commands, settings, dual-pane layout, task queue panel.
@@ -17,22 +19,22 @@ OpenFinder is a native macOS SwiftUI/AppKit prototype for the product described 
 - Schema-driven plugin results: `mediaAnalysis.v1` uses one shared renderer across plugin IDs;
   unknown schemas use generic artifact presentation.
 
-## Build and test
+## 构建与测试
 
 ```bash
 swift test
 swift build
 ```
 
-## Run the app
+## 运行应用
 
 ```bash
 ./script/build_and_run.sh
 ```
 
-The script builds a SwiftPM GUI executable, stages `dist/OpenFinder.app`, copies `ExamplePlugins` into app resources as built-in plugins, and launches the app as a foreground macOS bundle.
+脚本会构建 SwiftPM GUI executable，组装并签名 `dist/OpenFinder.app`，把 `ExamplePlugins` 复制为内置插件，然后启动 app bundle。
 
-Useful modes:
+常用模式：
 
 ```bash
 ./script/build_and_run.sh --verify
@@ -41,22 +43,27 @@ Useful modes:
 ./script/build_and_run.sh --debug
 ```
 
-## Plugin development
+## 插件开发
 
-See `docs/architecture.md` for the code-level architecture/design guide and `docs/plugin-api.md` for plugin development. Put user plugins under:
+先阅读 [插件机制](docs/plugin-system.md)，字段参考见 [插件 API](docs/plugin-api.md)，HTTP 服务实现必须遵循 [HTTP 插件协议 v1](docs/plugins/http-plugin-v1.md)。用户插件目录：
 
 ```text
 ~/Library/Application Support/OpenFinder/Plugins/
 ```
 
-The app also scans the repo-local `ExamplePlugins/` during development and bundled `Contents/Resources/BuiltinPlugins/` when launched through the run script.
+开发时还会扫描仓库内 `ExamplePlugins/`；通过运行脚本生成的 app 会扫描 bundle 内 `Contents/Resources/BuiltinPlugins/`。
 
-Architecture references:
+## 文档导航
 
+- [`docs/README.md`](docs/README.md)：文档中心、旧内容处理决策、维护触发矩阵
 - [`docs/architecture.md`](docs/architecture.md)
+- [`docs/module-reference.md`](docs/module-reference.md)
+- [`docs/plugin-system.md`](docs/plugin-system.md)
+- [`docs/plugin-api.md`](docs/plugin-api.md)
+- [`docs/development.md`](docs/development.md)
 - [`docs/task-recovery.md`](docs/task-recovery.md)
 - [`docs/renderer-catalog.md`](docs/renderer-catalog.md)
 
-## Roadmap alignment
+## 路线图边界
 
-This repository implements the Phase 0–5 foundation from `docs/plan.md`, including the 0.1 boundary of local dual-pane browsing, custom context actions, plugin manifest + script runner, task queue, image-upload example plugin, and WebDAV remote browser. Later production hardening should add byte-level transfer progress, richer conflict dialogs, sandbox/security-scoped bookmark flows, XPC plugin runners, rclone provider support, signing/notarization, and onboarding.
+当前实现覆盖本地双栏浏览、上下文动作、process/HTTP 插件、持久任务、工件与结构化结果、WebDAV/Kodbox 远端浏览和标签能力。逐字节传输进度、XPC/sandbox 插件隔离、rclone、正式签名/公证与 onboarding 等仍是后续方向，不能从历史计划推断为已实现。

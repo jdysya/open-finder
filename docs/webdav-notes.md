@@ -1,5 +1,7 @@
 # WebDAV Provider Notes
 
+Status: current provider reference. For registry and transfer interactions, see [系统架构](architecture.md#统一文件源).
+
 The implemented `WebDAVProvider` and settings/browser wiring cover the V0 remote-provider contract from `docs/plan.md`:
 
 - `PROPFIND` with `Depth: 1` for directory listing.

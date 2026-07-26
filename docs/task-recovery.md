@@ -1,5 +1,7 @@
 # Durable task and database recovery
 
+Status: current explanation. System context and startup diagrams are in [系统架构](architecture.md#启动与恢复) and [`diagrams/startup-recovery.puml`](diagrams/startup-recovery.puml).
+
 Durable task startup is gated on successful database open, migration, reconciliation, and exact
 handler registration. Polling and task execution do not begin while readiness is checking or
 unavailable.

@@ -1,5 +1,7 @@
 # Finder and Kodbox tag support
 
+Status: current provider reference. The system-level file-source boundary is in [系统架构](architecture.md#统一文件源).
+
 OpenFinder exposes one scoped tag model across local files and Kodbox while preserving each provider's identity and permission rules. A tag identity is its opaque provider ID plus its scope; equal names in local, personal, and team scopes are not interchangeable.
 
 The file table shows a resizable Tags column. The context-menu action `标签…` opens a multi-selection editor with empty, mixed, and checked states. Assignment and catalog management are separate operations, and the provider is refreshed after a mutation so the filesystem or server remains authoritative.

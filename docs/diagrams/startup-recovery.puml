@@ -1,0 +1,41 @@
+@startuml OpenFinder_Startup_Recovery
+title OpenFinder Durable Startup and Recovery
+skinparam shadowing false
+
+participant "OpenFinderApp" as Main
+participant "ApplicationServices" as Services
+database "AppDatabase" as DB
+participant "PersistenceMaintenance" as Maintenance
+participant "TaskHandlerRegistry" as Registry
+participant "TaskQueueService" as Queue
+participant "AppModel" as Model
+
+Main -> Services: create composition root(tasks.sqlite)
+Services -> DB: open and validate schema
+
+alt database unavailable, malformed, or from future
+  DB --> Services: safe failure (database preserved)
+  Services --> Model: readiness = unavailable
+else database ready
+  DB --> Services: schema v3 ready
+  Services -> Maintenance: reconcile artifacts and task effects
+  Maintenance -> DB: roll forward durable states
+  Services -> Registry: compose exact handler/payload versions
+  Registry --> Services: validated registry
+  Services -> Queue: installHandlerRegistry
+  Services -> DB: load descriptors, records, logs
+  Services -> Queue: recoverPersistedTasks
+  Services -> Queue: resumeRecoveredTasks
+  Queue --> Model: readiness = ready + task projection
+end
+
+note over DB,Queue
+Queued work never starts before database,
+reconciliation, and exact handler registration succeed.
+end note
+
+note over Maintenance
+Recovery is roll-forward.
+No database deletion or silent recreation.
+end note
+@enduml

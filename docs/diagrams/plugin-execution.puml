@@ -1,0 +1,57 @@
+@startuml OpenFinder_Plugin_Execution
+title OpenFinder Plugin Discovery and Execution
+skinparam shadowing false
+
+actor User
+participant "AppModel" as App
+participant "PluginManagementService" as Management
+participant "PluginRegistry" as Registry
+participant "TaskQueueService" as Queue
+participant "PluginExecuteTaskHandler" as Handler
+participant "PluginExecutionCoordinator" as Coordinator
+participant "PluginRunnerRouter" as Router
+participant "ProcessPluginRunner" as Process
+participant "HTTPPluginRunner" as HTTP
+participant "ArtifactResultService" as Artifacts
+participant "Result Handler Registry" as Results
+participant "Renderer Catalog" as Renderer
+
+App -> Management: scan(built-in, user, development)
+Management -> Registry: scanWithDiagnostics(each directory)
+Registry --> Management: loaded plugins + diagnostics
+Management --> App: priority-resolved catalog
+App -> App: match actions against selection
+
+User -> App: invoke plugin action
+App -> Queue: enqueue immutable descriptor
+Queue -> Handler: execute payload version 1
+Handler -> Coordinator: run exact plugin/version/action
+Coordinator -> Router: run PluginInput
+
+alt process manifest schema 1
+  Router -> Process: stdin JSON + credential environment
+  Process --> Coordinator: NDJSON events + exit code
+else HTTP manifest schema 2
+  Router -> HTTP: loopback job protocol v1
+  HTTP --> Coordinator: validated SSE/poll events
+end
+
+Coordinator -> Coordinator: validate single final terminal result
+Coordinator -> Artifacts: commit confined file artifacts
+Artifacts --> Coordinator: committed result context
+Coordinator -> Results: handle by output.resultType
+Results --> App: typed or generic projection
+App -> Renderer: lookup by schema + projection type
+Renderer --> App: structured or generic renderer
+App --> User: present durable result
+
+note over Handler,Coordinator
+Descriptors contain credential references,
+never plaintext secret values.
+end note
+
+note over Results,Renderer
+Plugin ID does not participate
+in result or renderer selection.
+end note
+@enduml
