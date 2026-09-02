@@ -67,3 +67,7 @@ swift build
 ## 路线图边界
 
 当前实现覆盖本地双栏浏览、上下文动作、process/HTTP 插件、持久任务、工件与结构化结果、WebDAV/Kodbox 远端浏览和标签能力。逐字节传输进度、XPC/sandbox 插件隔离、rclone、正式签名/公证与 onboarding 等仍是后续方向，不能从历史计划推断为已实现。
+
+## 许可证
+
+OpenFinder 采用 [MIT License](LICENSE) 开源。
